@@ -1,0 +1,10 @@
+# Neo4j Configuration Example
+# Copy this file to neo4j.yaml and fill in your credentials
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  username: "neo4j"
+  password: "your-password-here"
+  database: "solvita"
+  encrypted: false
+

@@ -1,0 +1,10 @@
+# Vector Database Configuration Example
+# Copy this file to vector_db.yaml
+
+vector_db:
+  type: "chromadb"  # Options: chromadb, faiss
+  persist_directory: "./data/vector_db"
+  collection_name: "solvita_solutions"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  distance_metric: "cosine"
+
