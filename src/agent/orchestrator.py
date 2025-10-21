@@ -1,6 +1,7 @@
 """Workflow Orchestrator"""
 
 from typing import Dict
+from src.parser import EnhancedProblemParser, WorkflowIntegration
 
 
 class Orchestrator:
@@ -8,7 +9,8 @@ class Orchestrator:
     
     def __init__(self):
         """Initialize orchestrator"""
-        pass
+        self.enhanced_parser = EnhancedProblemParser()
+        self.workflow_integration = WorkflowIntegration()
     
     def orchestrate(self, problem_input: Dict) -> Dict:
         """
@@ -17,11 +19,16 @@ class Orchestrator:
         Workflow:
         1. Parse problem
         2. Retrieve knowledge
-        3. Generate test cases
-        4. Plan solutions
-        5. Iterative solve with feedback
-        6. Return best solution
+        3. Plan solutions (generates JSONL file)
+        4. Enhanced problem parsing (processes plan output)
+        5. Generate test cases
+        6. Iterative solve with feedback
+        7. Return best solution
         """
+        pass
+    
+    def _process_plan_output(self, plan_file: str) -> Dict:
+        """Process plan output and generate enhanced problem data"""
         pass
     
     def _monitor_progress(self, step: str, data: Dict) -> None:
