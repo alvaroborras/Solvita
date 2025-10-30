@@ -1,46 +1,80 @@
-"""C++ Code Generator"""
+"""C++ Code Generator - LangGraph Compatible
 
-from typing import Dict, Optional
+Generates C++ solution code based on plans and feedback.
+"""
+
+from typing import Dict, Optional, Any, List
+from loguru import logger
 
 
 class CPPGenerator:
-    """Generate C++ code solutions"""
-    
+    """Generate and refine C++ code solutions"""
+
     def __init__(self, llm):
-        """Initialize C++ code generator"""
-        pass
-    
-    def generate_solution(self, problem: Dict, plan: Dict) -> str:
         """
-        Generate C++ solution code
-        
+        Initialize C++ code generator.
+
         Args:
-            problem: Parsed problem
-            plan: Solution plan
-            
-        Returns:
-            C++ source code
+            llm: LLM instance for code generation
         """
-        pass
-    
-    def apply_feedback(self, code: str, feedback: Dict) -> str:
+        self.llm = llm
+        if not llm:
+            raise ValueError("CPPGenerator requires an LLM instance")
+
+    def generate(self,
+                problem_description: str,
+                solution_plan: Dict,
+                algorithm_choice: str,
+                implementation_steps: List[str],
+                feedback: Optional[Dict] = None) -> str:
         """
-        Modify code based on feedback
-        
+        Generate C++ solution code.
+
         Args:
-            code: Current C++ code
-            feedback: Compilation or test feedback
-            
+            problem_description: Problem text
+            solution_plan: Overall solution strategy
+            algorithm_choice: Selected algorithm
+            implementation_steps: Step-by-step plan
+            feedback: Optional feedback for iteration
+
         Returns:
-            Modified C++ code
+            C++ source code string
         """
-        pass
-    
-    def optimize_code(self, code: str, optimization_hints: Dict) -> str:
-        """Optimize C++ code based on hints"""
-        pass
-    
-    def add_debugging_output(self, code: str) -> str:
-        """Add debugging output to code"""
-        pass
+        logger.info(f"Generating C++ code using {algorithm_choice}...")
+
+        # TODO: Use LLM to generate code
+        # For now, return template code
+
+        if feedback:
+            # Regenerate with feedback
+            logger.info("Applying feedback to code generation...")
+
+        code = self._generate_template_code(problem_description, algorithm_choice)
+
+        logger.debug(f"Generated code ({len(code)} chars)")
+        return code
+
+    def _generate_template_code(self, problem: str, algorithm: str) -> str:
+        """Generate template C++ code"""
+        # TODO: Replace with LLM generation
+        template = f"""#include <iostream>
+#include <vector>
+#include <algorithm>
+using namespace std;
+
+int main() {{
+    // TODO: Implement {algorithm}
+    // Problem: {problem[:50]}...
+
+    int n;
+    cin >> n;
+
+    // Your solution here
+
+    cout << n << endl;
+
+    return 0;
+}}
+"""
+        return template
 
