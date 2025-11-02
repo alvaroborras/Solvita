@@ -26,6 +26,7 @@ class SolvitaState(TypedDict):
     # Planning (from plan_solution_node)
     solution_plan: Dict[str, Any]
     algorithm_choice: str
+    implementation_steps: List[str]
 
     # Testing (from generate_tests_node)
     generated_tests: List[Dict]
@@ -74,6 +75,7 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         retrieved_knowledge=[],
         solution_plan={},
         algorithm_choice="",
+        implementation_steps=[],
         generated_tests=[],
         total_tests=0,
         generated_code="",
