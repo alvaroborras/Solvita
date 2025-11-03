@@ -270,10 +270,16 @@ def analyze_feedback_node(state: SolvitaState) -> Dict[str, Any]:
 
 # ========== Control Flow Nodes ==========
 
-def check_success_node(state: SolvitaState) -> Dict[str, Any]:
-    """Check if solution is successful"""
-    logger.info("[Node] Checking success condition")
+def unified_check_node(state: SolvitaState) -> Dict[str, Any]:
+    """
+    Unified check node that determines solution status and iteration control.
 
+    Combines the logic of check_success_node and check_should_continue_node
+    into a single node for clarity and efficiency.
+    """
+    logger.info(f"[Node] Unified check (iteration {state['iteration']})")
+
+    # Check 1: Are all tests passing?
     all_passed = (
         state['solution'].get('compilation_success', False)
         and state['tests'].get('total_tests', 0) > 0
@@ -285,23 +291,8 @@ def check_success_node(state: SolvitaState) -> Dict[str, Any]:
             "status": "success",
             "execution_log": ["✓ All tests passed! Solution complete."],
         }
-    else:
-        return {
-            "execution_log": [
-                f"Tests status: {state['tests'].get('passed_tests', 0)}/{state['tests'].get('total_tests', 0)} passed"
-            ],
-        }
 
-
-def check_should_continue_node(state: SolvitaState) -> Dict[str, Any]:
-    """Determine whether to continue iteration or terminate"""
-    logger.info(f"[Node] Checking continuation (iteration {state['iteration']})")
-
-    # Already successful
-    if state["status"] == "success":
-        return {}
-
-    # Max iterations reached
+    # Check 2: Have we reached max iterations?
     if state["iteration"] >= state["max_iterations"]:
         return {
             "status": "max_iterations",
@@ -310,10 +301,13 @@ def check_should_continue_node(state: SolvitaState) -> Dict[str, Any]:
             ],
         }
 
-    # Continue iteration
+    # Check 3: Continue iteration
     return {
         "iteration": state["iteration"] + 1,
-        "execution_log": [f"→ Starting iteration {state['iteration'] + 1}"],
+        "execution_log": [
+            f"Tests status: {state['tests'].get('passed_tests', 0)}/{state['tests'].get('total_tests', 0)} passed",
+            f"→ Starting iteration {state['iteration'] + 1}",
+        ],
     }
 
 

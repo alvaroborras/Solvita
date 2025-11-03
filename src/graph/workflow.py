@@ -20,8 +20,7 @@ from src.graph.nodes import (
     generate_code_node,
     compile_code_node,
     run_tests_node,
-    check_success_node,
-    check_should_continue_node,
+    unified_check_node,
     analyze_feedback_node,
     finalize_solution_node,
     status_routing,
@@ -64,16 +63,13 @@ def create_solvita_workflow() -> StateGraph:
     # Phase 7: Testing
     workflow.add_node("run_tests", run_tests_node)
 
-    # Phase 8: Success Check
-    workflow.add_node("check_success", check_success_node)
+    # Phase 8: Unified Check and Control (combined success check and iteration control)
+    workflow.add_node("unified_check", unified_check_node)
 
-    # Phase 9: Iteration Control
-    workflow.add_node("check_continue", check_should_continue_node)
-
-    # Phase 10: Feedback Analysis (for failed iterations)
+    # Phase 9: Feedback Analysis (for failed iterations)
     workflow.add_node("analyze_feedback", analyze_feedback_node)
 
-    # Phase 11: Finalization
+    # Phase 10: Finalization
     workflow.add_node("finalize", finalize_solution_node)
 
     # ========== Define Edges ==========
@@ -102,15 +98,12 @@ def create_solvita_workflow() -> StateGraph:
         },
     )
 
-    # After running tests, check if all passed
-    workflow.add_edge("run_tests", "check_success")
+    # After running tests, unified check and control
+    workflow.add_edge("run_tests", "unified_check")
 
-    # After checking success, decide whether to continue
-    workflow.add_edge("check_success", "check_continue")
-
-    # Conditional: continue iteration or finalize
+    # Conditional: check status and decide whether to continue or finalize
     workflow.add_conditional_edges(
-        "check_continue",
+        "unified_check",
         status_routing,
         {
             "continue": "analyze_feedback",  # Continue → analyze feedback → regenerate
@@ -253,11 +246,10 @@ graph TD
     compile_code -->|Success| run_tests[Run Tests]
     compile_code -->|Failed| analyze_feedback[Analyze Feedback]
 
-    run_tests --> check_success[Check Success]
-    check_success --> check_continue[Check Continue?]
+    run_tests --> unified_check[Unified Check & Control]
 
-    check_continue -->|Continue| analyze_feedback
-    check_continue -->|End| finalize[Finalize Solution]
+    unified_check -->|Continue| analyze_feedback
+    unified_check -->|End| finalize[Finalize Solution]
 
     analyze_feedback --> generate_code
 
@@ -272,8 +264,7 @@ graph TD
     style generate_code fill:#87CEEB
     style compile_code fill:#DDA0DD
     style run_tests fill:#DDA0DD
-    style check_success fill:#F0E68C
-    style check_continue fill:#F0E68C
+    style unified_check fill:#F0E68C
     style analyze_feedback fill:#FFA07A
     style finalize fill:#98FB98
 """
