@@ -24,7 +24,7 @@ from src.graph.nodes import (
     check_should_continue_node,
     analyze_feedback_node,
     finalize_solution_node,
-    should_continue_routing,
+    status_routing,
     compilation_routing,
 )
 from typing import Dict, Any
@@ -111,7 +111,7 @@ def create_solvita_workflow() -> StateGraph:
     # Conditional: continue iteration or finalize
     workflow.add_conditional_edges(
         "check_continue",
-        should_continue_routing,
+        status_routing,
         {
             "continue": "analyze_feedback",  # Continue → analyze feedback → regenerate
             "end": "finalize",  # Success or max iterations → finalize
@@ -187,10 +187,10 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     final_state = workflow.invoke(initial_state)
 
     logger.info("=" * 60)
-    logger.info(f"Workflow Complete: {final_state['termination_reason']}")
-    logger.info(f"Iterations: {final_state['iteration_count']}")
-    logger.info(f"LLM Calls: {final_state['llm_calls']}")
-    logger.info(f"Pass Rate: {final_state['pass_rate']:.1%}")
+    logger.info(f"Workflow Complete: {final_state.get('status', 'unknown')}")
+    logger.info(f"Iterations: {final_state.get('iteration', 0)}")
+    logger.info(f"LLM Calls: {final_state.get('llm_calls', 0)}")
+    logger.info(f"Pass Rate: {final_state['tests'].get('pass_rate', 0.0):.1%}")
     logger.info("=" * 60)
 
     return final_state
