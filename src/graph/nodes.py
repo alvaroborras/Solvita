@@ -69,12 +69,12 @@ def plan_solution_node(state: SolvitaState) -> Dict[str, Any]:
     from src.llm.model_factory import ModelFactory
     from src.graph.state import PlanData
 
-    # Get LLM (placeholder for now)
+    # Get LLM from config or use mock
     try:
-        llm = ModelFactory.create(state['config'].get('model', 'gpt-4'))
-    except:
-        # Fallback: use mock LLM
-        llm = type('MockLLM', (), {'generate': lambda self, *args, **kwargs: ""})()
+        llm = ModelFactory.create_from_config(state['config'])
+    except Exception as e:
+        logger.warning(f"Failed to create LLM: {e}, using mock LLM")
+        llm = ModelFactory.create_mock()
 
     planner = SolutionPlanner(llm)
 
@@ -106,10 +106,15 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
     logger.info("[Node] Generating test cases")
 
     from src.testgen.test_generator import TestGenerator
+    from src.llm.model_factory import ModelFactory
     from src.graph.state import TestData
 
-    # Create mock LLM for now
-    llm = type('MockLLM', (), {'generate': lambda self, *args, **kwargs: ""})()
+    # Create LLM instance
+    try:
+        llm = ModelFactory.create_from_config(state['config'])
+    except Exception as e:
+        logger.warning(f"Failed to create LLM: {e}, using mock LLM")
+        llm = ModelFactory.create_mock()
 
     generator = TestGenerator(llm)
 
@@ -143,10 +148,15 @@ def generate_code_node(state: SolvitaState) -> Dict[str, Any]:
     logger.info(f"[Node] Generating C++ code (version {state['solution'].get('version', 0) + 1})")
 
     from src.solver.cpp_generator import CPPGenerator
+    from src.llm.model_factory import ModelFactory
     from src.graph.state import SolutionData
 
-    # Create mock LLM for now
-    llm = type('MockLLM', (), {'generate': lambda self, *args, **kwargs: ""})()
+    # Create LLM instance
+    try:
+        llm = ModelFactory.create_from_config(state['config'])
+    except Exception as e:
+        logger.warning(f"Failed to create LLM: {e}, using mock LLM")
+        llm = ModelFactory.create_mock()
 
     generator = CPPGenerator(llm)
 

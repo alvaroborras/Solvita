@@ -1,6 +1,6 @@
 """LLM Model Factory"""
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from .base_model import BaseLLM
 
 
@@ -36,6 +36,30 @@ class ModelFactory:
     def create_model(model_type: str, config: Dict) -> BaseLLM:
         """Legacy method for backwards compatibility"""
         return ModelFactory.create(model_type, config)
+
+    @staticmethod
+    def create_from_config(config: Dict[str, Any]) -> BaseLLM:
+        """
+        Create LLM instance from workflow config dict.
+
+        Args:
+            config: State config dict containing 'model' and other params
+
+        Returns:
+            LLM model instance
+        """
+        model_name = config.get('model', 'mock')
+        return ModelFactory.create(model_name, config)
+
+    @staticmethod
+    def create_mock() -> BaseLLM:
+        """
+        Create mock LLM instance for development/testing.
+
+        Returns:
+            MockLLM instance
+        """
+        return MockLLM({})
 
 
 class MockLLM(BaseLLM):
