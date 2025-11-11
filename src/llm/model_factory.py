@@ -70,13 +70,99 @@ class MockLLM(BaseLLM):
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate mock response"""
-        return "// Mock LLM response - replace with real LLM"
+        return self._generate_mock_code(prompt)
 
     def generate_with_system(self, system: str, user: str, **kwargs) -> str:
         """Generate mock response with system message"""
-        return "// Mock LLM response - replace with real LLM"
+        return self._generate_mock_code(user)
 
     def chat(self, messages: list, **kwargs) -> str:
-        """Generate mock response from chat"""
-        return "// Mock LLM response - replace with real LLM"
+        """Generate mock response from chat messages"""
+        # Extract user message content
+        user_content = ""
+        for msg in messages:
+            if msg.get("role") == "user":
+                user_content = msg.get("content", "")
+                break
+
+        return self._generate_mock_code(user_content)
+
+    def _generate_mock_code(self, prompt: str) -> str:
+        """Generate mock C++ code based on prompt content"""
+        # Detect what kind of code to generate based on prompt
+        if "competition" in prompt.lower() or "algorithm" in prompt.lower():
+            # Generate a generic competitive programming solution
+            return """#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <map>
+#include <set>
+using namespace std;
+
+int main() {
+    ios_base::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n;
+    cin >> n;
+
+    vector<int> arr(n);
+    for (int i = 0; i < n; i++) {
+        cin >> arr[i];
+    }
+
+    // Mock solution: process input and output result
+    cout << arr[0] << endl;
+
+    return 0;
+}
+"""
+        elif "fix" in prompt.lower() or "error" in prompt.lower():
+            # Generate fixed code
+            return """#include <iostream>
+#include <vector>
+#include <algorithm>
+using namespace std;
+
+int main() {
+    ios_base::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n;
+    cin >> n;
+
+    if (n <= 0) {
+        cout << 0 << endl;
+        return 0;
+    }
+
+    vector<int> arr(n);
+    for (int i = 0; i < n; i++) {
+        cin >> arr[i];
+    }
+
+    // Fixed solution
+    cout << arr[0] << endl;
+
+    return 0;
+}
+"""
+        else:
+            # Default mock code
+            return """#include <iostream>
+#include <vector>
+using namespace std;
+
+int main() {
+    ios_base::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n;
+    cin >> n;
+
+    cout << n << endl;
+
+    return 0;
+}
+"""
 

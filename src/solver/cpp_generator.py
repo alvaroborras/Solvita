@@ -104,8 +104,14 @@ Requirements:
 Please provide only the C++ code, starting with #include statements and ending with the closing brace of main()."""
 
         try:
+            # Build messages in standard chat format
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+
             # Call LLM to generate code
-            code = self.llm.generate_with_system(system_prompt, user_prompt)
+            code = self.llm.chat(messages)
 
             # Extract code if wrapped in markdown
             code = self._extract_code(code)
@@ -165,7 +171,13 @@ Focus on:
 Please provide only the corrected C++ code."""
 
         try:
-            code = self.llm.generate_with_system(system_prompt, user_prompt)
+            # Build messages in standard chat format
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+
+            code = self.llm.chat(messages)
             code = self._extract_code(code)
             logger.debug(f"Refined code ({len(code)} chars)")
             return code
