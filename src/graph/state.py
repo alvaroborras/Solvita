@@ -5,6 +5,7 @@ Minimal state focusing on core workflow interfaces.
 
 from typing import TypedDict, List, Dict, Any, Optional, Annotated
 from operator import add
+from langgraph.graph.message import add_messages
 
 
 # ========== Nested Data Structures ==========
@@ -65,6 +66,9 @@ class SolvitaState(TypedDict):
     tests: TestData
     feedback: FeedbackData
 
+    # LLM conversation history (managed by LangGraph)
+    messages: Annotated[List[Dict[str, str]], add_messages]
+
     # Control flow layer
     iteration: int
     max_iterations: int
@@ -76,18 +80,31 @@ class SolvitaState(TypedDict):
 
 
 def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) -> SolvitaState:
-    """Create initial state with all fields properly initialized"""
+    """
+    Create initial state with all fields properly initialized
+    
+    Expected raw_problem format:
+    {
+        "description": str,
+        "time_limit": int,  # in milliseconds
+        "space_limit": int,  # in MB
+        "public_tests": [{"input": str, "output": str}, ...]
+    }
+    """
     return SolvitaState(
         # Input
         raw_problem=raw_problem,
         config=config,
 
-        # Business objects - start empty, populated by nodes
+        # Business objects - problem data extracted from raw_problem
         problem=ProblemData(
-            description="",
-            types=[],
-            constraints={},
-            public_tests=[],
+            description=raw_problem.get("description", ""),
+            types=[],  # Will be filled by retrieve_knowledge
+            constraints={
+                "time_limit": raw_problem.get("time_limit"),
+                "space_limit": raw_problem.get("space_limit"),
+            },
+            public_tests=raw_problem.get("public_tests", []),
             retrieved_knowledge=[],
         ),
         plan=PlanData(
@@ -113,6 +130,9 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             feedback={},
             suggested_fixes=[],
         ),
+
+        # LLM conversation history
+        messages=[],
 
         # Control flow
         iteration=0,

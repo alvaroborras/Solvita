@@ -1,5 +1,10 @@
-"""LLM Module"""
+"""LLM Module - Unified API for all LLM providers"""
 
-from .model_factory import ModelFactory
+from .unified_client import UnifiedLLMClient, create_client, get_default_client, set_default_client
 
-__all__ = ["ModelFactory"]
+__all__ = [
+    "UnifiedLLMClient",
+    "create_client",
+    "get_default_client",
+    "set_default_client"
+]

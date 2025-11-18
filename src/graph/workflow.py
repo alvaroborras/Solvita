@@ -4,16 +4,19 @@ This module defines the complete workflow graph that orchestrates the
 problem-solving process from problem input to final solution.
 
 Workflow:
-1. Parse problem → 2. Retrieve knowledge → 3. Plan solution → 4. Generate tests
-→ 5. Generate code → 6. Compile → 7. Run tests → 8. Check success
-→ 9. (if failed) Analyze feedback → back to 5
-→ 10. (if success or max iterations) Finalize
+1. Retrieve knowledge → 2. Plan solution → 3. Generate code → 4. Compile ─┐
+5. Generate tests ────────────────────────────────────────────────────────┴→ 6. Run tests
+→ 7. Check success
+→ 8. (if failed) Analyze feedback → back to 3
+→ 9. (if success or max iterations) END
+
+Note: retrieve_knowledge and generate_tests run in parallel, but plan_solution 
+depends on retrieve_knowledge completing first.
 """
 
 from langgraph.graph import StateGraph, END
 from src.graph.state import SolvitaState, create_initial_state
-from src.graph.nodes import (
-    parse_problem_node,
+from src.nodes import (
     retrieve_knowledge_node,
     plan_solution_node,
     generate_tests_node,
@@ -22,7 +25,6 @@ from src.graph.nodes import (
     run_tests_node,
     unified_check_node,
     analyze_feedback_node,
-    finalize_solution_node,
     status_routing,
     compilation_routing,
 )
@@ -42,80 +44,73 @@ def create_solvita_workflow() -> StateGraph:
 
     # ========== Add Nodes ==========
 
-    # Phase 1: Problem Understanding
-    workflow.add_node("parse_problem", parse_problem_node)
-
-    # Phase 2: Knowledge Retrieval
+    # Phase 1: Knowledge Retrieval
     workflow.add_node("retrieve_knowledge", retrieve_knowledge_node)
 
-    # Phase 3: Planning
+    # Phase 2: Planning (depends on knowledge)
     workflow.add_node("plan_solution", plan_solution_node)
 
-    # Phase 4: Test Generation (only once at the beginning)
+    # Phase 3: Test Generation (parallel with planning/coding)
     workflow.add_node("generate_tests", generate_tests_node)
 
-    # Phase 5: Code Generation (can be repeated in iterations)
+    # Phase 4: Code Generation (can be repeated in iterations)
     workflow.add_node("generate_code", generate_code_node)
 
-    # Phase 6: Compilation
+    # Phase 5: Compilation
     workflow.add_node("compile_code", compile_code_node)
 
-    # Phase 7: Testing
+    # Phase 6: Testing
     workflow.add_node("run_tests", run_tests_node)
 
-    # Phase 8: Unified Check and Control (combined success check and iteration control)
+    # Phase 7: Unified Check and Control
     workflow.add_node("unified_check", unified_check_node)
 
-    # Phase 9: Feedback Analysis (for failed iterations)
+    # Phase 8: Feedback Analysis (for failed iterations)
     workflow.add_node("analyze_feedback", analyze_feedback_node)
-
-    # Phase 10: Finalization
-    workflow.add_node("finalize", finalize_solution_node)
 
     # ========== Define Edges ==========
 
-    # Set entry point
-    workflow.set_entry_point("parse_problem")
+    # Set entry point - start with knowledge retrieval
+    workflow.set_entry_point("retrieve_knowledge")
 
-    # Linear flow for initial setup
-    workflow.add_edge("parse_problem", "retrieve_knowledge")
+    # After retrieve_knowledge, two parallel branches:
+    # Branch 1: plan_solution → generate_code → compile
     workflow.add_edge("retrieve_knowledge", "plan_solution")
-    workflow.add_edge("plan_solution", "generate_tests")
-
-    # Start code generation iteration
-    workflow.add_edge("generate_tests", "generate_code")
-
-    # After code generation, compile
+    workflow.add_edge("plan_solution", "generate_code")
     workflow.add_edge("generate_code", "compile_code")
-
+    
+    # Branch 2: generate_tests (parallel with branch 1)
+    workflow.add_edge("retrieve_knowledge", "generate_tests")
+    
     # Conditional: compilation success or failure
     workflow.add_conditional_edges(
         "compile_code",
         compilation_routing,
         {
-            "success": "run_tests",  # If compiled, run tests
-            "failed": "analyze_feedback",  # If failed, analyze errors
+            "success": "run_tests",  # If compiled, go to run_tests (waits for generate_tests)
+            "failed": "analyze_feedback",  # If failed, analyze errors directly
         },
     )
+    
+    # Test generation branch also goes to run_tests
+    # run_tests will wait for both: compiled code + test cases
+    workflow.add_edge("generate_tests", "run_tests")
 
     # After running tests, unified check and control
     workflow.add_edge("run_tests", "unified_check")
 
-    # Conditional: check status and decide whether to continue or finalize
+    # Conditional: check status and decide whether to continue or end
     workflow.add_conditional_edges(
         "unified_check",
         status_routing,
         {
             "continue": "analyze_feedback",  # Continue → analyze feedback → regenerate
-            "end": "finalize",  # Success or max iterations → finalize
+            "end": END,  # Success or max iterations → end workflow
         },
     )
 
     # After analyzing feedback, regenerate code
     workflow.add_edge("analyze_feedback", "generate_code")
-
-    # Finalize is the terminal node
-    workflow.add_edge("finalize", END)
 
     # Compile the graph
     compiled_workflow = workflow.compile()
@@ -123,29 +118,6 @@ def create_solvita_workflow() -> StateGraph:
     logger.info("✓ Solvita workflow graph compiled successfully")
 
     return compiled_workflow
-
-
-def visualize_workflow(output_path: str = "workflow_diagram.png"):
-    """
-    Generate a visual diagram of the workflow.
-
-    Args:
-        output_path: Path to save the diagram
-    """
-    try:
-        workflow = create_solvita_workflow()
-        # Get the graph representation
-        graph = workflow.get_graph()
-        # Draw the graph
-        graph_image = graph.draw_mermaid_png()
-
-        with open(output_path, "wb") as f:
-            f.write(graph_image)
-
-        logger.info(f"✓ Workflow diagram saved to {output_path}")
-    except Exception as e:
-        logger.warning(f"Could not generate diagram: {e}")
-        logger.info("Install pygraphviz for diagram generation: pip install pygraphviz")
 
 
 def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -187,99 +159,3 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     logger.info("=" * 60)
 
     return final_state
-
-
-# ========== Workflow Execution Modes ==========
-
-def run_workflow_streaming(raw_problem: Dict[str, Any], config: Dict[str, Any] = None):
-    """
-    Execute workflow with streaming output for each node.
-
-    Yields state after each node execution for real-time monitoring.
-    """
-    if config is None:
-        config = {"max_iterations": 5}
-
-    initial_state = create_initial_state(raw_problem, config)
-    workflow = create_solvita_workflow()
-
-    logger.info("Starting streaming workflow execution...")
-
-    # Stream events from the workflow
-    for event in workflow.stream(initial_state):
-        node_name = list(event.keys())[0]
-        node_output = event[node_name]
-
-        logger.info(f"→ Completed node: {node_name}")
-
-        # Yield for external monitoring/UI updates
-        yield {
-            "node": node_name,
-            "output": node_output,
-            "timestamp": None,  # Add timestamp if needed
-        }
-
-
-def run_workflow_async(raw_problem: Dict[str, Any], config: Dict[str, Any] = None):
-    """
-    Execute workflow asynchronously.
-
-    Useful for parallel processing of multiple problems.
-    """
-    # TODO: Implement async version using ainvoke
-    # This would allow processing multiple problems concurrently
-    pass
-
-
-# ========== Mermaid Diagram Definition ==========
-
-WORKFLOW_MERMAID = """
-graph TD
-    START([Start]) --> parse_problem[Parse Problem]
-    parse_problem --> retrieve_knowledge[Retrieve Knowledge]
-    retrieve_knowledge --> plan_solution[Plan Solution]
-    plan_solution --> generate_tests[Generate Tests]
-
-    generate_tests --> generate_code[Generate Code]
-    generate_code --> compile_code[Compile Code]
-
-    compile_code -->|Success| run_tests[Run Tests]
-    compile_code -->|Failed| analyze_feedback[Analyze Feedback]
-
-    run_tests --> unified_check[Unified Check & Control]
-
-    unified_check -->|Continue| analyze_feedback
-    unified_check -->|End| finalize[Finalize Solution]
-
-    analyze_feedback --> generate_code
-
-    finalize --> END([End])
-
-    style START fill:#90EE90
-    style END fill:#FFB6C1
-    style parse_problem fill:#E6E6FA
-    style retrieve_knowledge fill:#E6E6FA
-    style plan_solution fill:#FFE4B5
-    style generate_tests fill:#FFE4B5
-    style generate_code fill:#87CEEB
-    style compile_code fill:#DDA0DD
-    style run_tests fill:#DDA0DD
-    style unified_check fill:#F0E68C
-    style analyze_feedback fill:#FFA07A
-    style finalize fill:#98FB98
-"""
-
-
-if __name__ == "__main__":
-    # Test workflow creation
-    print("Creating Solvita workflow...")
-    workflow = create_solvita_workflow()
-    print("✓ Workflow created successfully!")
-
-    # Try to visualize
-    print("\nAttempting to generate workflow diagram...")
-    visualize_workflow()
-
-    # Print Mermaid diagram for manual visualization
-    print("\nMermaid Diagram (paste into https://mermaid.live):")
-    print(WORKFLOW_MERMAID)
