@@ -87,13 +87,14 @@ def create_solvita_workflow() -> StateGraph:
         "compile_code",
         compilation_routing,
         {
-            "success": "run_tests",  # If compiled, go to run_tests (waits for generate_tests)
+            "success": "run_tests",  # If compiled, go to run_tests
             "failed": "analyze_feedback",  # If failed, analyze errors directly
         },
     )
-    
-    # Test generation branch also goes to run_tests
-    # run_tests will wait for both: compiled code + test cases
+
+    # Test generation also triggers run_tests
+    # run_tests will run twice: once when tests ready, once when code ready
+    # First run (no executable) just waits, second run executes tests
     workflow.add_edge("generate_tests", "run_tests")
 
     # After running tests, unified check and control
@@ -115,7 +116,7 @@ def create_solvita_workflow() -> StateGraph:
     # Compile the graph
     compiled_workflow = workflow.compile()
 
-    logger.info("✓ Solvita workflow graph compiled successfully")
+    logger.info("Solvita workflow graph compiled successfully")
 
     return compiled_workflow
 

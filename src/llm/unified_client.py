@@ -14,7 +14,7 @@ class UnifiedLLMClient:
     def __init__(self, config: Dict[str, Any] = None):
         """
         Initialize unified LLM client
-        
+
         Args:
             config: Configuration dict with:
                 - base_url: API endpoint URL
@@ -24,12 +24,14 @@ class UnifiedLLMClient:
                 - max_tokens: Maximum tokens to generate (default: 4096)
         """
         self.config = config or {}
-        self.base_url = self.config.get('base_url', '')
-        self.api_key = self.config.get('api_key', '')
-        self.model = self.config.get('model', 'default')
+
+        # Hardcoded defaults for testing (TODO: load from config file)
+        self.base_url = self.config.get('base_url', 'http://14.103.68.46/v1')
+        self.api_key = self.config.get('api_key', 'sk-<redacted>')
+        self.model = self.config.get('model', 'gpt-4')
         self.temperature = self.config.get('temperature', 0.1)
         self.max_tokens = self.config.get('max_tokens', 4096)
-        
+
         self.client = self._initialize_client()
     
     def _initialize_client(self):
@@ -52,17 +54,17 @@ class UnifiedLLMClient:
     def generate(self, prompt: str, **kwargs) -> str:
         """
         Generate response from a single prompt
-        
+
         Args:
             prompt: Input prompt text
             **kwargs: Additional parameters (temperature, max_tokens)
-            
+
         Returns:
             Generated response text
         """
         if not self.client:
             return ""
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -70,6 +72,10 @@ class UnifiedLLMClient:
                 temperature=kwargs.get("temperature", self.temperature),
                 max_tokens=kwargs.get("max_tokens", self.max_tokens),
             )
+            # Handle non-standard API that returns string directly
+            if isinstance(response, str):
+                return response
+            # Standard OpenAI response format
             return response.choices[0].message.content
         except Exception as e:
             print(f"API error: {e}")
@@ -78,18 +84,18 @@ class UnifiedLLMClient:
     def generate_with_system(self, system: str, user: str, **kwargs) -> str:
         """
         Generate response with system and user messages
-        
+
         Args:
             system: System message (instructions, context)
             user: User message (actual query)
             **kwargs: Additional parameters
-            
+
         Returns:
             Generated response text
         """
         if not self.client:
             return ""
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -100,6 +106,10 @@ class UnifiedLLMClient:
                 temperature=kwargs.get("temperature", self.temperature),
                 max_tokens=kwargs.get("max_tokens", self.max_tokens),
             )
+            # Handle non-standard API that returns string directly
+            if isinstance(response, str):
+                return response
+            # Standard OpenAI response format
             return response.choices[0].message.content
         except Exception as e:
             print(f"API error: {e}")
@@ -108,17 +118,17 @@ class UnifiedLLMClient:
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """
         Generate response from chat message history
-        
+
         Args:
             messages: List of message dicts [{"role": "user", "content": "..."}]
             **kwargs: Additional parameters
-            
+
         Returns:
             Generated response text
         """
         if not self.client:
             return ""
-        
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -126,6 +136,10 @@ class UnifiedLLMClient:
                 temperature=kwargs.get("temperature", self.temperature),
                 max_tokens=kwargs.get("max_tokens", self.max_tokens),
             )
+            # Handle non-standard API that returns string directly
+            if isinstance(response, str):
+                return response
+            # Standard OpenAI response format
             return response.choices[0].message.content
         except Exception as e:
             print(f"API error: {e}")

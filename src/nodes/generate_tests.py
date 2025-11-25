@@ -141,11 +141,11 @@ Return ONLY the JSON object, no additional text."""
     return {
         "tests": tests,
         "execution_log": [
-            f"✓ Generated {len(generated_tests)} test cases",
+            f"Generated {len(generated_tests)} test cases",
             f"  Public: {test_counts['public']}, Edge: {test_counts['edge']}, "
             f"Corner: {test_counts['corner']}, Random: {test_counts['random']}, "
             f"Other: {test_counts['generated']}"
         ],
-        "llm_calls": state['llm_calls'] + 1,
+        "llm_calls": 1,
     }
 

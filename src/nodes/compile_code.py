@@ -39,43 +39,55 @@ def compile_code_node(state: SolvitaState) -> Dict[str, Any]:
         
         if result.returncode == 0:
             # Compilation successful
+            # Preserve existing solution fields
+            updated_solution = dict(state['solution'])
+            updated_solution.update({
+                "compilation_success": True,
+                "compilation_errors": [],
+                "executable_path": exe_path,
+            })
             return {
-                "solution": {
-                    "compilation_success": True,
-                    "compilation_errors": [],
-                    "executable_path": exe_path,
-                },
-                "execution_log": ["✓ Code compiled successfully"],
+                "solution": updated_solution,
+                "execution_log": ["Code compiled successfully"],
             }
         else:
             # Compilation failed
             errors = _parse_compilation_errors(result.stderr)
+            # Preserve existing solution fields
+            updated_solution = dict(state['solution'])
+            updated_solution.update({
+                "compilation_success": False,
+                "compilation_errors": errors,
+                "executable_path": None,
+            })
             return {
-                "solution": {
-                    "compilation_success": False,
-                    "compilation_errors": errors,
-                    "executable_path": None,
-                },
-                "execution_log": [f"✗ Compilation failed: {len(errors)} errors"],
+                "solution": updated_solution,
+                "execution_log": [f"Compilation failed: {len(errors)} errors"],
             }
     
     except subprocess.TimeoutExpired:
+        # Preserve existing solution fields
+        updated_solution = dict(state['solution'])
+        updated_solution.update({
+            "compilation_success": False,
+            "compilation_errors": ["Compilation timeout"],
+            "executable_path": None,
+        })
         return {
-            "solution": {
-                "compilation_success": False,
-                "compilation_errors": ["Compilation timeout"],
-                "executable_path": None,
-            },
-            "execution_log": ["✗ Compilation timeout"],
+            "solution": updated_solution,
+            "execution_log": ["Compilation timeout"],
         }
     except Exception as e:
+        # Preserve existing solution fields
+        updated_solution = dict(state['solution'])
+        updated_solution.update({
+            "compilation_success": False,
+            "compilation_errors": [str(e)],
+            "executable_path": None,
+        })
         return {
-            "solution": {
-                "compilation_success": False,
-                "compilation_errors": [str(e)],
-                "executable_path": None,
-            },
-            "execution_log": [f"✗ Compilation error: {e}"],
+            "solution": updated_solution,
+            "execution_log": [f"Compilation error: {e}"],
         }
     finally:
         # Clean up source file

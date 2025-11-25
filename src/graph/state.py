@@ -76,7 +76,7 @@ class SolvitaState(TypedDict):
 
     # Metadata layer
     execution_log: Annotated[List[str], add]
-    llm_calls: int
+    llm_calls: Annotated[int, add]  # Support concurrent updates from parallel nodes
 
 
 def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) -> SolvitaState:

@@ -73,7 +73,7 @@ Generate ONLY the complete C++ code, no explanations."""
     
     return {
         "solution": solution,
-        "execution_log": [f"✓ Generated C++ code (v{solution['version']})"],
-        "llm_calls": state['llm_calls'] + 1,
+        "execution_log": [f"Generated C++ code (v{solution['version']})"],
+        "llm_calls": 1,
     }
 

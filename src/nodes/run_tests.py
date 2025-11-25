@@ -21,14 +21,10 @@ def run_tests_node(state: SolvitaState) -> Dict[str, Any]:
     tests = state['tests'].get('generated_tests', [])
     
     if not exe_path:
-        logger.error("No executable path found")
+        logger.debug("No executable path found (waiting for compilation)")
+        # Don't modify tests field when no executable - just return empty update
         return {
-            "tests": {
-                "test_results": [],
-                "passed_tests": 0,
-                "pass_rate": 0.0,
-            },
-            "execution_log": ["✗ No executable to test"],
+            "execution_log": ["Waiting for compilation"],
         }
     
     results = []
@@ -85,13 +81,17 @@ def run_tests_node(state: SolvitaState) -> Dict[str, Any]:
     
     total = len(tests)
     pass_rate = passed / total if total > 0 else 0.0
-    
+
+    # Preserve existing test fields
+    updated_tests = dict(state['tests'])
+    updated_tests.update({
+        "test_results": results,
+        "passed_tests": passed,
+        "pass_rate": pass_rate,
+    })
+
     return {
-        "tests": {
-            "test_results": results,
-            "passed_tests": passed,
-            "pass_rate": pass_rate,
-        },
-        "execution_log": [f"✓ Tests completed: {passed}/{total} passed ({pass_rate:.1%})"],
+        "tests": updated_tests,
+        "execution_log": [f"Tests completed: {passed}/{total} passed ({pass_rate:.1%})"],
     }
 
