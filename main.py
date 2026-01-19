@@ -12,7 +12,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Solvita - Algorithm Problem Solving Agent")
     parser.add_argument("--input", type=str, required=True, help="Input problem file (JSON)")
     parser.add_argument("--output", type=str, default="solution.cpp", help="Output solution file")
-    parser.add_argument("--model", type=str, default="gpt-4", help="LLM model to use")
+    parser.add_argument("--model", type=str, default="gpt-5", help="LLM model to use")
     parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
     parser.add_argument("--max-iterations", type=int, default=5, help="Max refinement iterations")
     parser.add_argument("--config", type=str, default="config", help="Config directory path")

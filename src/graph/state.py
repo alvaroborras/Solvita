@@ -8,6 +8,19 @@ from operator import add
 from langgraph.graph.message import add_messages
 
 
+# ========== Custom Reducers for Nested Dicts ==========
+
+def merge_dict(left: Dict, right: Dict) -> Dict:
+    """Merge two dicts, right values override left"""
+    if left is None:
+        return right or {}
+    if right is None:
+        return left or {}
+    result = dict(left)
+    result.update(right)
+    return result
+
+
 # ========== Nested Data Structures ==========
 
 class ProblemData(TypedDict, total=False):
@@ -60,11 +73,12 @@ class SolvitaState(TypedDict):
     config: Dict[str, Any]
 
     # Business objects layer (populated progressively by nodes)
-    problem: ProblemData
-    plan: PlanData
-    solution: SolutionData
-    tests: TestData
-    feedback: FeedbackData
+    # Using Annotated with merge_dict to handle concurrent updates from parallel branches
+    problem: Annotated[ProblemData, merge_dict]
+    plan: Annotated[PlanData, merge_dict]
+    solution: Annotated[SolutionData, merge_dict]
+    tests: Annotated[TestData, merge_dict]
+    feedback: Annotated[FeedbackData, merge_dict]
 
     # LLM conversation history (managed by LangGraph)
     messages: Annotated[List[Dict[str, str]], add_messages]

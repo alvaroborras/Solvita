@@ -1,5 +1,7 @@
 """Unified LLM Client - Universal API for all LLM providers"""
 
+import os
+import yaml
 from typing import Dict, List, Optional, Any
 
 
@@ -25,10 +27,29 @@ class UnifiedLLMClient:
         """
         self.config = config or {}
 
-        # Hardcoded defaults for testing (TODO: load from config file)
+        # Load config file from config/models.yaml if available
+        import yaml
+        config_path = 'config/models.yaml'
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config_data = yaml.safe_load(f)
+                    if config_data and 'llm' in config_data:
+                        llm_config = config_data['llm']
+                        self.base_url = self.config.get('base_url', llm_config.get('base_url', ''))
+                        self.api_key = self.config.get('api_key', llm_config.get('api_key', ''))
+                        self.model = self.config.get('model', llm_config.get('model', 'gpt-4'))
+                        self.temperature = self.config.get('temperature', llm_config.get('temperature', 0.1))
+                        self.max_tokens = self.config.get('max_tokens', llm_config.get('max_tokens', 4096))
+                        self.client = self._initialize_client()
+                        return
+            except Exception as e:
+                print(f"Warning: Failed to load config from {config_path}: {e}")
+
+        # Default values
         self.base_url = self.config.get('base_url', 'http://14.103.68.46/v1')
         self.api_key = self.config.get('api_key', 'sk-<redacted>')
-        self.model = self.config.get('model', 'gpt-4')
+        self.model = self.config.get('model', 'claude-opus-4-5-20251101')
         self.temperature = self.config.get('temperature', 0.1)
         self.max_tokens = self.config.get('max_tokens', 4096)
 
@@ -76,9 +97,12 @@ class UnifiedLLMClient:
             if isinstance(response, str):
                 return response
             # Standard OpenAI response format
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            return content if content is not None else ""
         except Exception as e:
             print(f"API error: {e}")
+            import traceback
+            traceback.print_exc()
             return ""
     
     def generate_with_system(self, system: str, user: str, **kwargs) -> str:
