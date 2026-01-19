@@ -69,19 +69,17 @@ def create_solvita_workflow() -> StateGraph:
     workflow.add_node("analyze_feedback", analyze_feedback_node)
 
     # ========== Define Edges ==========
+    # Simplified sequential workflow (no parallel branches to avoid state conflicts)
 
     # Set entry point - start with knowledge retrieval
     workflow.set_entry_point("retrieve_knowledge")
 
-    # After retrieve_knowledge, two parallel branches:
-    # Branch 1: plan_solution → generate_code → compile
-    workflow.add_edge("retrieve_knowledge", "plan_solution")
+    # Sequential flow: knowledge → tests → plan → code → compile
+    workflow.add_edge("retrieve_knowledge", "generate_tests")
+    workflow.add_edge("generate_tests", "plan_solution")
     workflow.add_edge("plan_solution", "generate_code")
     workflow.add_edge("generate_code", "compile_code")
-    
-    # Branch 2: generate_tests (parallel with branch 1)
-    workflow.add_edge("retrieve_knowledge", "generate_tests")
-    
+
     # Conditional: compilation success or failure
     workflow.add_conditional_edges(
         "compile_code",
@@ -91,11 +89,6 @@ def create_solvita_workflow() -> StateGraph:
             "failed": "analyze_feedback",  # If failed, analyze errors directly
         },
     )
-
-    # Test generation also triggers run_tests
-    # run_tests will run twice: once when tests ready, once when code ready
-    # First run (no executable) just waits, second run executes tests
-    workflow.add_edge("generate_tests", "run_tests")
 
     # After running tests, unified check and control
     workflow.add_edge("run_tests", "unified_check")
@@ -149,8 +142,12 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     # Create and run workflow
     workflow = create_solvita_workflow()
 
-    # Execute the workflow
-    final_state = workflow.invoke(initial_state)
+    # Execute the workflow with increased recursion limit
+    # Each iteration involves ~5 nodes, so 5 iterations = 25 nodes + initial = ~30
+    final_state = workflow.invoke(
+        initial_state,
+        {"recursion_limit": 100}
+    )
 
     logger.info("=" * 60)
     logger.info(f"Workflow Complete: {final_state.get('status', 'unknown')}")
