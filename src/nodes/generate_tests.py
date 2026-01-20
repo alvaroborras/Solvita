@@ -32,8 +32,17 @@ def parse_json_response(response: str) -> dict:
 
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response: {e}")
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                logger.debug(f"Response content: {cleaned[start : min(end + 1, start + 200)]}...")
+                raise
+        logger.error("Failed to parse JSON response: no JSON object found")
         logger.debug(f"Response content: {cleaned[:200]}...")
         raise
 
@@ -60,12 +69,17 @@ def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
     return safe or "unknown"
 
 
-def compile_cpp(source_path: Path, exe_path: Path) -> Tuple[bool, str]:
+def compile_cpp(source_path: Path, exe_path: Path, include_testlib: bool = False) -> Tuple[bool, str]:
     '''
     编译cpp程序(generator/validator/checker/AC解)
     '''
+    compiler = Path("E:/CLion 2025.2/bin/mingw/bin/g++.exe")
+    cmd = [str(compiler), "-std=c++17", "-O2"]
+    if include_testlib:
+        cmd.append("-I.")
+    cmd.extend([str(source_path), "-o", str(exe_path)])
     result = subprocess.run(
-        ["g++", "-std=c++17", "-O2", str(source_path), "-o", str(exe_path)],
+        cmd,
         capture_output=True,
         text=True,
     )
@@ -91,13 +105,48 @@ def run_program(exe_path: Path, input_text: Optional[str] = None, args: Optional
 
 
 def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
-    '''
-    生成generator程序的prompt
-    '''
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     return f"""You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
-The program must accept a single integer seed as argv[1] and must not print any extra text.
-Use the seed to vary random choices and produce diverse valid inputs.
+
+Hard requirements:
+- Use testlib: #include "testlib.h"
+- Call registerGen(argc, argv, 1)
+- Use rnd.next(...) for randomness (no std::random, no srand/rand)
+- Do not parse or set a random seed inside the program
+- Do not print any extra text
+- Keep individual string lengths small (2-6 characters)
+- Limit n to <= 200 to keep output size manageable
+- For n strings of length m, ensure n <= 26^m (number of possible unique strings)
+- Use std::unordered_set<std::string> for deduplication
+
+Minimal skeleton (illustrative only):
+#include "testlib.h"
+#include <unordered_set>
+int main(int argc, char* argv[]) {{
+  registerGen(argc, argv, 1);
+  // Choose m first, then limit n based on 26^m
+  int m = rnd.next(2, 6);
+  long long maxStrings = 1;
+  for (int i = 0; i < m; i++) {{ maxStrings *= 26; }}
+  long long maxN = std::min(200LL, (long long)(maxStrings * 0.8));
+  int n = rnd.next(1, (int)maxN);
+  std::cout << n << " " << m << std::endl;
+  std::unordered_set<std::string> seen;
+  for (int i = 0; i < n; i++) {{
+    std::string s;
+    do {{
+      s = "";
+      for (int j = 0; j < m; j++) {{
+        s += char('A' + rnd.next(0, 25));
+      }}
+    }} while (seen.count(s));
+    seen.insert(s);
+    std::cout << s << std::endl;
+  }}
+  return 0;
+}}
+
+The program must produce ONE valid input instance that satisfies all constraints.
 
 Problem Description:
 {problem_desc}
@@ -108,21 +157,41 @@ Constraints:
 Public Tests:
 {json.dumps(public_tests, indent=2)}
 {feedback_block}
-Return ONLY valid JSON:
-{{
-  "generator_cpp": "..."
-}}
+Return ONLY a JSON object. No other text, no markdown.
+Schema:
+{{"generator_cpp": "<complete C++17 source>"}}
 """
+
 
 
 def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
-    '''
-    生成validator程序的prompt
-    '''
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     return f"""You are a validator agent. Write a C++17 program that reads one test case from stdin and validates it.
-Exit 0 if valid, otherwise return non-zero and write a short error to stderr.
-Do not print anything on success.
+
+Hard requirements:
+- Use testlib: #include "testlib.h"
+- Call registerValidation(argc, argv)
+- Use inf.readInt/readLong/readToken to parse input
+- Use inf.readToken() WITHOUT pattern parameter to read arbitrary strings
+- Use ensuref(...) to report specific constraint violations
+- Include #include <unordered_set> if using unordered_set
+- Exit 0 on success, non-zero on failure
+- Do not print anything on success
+
+Minimal skeleton (illustrative only):
+#include "testlib.h"
+#include <unordered_set>
+int main(int argc, char* argv[]) {{
+  registerValidation(argc, argv);
+  int n = inf.readInt();
+  inf.readSpace();
+  int m = inf.readInt();
+  inf.readEoln();
+  ensuref(n >= 1, "n must be >= 1");
+  std::string s = inf.readToken();
+  inf.readEof();
+  return 0;
+}}
 
 Problem Description:
 {problem_desc}
@@ -133,17 +202,14 @@ Constraints:
 Public Tests:
 {json.dumps(public_tests, indent=2)}
 {feedback_block}
-Return ONLY valid JSON:
-{{
-  "validator_cpp": "..."
-}}
+Return ONLY a JSON object. No other text, no markdown.
+Schema:
+{{"validator_cpp": "<complete C++17 source>"}}
 """
 
 
+
 def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
-    '''
-    生成checker程序的prompt
-    '''
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     builtin = [
         "ncmp (ordered int64 sequence)",
@@ -158,6 +224,24 @@ def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_
     return f"""You are a checker agent. Decide whether the problem has multiple valid outputs.
 If single-solution, implement a checker that computes the expected output and compares against the candidate output.
 If multi-solution, implement a checker that validates the candidate output against the problem requirements.
+
+Hard requirements:
+- Use testlib: #include "testlib.h"
+- Call registerTestlibCmd(argc, argv)
+- Read input via inf, candidate output via ouf, reference answer via ans when applicable
+- For multi-solution, ignore ans and validate output against requirements
+- Use quitf(_ok/_wa/_fail) with specific error messages
+
+Minimal skeleton (illustrative only):
+#include "testlib.h"
+int main(int argc, char* argv[]) {{
+  registerTestlibCmd(argc, argv);
+  int n = inf.readInt();
+  int ansv = ans.readInt();
+  int outv = ouf.readInt();
+  if (outv != ansv) quitf(_wa, "mismatch");
+  quitf(_ok, "ok");
+}}
 
 Input files:
 - argv[1]: input file path
@@ -179,58 +263,95 @@ Constraints:
 Public Tests:
 {json.dumps(public_tests, indent=2)}
 {feedback_block}
-Return ONLY valid JSON:
+Return ONLY a JSON object. No other text, no markdown.
+Schema:
 {{
   "is_multi_solution": false,
-  "checker_cpp": "..."
+  "checker_cpp": "<complete C++17 source>"
 }}
 """
 
 
-def build_outputs_prompt(problem_desc: str, inputs: List[str], feedback: str) -> str:
-    '''
-    LLM-1输出生成prompt
-    '''
+
+def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], tier_instruction: str, feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    items = [{"id": i, "input": inp} for i, inp in enumerate(inputs)]
-    return f"""You are an output agent. For each input, produce the correct output for the problem.
-Return ONLY valid JSON with outputs in the same order.
+    return f"""You are a solver agent. Write a complete C++17 program that reads a single test case from stdin and prints the correct output.
+
+Core instruction:
+- {tier_instruction}
+
+Hard requirements:
+- Output ONLY the C++17 source code, no markdown, no explanations
+- Deterministic, no randomness
+- Handle all edge cases
+- Use standard libraries only
+- Use fast I/O
 
 Problem Description:
 {problem_desc}
 
-Inputs:
-{json.dumps(items, indent=2)}
+Constraints:
+{json.dumps(constraints, indent=2)}
+
+Public Tests:
+{json.dumps(public_tests, indent=2)}
 {feedback_block}
-Return ONLY valid JSON:
-{{
-  "outputs": [
-    {{"id": 0, "output": "..."}}
-  ]
-}}
+Return ONLY the C++17 code.
 """
 
 
-def run_checker(checker_exe: Path, input_path: Path, output_path: Path, timeout: int = 2) -> Tuple[bool, str]:
-    '''
-    调用checker验证输出的合法性
-    '''
-    code, _, err = run_program(checker_exe, args=[str(input_path), str(output_path)], timeout=timeout)
+def sanitize_cpp(code: str) -> str:
+    code = code.strip()
+    if code.startswith("```"):
+        lines = code.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        code = "\n".join(lines).strip()
+    return code
+
+
+
+def run_checker(checker_exe: Path, input_path: Path, output_path: Path, answer_path: Path, timeout: int = 2) -> Tuple[bool, str]:
+    code, _, err = run_program(
+        checker_exe,
+        args=[str(input_path), str(output_path), str(answer_path)],
+        timeout=timeout,
+    )
     return code == 0, err
 
 
 def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
     logger.info("[Node] Generating test cases")
 
-    llm = UnifiedLLMClient(state["config"])
+    config = state["config"]
     raw_problem = state.get("raw_problem", {})
     problem_desc = state["problem"].get("description", "")
     public_tests = state["problem"].get("public_tests", [])
     constraints = state["problem"].get("constraints", {})
 
+    role_models = {
+        "generator": "claude-opus-4-5-20251101",
+        "validator": "gpt-5.2",
+        "checker": "gpt-5.2",
+        "output": "gpt-5.2",
+    }
+
+    def role_client(role: str) -> UnifiedLLMClient:
+        role_cfg = dict(config)
+        role_cfg["model"] = role_models[role]
+        return UnifiedLLMClient(role_cfg)
+
+    gen_llm = role_client("generator")
+    val_llm = role_client("validator")
+    chk_llm = role_client("checker")
+    out_llm = role_client("output")
+
     llm_calls = 0
     max_iter = 3
     target_count = 10
+    output_max_iter = 5
 
     problem_code = extract_problem_code(raw_problem)
     problem_dir = safe_problem_dir_name(raw_problem)
@@ -239,6 +360,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
     tests_dir = generated_root / "tests"
     code_dir.mkdir(parents=True, exist_ok=True)
     tests_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "_probe.txt").write_text("probe", encoding="utf-8")
 
     ac_path = Path("data") / "problems" / "ac" / f"{problem_code}.cpp" if problem_code else None
     if ac_path and ac_path.exists():
@@ -252,8 +374,9 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
     for attempt in range(1, max_iter + 1):
         gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback)
-        gen_response = llm.generate(gen_prompt)
+        gen_response = gen_llm.generate(gen_prompt)
         llm_calls += 1
+        (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
         try:
             gen_data = parse_json_response(gen_response)
             generator_cpp = gen_data.get("generator_cpp", "")
@@ -264,14 +387,17 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         gen_path = code_dir / f"generator_{attempt}.cpp"
         gen_path.write_text(generator_cpp, encoding="utf-8")
         gen_exe = code_dir / f"generator_{attempt}.exe"
-        gen_ok, gen_log = compile_cpp(gen_path, gen_exe)
+        gen_ok, gen_log = compile_cpp(gen_path, gen_exe, include_testlib=True)
         if not gen_ok:
             gen_feedback = f"Generator compile failed: {gen_log}"
+            (code_dir / f"generator_{attempt}.log").write_text(gen_log, encoding="utf-8")
             continue
 
         val_prompt = build_validator_prompt(problem_desc, constraints, public_tests, val_feedback)
-        val_response = llm.generate(val_prompt)
+        val_response = val_llm.generate(val_prompt)
         llm_calls += 1
+        logger.info(f"[GV] Validator response length: {len(val_response)}")
+        (code_dir / f"validator_{attempt}_raw.txt").write_text(val_response, encoding="utf-8")
         try:
             val_data = parse_json_response(val_response)
             validator_cpp = val_data.get("validator_cpp", "")
@@ -282,9 +408,10 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         val_path = code_dir / f"validator_{attempt}.cpp"
         val_path.write_text(validator_cpp, encoding="utf-8")
         val_exe = code_dir / f"validator_{attempt}.exe"
-        val_ok, val_log = compile_cpp(val_path, val_exe)
+        val_ok, val_log = compile_cpp(val_path, val_exe, include_testlib=True)
         if not val_ok:
             val_feedback = f"Validator compile failed: {val_log}"
+            (code_dir / f"validator_{attempt}.log").write_text(val_log, encoding="utf-8")
             continue
 
         generated_inputs = []
@@ -292,17 +419,39 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         max_attempts = target_count * 5
         while len(generated_inputs) < target_count and attempts < max_attempts:
             seed = str(1000 + attempts)
-            code, out, err = run_program(gen_exe, args=[seed], timeout=2)
-            attempts += 1
-            if code != 0:
-                gen_feedback = f"Generator runtime error: {err}"
+            output_path = tests_dir / f"gen_{attempt}_{attempts}.in"
+            try:
+                with output_path.open("w", encoding="utf-8") as out_file:
+                    result = subprocess.run(
+                        [str(gen_exe), seed],
+                        stdout=out_file,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=2,
+                    )
+            except subprocess.TimeoutExpired:
+                attempts += 1
+                gen_feedback = "Generator timed out"
+                (tests_dir / f"gen_{attempt}_{attempts}_runtime_err.txt").write_text("timeout", encoding="utf-8")
                 continue
+
+            attempts += 1
+            if result.returncode != 0:
+                err = result.stderr or ""
+                gen_feedback = f"Generator runtime error: {err}"
+                (tests_dir / f"gen_{attempt}_{attempts}_runtime_err.txt").write_text(err, encoding="utf-8")
+                continue
+
+            out = output_path.read_text(encoding="utf-8")
             if not out.strip():
                 gen_feedback = "Generator produced empty output"
+                (tests_dir / f"gen_{attempt}_{attempts}_empty.txt").write_text("EMPTY", encoding="utf-8")
                 continue
+
             v_code, _, v_err = run_program(val_exe, input_text=out, timeout=2)
             if v_code != 0:
                 val_feedback = f"Validator rejected input: {v_err}"
+                (tests_dir / f"gen_{attempt}_{attempts}_reject.txt").write_text(v_err, encoding="utf-8")
                 continue
             generated_inputs.append(out.strip() + "\n")
 
@@ -319,7 +468,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
     if ac_path and ac_path.exists():
         ac_exe = code_dir / "ac_solution.exe"
-        ac_ok, ac_log = compile_cpp(ac_path, ac_exe)
+        ac_ok, ac_log = compile_cpp(ac_path, ac_exe, include_testlib=True)
         if not ac_ok:
             logger.warning(f"[AC] Compile failed: {ac_log}")
             ac_exe = None
@@ -338,19 +487,20 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         checker_exe = None
         for attempt in range(1, max_iter + 1):
             checker_prompt = build_checker_prompt(problem_desc, constraints, public_tests, checker_feedback)
-            checker_response = llm.generate(checker_prompt)
+            checker_response = chk_llm.generate(checker_prompt, temperature=0.0)
             llm_calls += 1
+            (code_dir / f"checker_{attempt}_raw.txt").write_text(checker_response, encoding="utf-8")
             try:
                 checker_data = parse_json_response(checker_response)
                 checker_cpp = checker_data.get("checker_cpp", "")
             except Exception:
-                checker_feedback = "Invalid JSON for checker"
+                checker_feedback = "Invalid JSON for checker (must return pure JSON with checker_cpp)"
                 continue
 
             checker_path = code_dir / f"checker_{attempt}.cpp"
             checker_path.write_text(checker_cpp, encoding="utf-8")
             checker_exe = code_dir / f"checker_{attempt}.exe"
-            checker_ok, checker_log = compile_cpp(checker_path, checker_exe)
+            checker_ok, checker_log = compile_cpp(checker_path, checker_exe, include_testlib=True)
             if not checker_ok:
                 checker_feedback = f"Checker compile failed: {checker_log}"
                 continue
@@ -361,7 +511,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
                 output_path = tests_dir / f"public_{i}.out"
                 input_path.write_text(pt.get("input", ""), encoding="utf-8")
                 output_path.write_text(pt.get("output", ""), encoding="utf-8")
-                ok, err = run_checker(checker_exe, input_path, output_path)
+                ok, err = run_checker(checker_exe, input_path, output_path, output_path)
                 if not ok:
                     public_ok = False
                     checker_feedback = f"Public test {i} failed: {err}"
@@ -373,40 +523,74 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         if checker_exe is None:
             logger.warning("[CHECKER] Failed to build checker, using public tests only")
         else:
-            output_map = {}
+            solver_tiers = [
+                "Implement the simplest correct solution. You may ignore time and memory limits; brute force is acceptable.",
+                "Optimize moderately to handle larger inputs, but correctness is more important than performance.",
+                "Implement a solution that meets the stated constraints efficiently.",
+            ]
+
             output_feedback = ""
-            for attempt in range(1, max_iter + 1):
-                output_prompt = build_outputs_prompt(problem_desc, generated_inputs, output_feedback)
-                output_response = llm.generate(output_prompt)
-                llm_calls += 1
-                try:
-                    output_data = parse_json_response(output_response)
-                except Exception:
-                    output_feedback = "Invalid JSON for outputs"
-                    continue
+            solver_ok = False
+            for tier_idx, tier_instruction in enumerate(solver_tiers):
+                solver_feedback = output_feedback
+                for attempt in range(1, output_max_iter + 1):
+                    solver_prompt = build_solver_prompt(problem_desc, constraints, public_tests, tier_instruction, solver_feedback)
+                    solver_response = out_llm.generate(solver_prompt)
+                    llm_calls += 1
+                    (code_dir / f"solver_{tier_idx + 1}_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
+                    solver_cpp = sanitize_cpp(solver_response)
 
-                outputs = output_data.get("outputs", [])
-                output_map = {item.get("id"): item.get("output", "") for item in outputs}
-                missing = [i for i in range(len(generated_inputs)) if i not in output_map]
-                if missing:
-                    output_feedback = f"Missing outputs for ids: {missing}"
-                    continue
+                    solver_path = code_dir / f"solver_{tier_idx + 1}_{attempt}.cpp"
+                    solver_path.write_text(solver_cpp, encoding="utf-8")
+                    solver_exe = code_dir / f"solver_{tier_idx + 1}_{attempt}.exe"
+                    solver_compile_ok, solver_log = compile_cpp(solver_path, solver_exe, include_testlib=False)
+                    if not solver_compile_ok:
+                        solver_feedback = f"Solver compile failed: {solver_log}"
+                        (code_dir / f"solver_{tier_idx + 1}_{attempt}.log").write_text(solver_log, encoding="utf-8")
+                        continue
 
-                failed = []
-                for i, inp in enumerate(generated_inputs):
-                    input_path = tests_dir / f"gen_{i}.in"
-                    output_path = tests_dir / f"gen_{i}.out"
-                    input_path.write_text(inp, encoding="utf-8")
-                    output_path.write_text(output_map[i], encoding="utf-8")
-                    ok, err = run_checker(checker_exe, input_path, output_path)
-                    if not ok:
-                        failed.append({"id": i, "error": err, "input": inp})
+                    failed = []
+                    timeout_or_runtime = False
+                    for i, inp in enumerate(generated_inputs):
+                        input_path = tests_dir / f"gen_{i}.in"
+                        output_path = tests_dir / f"gen_{i}.out"
+                        # Clean trailing empty lines from input
+                        cleaned_input = inp.rstrip("\n") + "\n"
+                        input_path.write_text(cleaned_input, encoding="utf-8")
+                        try:
+                            code, out, err = run_program(solver_exe, input_text=inp, timeout=2)
+                        except Exception as ex:
+                            code, out, err = 1, "", str(ex)
 
-                if not failed:
-                    generated_outputs = [output_map[i].strip() + "\n" for i in range(len(generated_inputs))]
+                        if code != 0 or not out.strip():
+                            timeout_or_runtime = True
+                            failed.append({"id": i, "error": err or "runtime error", "input": inp})
+                            break
+
+                        output_path.write_text(out.strip() + "\n", encoding="utf-8")
+                        ok, err = run_checker(checker_exe, input_path, output_path, output_path)
+                        if not ok:
+                            failed.append({"id": i, "error": err, "input": inp, "output": out})
+
+                    if not failed:
+                        generated_outputs = [
+                            (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
+                            for i in range(len(generated_inputs))
+                        ]
+                        solver_ok = True
+                        break
+
+                    solver_feedback = json.dumps(failed, indent=2)
+                    (tests_dir / f"solver_{tier_idx + 1}_{attempt}_failed.json").write_text(solver_feedback, encoding="utf-8")
+
+                    if timeout_or_runtime:
+                        break
+
+                if solver_ok:
                     break
 
-                output_feedback = json.dumps(failed, indent=2)
+            if not solver_ok:
+                logger.warning("[OUTPUT] Solver-based output generation failed, using public tests only")
 
     generated_tests = []
     for pt in public_tests:
@@ -438,13 +622,13 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         "generated": sum(1 for t in generated_tests if t["type"] == "generated"),
     }
 
-    tests = TestData(
-        generated_tests=generated_tests,
-        total_tests=len(generated_tests),
-        test_results=[],
-        passed_tests=0,
-        pass_rate=0.0,
-    )
+    tests = {
+        "generated_tests": generated_tests,
+        "total_tests": len(generated_tests),
+        "test_results": [],
+        "passed_tests": 0,
+        "pass_rate": 0.0,
+    }
 
     return {
         "tests": tests,
