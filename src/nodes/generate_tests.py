@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import json
 import re
 from pathlib import Path
+import shutil
 import subprocess
 from loguru import logger
 from src.graph.state import SolvitaState, TestData
@@ -69,12 +70,25 @@ def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
     return safe or "unknown"
 
 
+def _detect_compiler() -> Optional[str]:
+    """Return a usable C++ compiler binary path, if available."""
+
+    for candidate in ("g++", "clang++"):
+        path = shutil.which(candidate)
+        if path:
+            return path
+    return None
+
+
 def compile_cpp(source_path: Path, exe_path: Path, include_testlib: bool = False) -> Tuple[bool, str]:
     '''
     编译cpp程序(generator/validator/checker/AC解)
     '''
-    compiler = Path("E:/CLion 2025.2/bin/mingw/bin/g++.exe")
-    cmd = [str(compiler), "-std=c++17", "-O2"]
+    compiler = _detect_compiler()
+    if not compiler:
+        return False, "No C++ compiler found (tried g++ and clang++)"
+
+    cmd = [compiler, "-std=c++17", "-O2"]
     if include_testlib:
         cmd.append("-I.")
     cmd.extend([str(source_path), "-o", str(exe_path)])
@@ -110,6 +124,7 @@ def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], publi
 
 Hard requirements:
 - Use testlib: #include "testlib.h"
+- Do NOT use non-standard headers like #include <bits/stdc++.h>
 - Call registerGen(argc, argv, 1)
 - Use rnd.next(...) for randomness (no std::random, no srand/rand)
 - Do not parse or set a random seed inside the program
@@ -170,6 +185,7 @@ def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], publi
 
 Hard requirements:
 - Use testlib: #include "testlib.h"
+- Do NOT use non-standard headers like #include <bits/stdc++.h>
 - Call registerValidation(argc, argv)
 - Use inf.readInt/readLong/readToken to parse input
 - Use inf.readToken() WITHOUT pattern parameter to read arbitrary strings
@@ -227,6 +243,7 @@ If multi-solution, implement a checker that validates the candidate output again
 
 Hard requirements:
 - Use testlib: #include "testlib.h"
+- Do NOT use non-standard headers like #include <bits/stdc++.h>
 - Call registerTestlibCmd(argc, argv)
 - Read input via inf, candidate output via ouf, reference answer via ans when applicable
 - For multi-solution, ignore ans and validate output against requirements
@@ -282,6 +299,7 @@ Core instruction:
 
 Hard requirements:
 - Output ONLY the C++17 source code, no markdown, no explanations
+- Do NOT use non-standard headers like #include <bits/stdc++.h>
 - Deterministic, no randomness
 - Handle all edge cases
 - Use standard libraries only
@@ -350,7 +368,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
     llm_calls = 0
     max_iter = 3
-    target_count = 10
+    target_count = int((state.get("config", {}) or {}).get("generate_tests_target_count", 200))
     output_max_iter = 5
 
     problem_code = extract_problem_code(raw_problem)
@@ -460,6 +478,25 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
         gen_feedback = f"Only produced {len(generated_inputs)} valid inputs"
 
+    # ========== Input Generation Cleanup ==========
+    # After input generation phase completes (whether successful or not),
+    # remove all temporary gen_*_*.in files from failed iterations
+    # This prevents confusion with the final successful attempt
+    if generated_inputs:
+        import glob
+        logger.info(f"[CLEANUP-INPUT] Generated {len(generated_inputs)} inputs, cleaning up failed attempts...")
+        
+        # Find all gen_*_*.in files (from iterations that didn't complete or failed)
+        stale_inputs = glob.glob(str(tests_dir / "gen_[0-9]*_[0-9]*.in"))
+        if stale_inputs:
+            for stale_file in stale_inputs:
+                try:
+                    Path(stale_file).unlink()
+                    logger.debug(f"Removed stale input: {Path(stale_file).name}")
+                except Exception as e:
+                    logger.debug(f"Failed to remove {Path(stale_file).name}: {e}")
+            logger.info(f"[CLEANUP-INPUT] Removed {len(stale_inputs)} stale input files from failed iterations")
+
     if not generated_inputs:
         logger.warning("[GV] Failed to generate inputs, using public tests only")
 
@@ -549,6 +586,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
                         (code_dir / f"solver_{tier_idx + 1}_{attempt}.log").write_text(solver_log, encoding="utf-8")
                         continue
 
+
                     failed = []
                     timeout_or_runtime = False
                     for i, inp in enumerate(generated_inputs):
@@ -562,15 +600,18 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
                         except Exception as ex:
                             code, out, err = 1, "", str(ex)
 
+
                         if code != 0 or not out.strip():
                             timeout_or_runtime = True
                             failed.append({"id": i, "error": err or "runtime error", "input": inp})
                             break
 
+
                         output_path.write_text(out.strip() + "\n", encoding="utf-8")
                         ok, err = run_checker(checker_exe, input_path, output_path, output_path)
                         if not ok:
                             failed.append({"id": i, "error": err, "input": inp, "output": out})
+
 
                     if not failed:
                         generated_outputs = [
@@ -579,6 +620,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
                         ]
                         solver_ok = True
                         break
+
 
                     solver_feedback = json.dumps(failed, indent=2)
                     (tests_dir / f"solver_{tier_idx + 1}_{attempt}_failed.json").write_text(solver_feedback, encoding="utf-8")
@@ -591,6 +633,37 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
             if not solver_ok:
                 logger.warning("[OUTPUT] Solver-based output generation failed, using public tests only")
+
+    # ========== Cleanup Phase ==========
+    # Remove stale temporary input files from failed iterations
+    # Keep only the final gen_*.in/out files that correspond to the successful inputs
+    if (generated_inputs and generated_outputs) or generated_inputs:
+        import glob
+        import shutil
+        logger.info("[CLEANUP] Removing stale test files from failed iterations...")
+        
+        # Count and remove all gen_*_*.in files (temporary inputs from failed attempts)
+        stale_inputs = glob.glob(str(tests_dir / "gen_*_*.in"))
+        stale_count = 0
+        for stale_file in stale_inputs:
+            try:
+                Path(stale_file).unlink()
+                stale_count += 1
+            except Exception as e:
+                logger.debug(f"Failed to remove {Path(stale_file).name}: {e}")
+        
+        if stale_count > 0:
+            logger.info(f"[CLEANUP] Removed {stale_count} stale input files (gen_*_*.in)")
+        
+        # Also remove temporary marker files from failed validation/generation attempts
+        for pattern in ["gen_*_*_reject.txt", "gen_*_*_empty.txt", "gen_*_*_runtime_err.txt",
+                        "solver_*_*_failed.json"]:
+            stale_markers = glob.glob(str(tests_dir / pattern))
+            for f in stale_markers:
+                try:
+                    Path(f).unlink()
+                except:
+                    pass
 
     generated_tests = []
     for pt in public_tests:
