@@ -2,10 +2,9 @@
 
 from typing import Dict, Any
 from loguru import logger
-from src.graph.state import SolvitaState
 
 
-def retrieve_knowledge_node(state: SolvitaState) -> Dict[str, Any]:
+def retrieve_knowledge_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Retrieve relevant knowledge from knowledge base
     

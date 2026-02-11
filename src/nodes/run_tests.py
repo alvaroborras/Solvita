@@ -1,28 +1,35 @@
 """Run Tests Node - Execute tests against compiled code"""
 
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 import subprocess
 from loguru import logger
-from src.graph.state import SolvitaState
+
+if TYPE_CHECKING:
+    from src.graph.state import SolvitaState
 
 
-def run_tests_node(state: SolvitaState) -> Dict[str, Any]:
+import tempfile
+from pathlib import Path
+from src.utils.cpp_execution import run_checker
+
+def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Run test cases against compiled executable
     
     Returns:
-    - test_results: list of results for each test
-    - passed_tests: count of passed tests
-    - pass_rate: percentage of tests passed
+        test_results: list of results for each test
+        passed_tests: count of passed tests
+        pass_rate: percentage of tests passed
     """
     logger.info("[Node] Running tests")
     
     exe_path = state['solution'].get('executable_path')
-    tests = state['tests'].get('generated_tests', [])
+    tests_data = state.get('tests', {})
+    tests = tests_data.get('generated_tests', [])
+    checker_exe = tests_data.get('checker_exe')
     
     if not exe_path:
         logger.debug("No executable path found (waiting for compilation)")
-        # Don't modify tests field when no executable - just return empty update
         return {
             "execution_log": ["Waiting for compilation"],
         }
@@ -30,54 +37,77 @@ def run_tests_node(state: SolvitaState) -> Dict[str, Any]:
     results = []
     passed = 0
     
-    for i, test in enumerate(tests):
-        test_input = test.get('input', '')
-        expected = test.get('expected_output', '').strip()
+    # Create a temp dir for test files (checker needs files)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
         
-        try:
-            # Run executable with test input
-            result = subprocess.run(
-                [exe_path],
-                input=test_input,
-                capture_output=True,
-                text=True,
-                timeout=2  # 2 second timeout per test
-            )
+        for i, test in enumerate(tests):
+            test_input = test.get('input', '')
+            expected = test.get('expected_output', '').strip()
             
-            actual = result.stdout.strip()
+            try:
+                # Run executable with test input
+                result = subprocess.run(
+                    [exe_path],
+                    input=test_input,
+                    capture_output=True,
+                    text=True,
+                    timeout=2  # 2 second timeout per test
+                )
+                
+                actual = result.stdout.strip()
+                passed_test = False
+                error_msg = result.stderr if result.stderr else None
+
+                if checker_exe and Path(checker_exe).exists():
+                    # Use Special Checker
+                    input_file = tmp_path / f"input_{i}.txt"
+                    output_file = tmp_path / f"output_{i}.txt"
+                    answer_file = tmp_path / f"answer_{i}.txt"
+                    
+                    input_file.write_text(test_input, encoding="utf-8")
+                    output_file.write_text(result.stdout, encoding="utf-8") # Use raw stdout for checker
+                    answer_file.write_text(expected, encoding="utf-8")
+                    
+                    chk_ok, chk_msg = run_checker(Path(checker_exe), input_file, output_file, answer_file)
+                    passed_test = chk_ok
+                    if not passed_test:
+                        # Append checker message to error
+                        error_msg = f"{error_msg or ''}\nChecker: {chk_msg}".strip()
+                else:
+                    # Fallback to string equality
+                    passed_test = (actual == expected)
+                
+                if passed_test:
+                    passed += 1
+                
+                results.append({
+                    'test_id': i,
+                    'input': test_input,
+                    'expected': expected,
+                    'actual': actual,
+                    'passed': passed_test,
+                    'error': error_msg,
+                })
             
-            # Compare output
-            passed_test = (actual == expected)
-            if passed_test:
-                passed += 1
-            
-            results.append({
-                'test_id': i,
-                'input': test_input,
-                'expected': expected,
-                'actual': actual,
-                'passed': passed_test,
-                'error': result.stderr if result.stderr else None,
-            })
-        
-        except subprocess.TimeoutExpired:
-            results.append({
-                'test_id': i,
-                'input': test_input,
-                'expected': expected,
-                'actual': '',
-                'passed': False,
-                'error': 'Timeout',
-            })
-        except Exception as e:
-            results.append({
-                'test_id': i,
-                'input': test_input,
-                'expected': expected,
-                'actual': '',
-                'passed': False,
-                'error': str(e),
-            })
+            except subprocess.TimeoutExpired:
+                results.append({
+                    'test_id': i,
+                    'input': test_input,
+                    'expected': expected,
+                    'actual': '',
+                    'passed': False,
+                    'error': 'Timeout',
+                })
+            except Exception as e:
+                results.append({
+                    'test_id': i,
+                    'input': test_input,
+                    'expected': expected,
+                    'actual': '',
+                    'passed': False,
+                    'error': str(e),
+                })
     
     total = len(tests)
     pass_rate = passed / total if total > 0 else 0.0

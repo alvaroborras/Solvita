@@ -1,10 +1,12 @@
 """Plan Solution Node - Generate solution approach"""
 
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 import json
 from loguru import logger
-from src.graph.state import SolvitaState, PlanData
 from src.llm import UnifiedLLMClient
+
+if TYPE_CHECKING:
+    from src.graph.state import SolvitaState, PlanData
 
 
 def parse_json_response(response: str) -> dict:
@@ -39,7 +41,7 @@ def parse_json_response(response: str) -> dict:
         raise
 
 
-def plan_solution_node(state: SolvitaState) -> Dict[str, Any]:
+def plan_solution_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Plan solution approach using LLM
 
@@ -107,12 +109,12 @@ Return ONLY the JSON object, no additional text."""
         implementation_steps = ["Analyze problem", "Implement solution", "Test edge cases"]
         plan_data = {'response': response}
 
-    # Create plan data
-    plan = PlanData(
-        solution_plan=plan_data,
-        algorithm_choice=algorithm_choice,
-        implementation_steps=implementation_steps,
-    )
+    # Create plan dict (avoiding PlanData import for circular dep fix)
+    plan = {
+        "solution_plan": plan_data,
+        "algorithm_choice": algorithm_choice,
+        "implementation_steps": implementation_steps,
+    }
 
     return {
         "plan": plan,
@@ -120,6 +122,6 @@ Return ONLY the JSON object, no additional text."""
             f"✓ Solution plan generated: {algorithm_choice}",
             f"  Implementation steps: {len(implementation_steps)}"
         ],
-        "llm_calls": state['llm_calls'] + 1,
+        "llm_calls": 1,
     }
 

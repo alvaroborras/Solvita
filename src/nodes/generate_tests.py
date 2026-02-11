@@ -1,14 +1,16 @@
 """Generate Tests Node - Create test cases for the problem"""
 
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
 import json
 import re
 from pathlib import Path
 import shutil
 import subprocess
 from loguru import logger
-from src.graph.state import SolvitaState, TestData
 from src.llm import UnifiedLLMClient
+
+if TYPE_CHECKING:
+    from src.graph.state import SolvitaState, TestData
 
 
 def parse_json_response(response: str) -> dict:
@@ -51,71 +53,74 @@ def parse_json_response(response: str) -> dict:
 def extract_problem_code(raw_problem: Dict[str, Any]) -> Optional[str]:
     '''
     正则提取题号，用于AC解的路径拼接
+
+    支持多种格式：
+    - _metadata.problem_id: "1575_A"
+    - _metadata.name: "1575_A. Another Sorting Problem"
+    - _metadata.question_id: "1873_A"
     '''
     metadata = raw_problem.get("_metadata", {})
-    problem_id = metadata.get("problem_id", "")
-    match = re.match(r"^(\d+_[A-Z])", problem_id)
-    if match:
-        return match.group(1)
+
+    # 尝试多个可能的字段
+    problem_id = None
+    for key in ("problem_id", "name", "question_id"):
+        val = metadata.get(key)
+        if val:
+            problem_id = val
+            break
+
+    if not problem_id:
+        return None
+
+    # 如果是 "1575_A. Another Sorting Problem" 格式，提取 "1575_A"
+    if isinstance(problem_id, str):
+        # 尝试匹配 "数字_字母" 格式
+        match = re.match(r"^(\d+_[A-Z])", problem_id)
+        if match:
+            return match.group(1)
+        # 如果已经是 "1575_A" 格式，直接返回
+        match = re.match(r"^(\d+_[A-Z])$", problem_id)
+        if match:
+            return problem_id
+
     return None
 
 
 def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
     '''
     生成安全目录名 data/generated/{problem_id}
+
+    支持多种格式：
+    - _metadata.problem_id: "1575_A"
+    - _metadata.name: "1575_A. Another Sorting Problem"
+    - _metadata.question_id: "1873_A"
     '''
     metadata = raw_problem.get("_metadata", {})
-    problem_id = metadata.get("problem_id", "unknown")
-    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", problem_id).strip("_")
-    return safe or "unknown"
 
+    # 尝试多个可能的字段
+    problem_id = None
+    for key in ("problem_id", "name", "question_id"):
+        val = metadata.get(key)
+        if val:
+            problem_id = val
+            break
 
-def _detect_compiler() -> Optional[str]:
-    """Return a usable C++ compiler binary path, if available."""
+    if not problem_id:
+        return "unknown"
 
-    for candidate in ("g++", "clang++"):
-        path = shutil.which(candidate)
-        if path:
-            return path
-    return None
+    # 如果是 "1575_A. Another Sorting Problem" 格式，只取 "1575_A"
+    if isinstance(problem_id, str):
+        # 提取 "数字_字母" 部分
+        match = re.match(r"^(\d+_[A-Z])", problem_id)
+        if match:
+            problem_id = match.group(1)
+        # 清理路径名中的非法字符
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", problem_id).strip("_")
+        return safe or "unknown"
 
+    return str(problem_id)
 
-def compile_cpp(source_path: Path, exe_path: Path, include_testlib: bool = False) -> Tuple[bool, str]:
-    '''
-    编译cpp程序(generator/validator/checker/AC解)
-    '''
-    compiler = _detect_compiler()
-    if not compiler:
-        return False, "No C++ compiler found (tried g++ and clang++)"
-
-    cmd = [compiler, "-std=c++17", "-O2"]
-    if include_testlib:
-        cmd.append("-I.")
-    cmd.extend([str(source_path), "-o", str(exe_path)])
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-    )
-    output = (result.stdout or "") + (result.stderr or "")
-    return result.returncode == 0, output
-
-
-def run_program(exe_path: Path, input_text: Optional[str] = None, args: Optional[List[str]] = None, timeout: int = 2) -> Tuple[int, str, str]:
-    '''
-    统一运行可执行文件 支持stdin与argv参数
-    '''
-    cmd = [str(exe_path)]
-    if args:
-        cmd.extend(args)
-    result = subprocess.run(
-        cmd,
-        input=input_text,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    return result.returncode, result.stdout, result.stderr
+from src.utils.cpp_execution import compile_cpp, run_program, run_checker, sanitize_cpp
 
 
 def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
@@ -318,29 +323,59 @@ Return ONLY the C++17 code.
 """
 
 
-def sanitize_cpp(code: str) -> str:
-    code = code.strip()
-    if code.startswith("```"):
-        lines = code.split("\n")
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        code = "\n".join(lines).strip()
-    return code
+def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int) -> str:
+    """
+    Format solver feedback for LLM iteration.
+
+    Only include representative failures (up to 3) to keep prompt concise,
+    plus actionable debugging guidance.
+    """
+    lines = [f"Your code failed {len(failed)} out of {total_run} cases tested ({total_verify} total):"]
+
+    # Categorize failures
+    compile_errors = [f for f in failed if f.get("type") == "compile_error"]
+    runtime_errors = [f for f in failed if f.get("type") == "runtime_error"]
+    wrong_answers = [f for f in failed if f.get("type") == "wrong_answer"]
+
+    # Pick representative failures (up to 3 total)
+    picked = []
+    if compile_errors:
+        picked.append(compile_errors[0])
+    if runtime_errors:
+        picked.append(runtime_errors[0])
+    if wrong_answers:
+        picked.extend(wrong_answers[:2])
+
+    for f in picked[:3]:
+        if f.get("type") == "compile_error":
+            lines.append(f"  Compilation error:\n    {f.get('message', '?')[:500]}")
+        elif f.get("type") == "runtime_error":
+            lines.append(f"  Runtime error on test {f.get('id', '?')}:")
+            lines.append(f"    Error: {f.get('message', '?')}")
+        elif f.get("type") == "wrong_answer":
+            lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
+            inp = f.get('input', '?')[:100]
+            expected = f.get('expected', '?')[:100]
+            actual = f.get('actual', '?')[:100]
+            lines.append(f"    Input:    {inp}")
+            lines.append(f"    Expected: {expected}")
+            lines.append(f"    Actual:   {actual}")
+
+    lines.append("")
+    lines.append("Debug checklist (verify these in your code):")
+    lines.append("  1. Index base: output should use 1-based indices (not 0-based)")
+    lines.append("  2. Comparison logic: odd positions (1,3,5...) ascending, even positions descending")
+    lines.append("  3. String length: all input strings have exactly m characters")
+    lines.append("  4. Output format: numbers separated by spaces, ending with newline")
+    lines.append("  5. Edge cases: n=1, or when strings differ at first position")
+
+    lines.append("")
+    lines.append("Please fix these issues and regenerate the code.")
+    return "\n".join(lines)
 
 
 
-def run_checker(checker_exe: Path, input_path: Path, output_path: Path, answer_path: Path, timeout: int = 2) -> Tuple[bool, str]:
-    code, _, err = run_program(
-        checker_exe,
-        args=[str(input_path), str(output_path), str(answer_path)],
-        timeout=timeout,
-    )
-    return code == 0, err
-
-
-def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
+def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     logger.info("[Node] Generating test cases")
 
     config = state["config"]
@@ -478,25 +513,6 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
         gen_feedback = f"Only produced {len(generated_inputs)} valid inputs"
 
-    # ========== Input Generation Cleanup ==========
-    # After input generation phase completes (whether successful or not),
-    # remove all temporary gen_*_*.in files from failed iterations
-    # This prevents confusion with the final successful attempt
-    if generated_inputs:
-        import glob
-        logger.info(f"[CLEANUP-INPUT] Generated {len(generated_inputs)} inputs, cleaning up failed attempts...")
-        
-        # Find all gen_*_*.in files (from iterations that didn't complete or failed)
-        stale_inputs = glob.glob(str(tests_dir / "gen_[0-9]*_[0-9]*.in"))
-        if stale_inputs:
-            for stale_file in stale_inputs:
-                try:
-                    Path(stale_file).unlink()
-                    logger.debug(f"Removed stale input: {Path(stale_file).name}")
-                except Exception as e:
-                    logger.debug(f"Failed to remove {Path(stale_file).name}: {e}")
-            logger.info(f"[CLEANUP-INPUT] Removed {len(stale_inputs)} stale input files from failed iterations")
-
     if not generated_inputs:
         logger.warning("[GV] Failed to generate inputs, using public tests only")
 
@@ -589,7 +605,9 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
 
                     failed = []
                     timeout_or_runtime = False
+                    total_run = 0
                     for i, inp in enumerate(generated_inputs):
+                        total_run += 1
                         input_path = tests_dir / f"gen_{i}.in"
                         output_path = tests_dir / f"gen_{i}.out"
                         # Clean trailing empty lines from input
@@ -622,8 +640,9 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
                         break
 
 
-                    solver_feedback = json.dumps(failed, indent=2)
+                    solver_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
                     (tests_dir / f"solver_{tier_idx + 1}_{attempt}_failed.json").write_text(solver_feedback, encoding="utf-8")
+                    output_feedback = solver_feedback  # Update outer feedback for next iteration
 
                     if timeout_or_runtime:
                         break
@@ -701,6 +720,7 @@ def generate_tests_node(state: SolvitaState) -> Dict[str, Any]:
         "test_results": [],
         "passed_tests": 0,
         "pass_rate": 0.0,
+        "checker_exe": str(checker_exe) if checker_exe else None,
     }
 
     return {

@@ -1,14 +1,16 @@
 """Compile Code Node - Compile C++ code"""
 
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 import subprocess
 import tempfile
 import os
 from loguru import logger
-from src.graph.state import SolvitaState
+
+if TYPE_CHECKING:
+    from src.graph.state import SolvitaState
 
 
-def compile_code_node(state: SolvitaState) -> Dict[str, Any]:
+def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Compile C++ code using g++
     

@@ -1,11 +1,13 @@
 """Unified Check Node - Check solution status and decide next step"""
 
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 from loguru import logger
-from src.graph.state import SolvitaState
+
+if TYPE_CHECKING:
+    from src.graph.state import SolvitaState
 
 
-def unified_check_node(state: SolvitaState) -> Dict[str, Any]:
+def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Unified check node that determines solution status and iteration control
 

@@ -1,9 +1,9 @@
 """Routing Functions - Conditional edge routing logic"""
 
-from src.graph.state import SolvitaState
+from typing import Dict, Any
 
 
-def status_routing(state: SolvitaState) -> str:
+def status_routing(state: Dict[str, Any]) -> str:
     """
     Routing function based on solution status
     
@@ -21,7 +21,7 @@ def status_routing(state: SolvitaState) -> str:
         return "continue"
 
 
-def compilation_routing(state: SolvitaState) -> str:
+def compilation_routing(state: Dict[str, Any]) -> str:
     """
     Routing function after compilation
     
@@ -33,4 +33,3 @@ def compilation_routing(state: SolvitaState) -> str:
         return "success"
     else:
         return "failed"
-
