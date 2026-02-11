@@ -23,7 +23,7 @@ class UnifiedLLMClient:
                 - api_key: API authentication key
                 - model: Model name/identifier
                 - temperature: Sampling temperature (default: 0.1)
-                - max_tokens: Maximum tokens to generate (default: 4096)
+                - max_tokens: Maximum tokens to generate (default: 128000)
         """
         self.config = config or {}
 
@@ -40,7 +40,7 @@ class UnifiedLLMClient:
                         self.api_key = self.config.get('api_key', llm_config.get('api_key', ''))
                         self.model = self.config.get('model', llm_config.get('model', 'gpt-4'))
                         self.temperature = self.config.get('temperature', llm_config.get('temperature', 0.1))
-                        self.max_tokens = self.config.get('max_tokens', llm_config.get('max_tokens', 4096))
+                        self.max_tokens = self.config.get('max_tokens', llm_config.get('max_tokens', 128000))
                         self.client = self._initialize_client()
                         return
             except Exception as e:
@@ -51,7 +51,7 @@ class UnifiedLLMClient:
         self.api_key = self.config.get('api_key', 'sk-<redacted>')
         self.model = self.config.get('model', 'claude-opus-4-5-20251101')
         self.temperature = self.config.get('temperature', 0.1)
-        self.max_tokens = self.config.get('max_tokens', 4096)
+        self.max_tokens = self.config.get('max_tokens', 128000)
 
         self.client = self._initialize_client()
     
