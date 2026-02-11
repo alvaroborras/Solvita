@@ -1,0 +1,23 @@
+{
+  "description": "Mr. Chanek lives in a city represented as a plane. He wants to build an amusement park in the shape of a circle of radius r. The circle must touch the origin (point (0, 0)).\n\nThere are n bird habitats that can be a photo spot for the tourists in the park. The i-th bird habitat is at point p_i = (x_i, y_i). \n\nFind the minimum radius r of a park with at least k bird habitats inside. \n\nA point is considered to be inside the park if and only if the distance between p_i and the center of the park is less than or equal to the radius of the park. Note that the center and the radius of the park do not need to be integers.\n\nIn this problem, it is guaranteed that the given input always has a solution with r ≤ 2 ⋅ 10^5.\n\nInput\n\nThe first line contains two integers n and k (1 ≤ n ≤ 10^5, 1 ≤ k ≤ n) — the number of bird habitats in the city and the number of bird habitats required to be inside the park.\n\nThe i-th of the next n lines contains two integers x_i and y_i (0 ≤ |x_i|, |y_i| ≤ 10^5) — the position of the i-th bird habitat.\n\nOutput\n\nOutput a single real number r denoting the minimum radius of a park with at least k bird habitats inside. It is guaranteed that the given input always has a solution with r ≤ 2 ⋅ 10^5.\n\nYour answer is considered correct if its absolute or relative error does not exceed 10^{-4}.\n\nFormally, let your answer be a, and the jury's answer be b. Your answer is accepted if and only if \\frac{|a - b|}{max{(1, |b|)}} ≤ 10^{-4}.\n\nExamples\n\nInput\n\n\n8 4\n-3 1\n-4 4\n1 5\n2 2\n2 -2\n-2 -4\n-1 -1\n-6 0\n\n\nOutput\n\n\n3.1622776589\n\n\nInput\n\n\n1 1\n0 0\n\n\nOutput\n\n\n0.0000000000\n\nNote\n\nIn the first example, Mr. Chanek can put the center of the park at (-3, -1) with radius √{10} ≈ 3.162. It can be proven this is the minimum r.\n\nThe following illustrates the first example. The blue points represent bird habitats and the red circle represents the amusement park.\n\n<image>",
+  "public_tests": [
+    {
+      "input": "8 4\n-3 1\n-4 4\n1 5\n2 2\n2 -2\n-2 -4\n-1 -1\n-6 0\n",
+      "output": "3.162277660\n"
+    },
+    {
+      "input": "1 1\n0 0\n",
+      "output": "0.000000000\n"
+    }
+  ],
+  "constraints": {},
+  "time_limit": 5.0,
+  "space_limit": 512000000,
+  "types": [],
+  "_metadata": {
+    "source": "codecontests",
+    "platform": 2,
+    "name": "1575_B. Building an Amusement Park",
+    "difficulty": 8
+  }
+}
