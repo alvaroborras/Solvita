@@ -263,6 +263,10 @@ def main():
     print(f"Total Duration: {elapsed:.2f}s")
     print(f"Final Status: {final_state.get('status')}")
     print(f"Total LLM Calls: {final_state.get('llm_calls')}")
+    print(f"Hack Rounds: {final_state.get('hack_round', 0)}")
+    print(f"Hack Passed: {final_state.get('hack_passed', False)}")
+    if final_state.get('hack_failures'):
+        print(f"Hack Failures: {len(final_state.get('hack_failures'))}")
     
     sol = final_state.get("solution", {})
     if sol.get("code"):
