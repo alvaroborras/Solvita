@@ -17,6 +17,8 @@ def _build_prompt(
     public_tests: List[Dict],
     generated_tests: List[Dict],
     feedback_text: str,
+    specific_failures: List[Dict] = None,
+    suggested_fixes: List[str] = None,
 ) -> str:
     """Build the enhanced prompt with constraints, samples, and structured feedback."""
 
@@ -50,6 +52,26 @@ def _build_prompt(
             + "\n".join(parts)
         )
 
+    # Format specific failures (CRITICAL)
+    failures_block = ""
+    if specific_failures:
+        parts = ["CRITICAL: The following specific test cases FAILED. You MUST fix them:"]
+        for i, fail in enumerate(specific_failures[:3]): # Show top 3 failures
+            parts.append(f"  Failure {i+1} ({fail.get('type', 'Unknown Error')}):")
+            parts.append(f"    Input:\n{_indent(fail.get('input', ''), 6)}")
+            if fail.get('expected'):
+                parts.append(f"    Expected:\n{_indent(fail.get('expected', ''), 6)}")
+            if fail.get('output'):
+                parts.append(f"    Actual Output:\n{_indent(fail.get('output', ''), 6)}")
+            if fail.get('details'):
+                 parts.append(f"    Details:\n{_indent(fail.get('details', ''), 6)}")
+        failures_block = "\n".join(parts)
+
+    # Format suggested fixes
+    fixes_block = ""
+    if suggested_fixes:
+        fixes_block = "Suggested Fixes:\n" + "\n".join([f"- {fix}" for fix in suggested_fixes])
+
     return f"""Generate a complete C++ solution for this competitive programming problem:
 
 Problem: {problem_desc}
@@ -67,6 +89,10 @@ Implementation steps:
 
 {feedback_text}
 
+{failures_block}
+
+{fixes_block}
+
 Requirements:
 - Use standard C++ (C++17)
 - Do NOT use non-standard headers like #include <bits/stdc++.h>
@@ -74,6 +100,7 @@ Requirements:
 - Implement fast I/O
 - Handle all edge cases
 - Optimize for time complexity
+- Pay special attention to the CRITICAL FAILURES above.
 
 Generate ONLY the complete C++ code, no explanations."""
 
@@ -312,11 +339,21 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     code = ""
     self_validation_log = []
 
+    # Extract specific failures and fixes if available
+    specific_failures = []
+    suggested_fixes = []
+    if state["iteration"] > 0:
+        feedback_data = state.get("feedback", {}).get("feedback", {})
+        specific_failures = feedback_data.get("failures", [])
+        suggested_fixes = state.get("feedback", {}).get("suggested_fixes", [])
+
     for attempt in range(1, max_self_attempts + 1):
         prompt = _build_prompt(
             problem_desc, algorithm, steps,
             constraints, public_tests, generated_tests,
             feedback_text,
+            specific_failures=specific_failures,
+            suggested_fixes=suggested_fixes,
         )
 
         code = llm.generate(prompt)

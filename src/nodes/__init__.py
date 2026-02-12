@@ -35,6 +35,12 @@ def __getattr__(name: str):
     elif name == "compilation_routing":
         from .routing import compilation_routing
         return compilation_routing
+    elif name == "hack_test_node":
+        from .hack_test import hack_test_node
+        return hack_test_node
+    elif name == "hack_routing":
+        from .routing import hack_routing
+        return hack_routing
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -47,7 +53,10 @@ __all__ = [
     "run_tests_node",
     "analyze_feedback_node",
     "unified_check_node",
+    "unified_check_node",
     "status_routing",
     "compilation_routing",
+    "hack_test_node",
+    "hack_routing",
 ]
 
