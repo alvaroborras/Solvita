@@ -7,7 +7,9 @@ from pathlib import Path
 import shutil
 import subprocess
 from loguru import logger
+from loguru import logger
 from src.llm import UnifiedLLMClient
+from src.memory import MemoryClient, FSMState, FailureType
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState, TestData
@@ -123,8 +125,9 @@ def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
 from src.utils.cpp_execution import compile_cpp, run_program, run_checker, sanitize_cpp
 
 
-def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
+def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, memory_advice: str = "") -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
+    advice_block = f"\n{memory_advice}\n" if memory_advice else ""
     return f"""You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
 
 Hard requirements:
@@ -176,7 +179,9 @@ Constraints:
 
 Public Tests:
 {json.dumps(public_tests, indent=2)}
+{json.dumps(public_tests, indent=2)}
 {feedback_block}
+{advice_block}
 Return ONLY a JSON object. No other text, no markdown.
 Schema:
 {{"generator_cpp": "<complete C++17 source>"}}
@@ -384,6 +389,10 @@ def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     public_tests = state["problem"].get("public_tests", [])
     constraints = state["problem"].get("constraints", {})
 
+    # Initialize Memory
+    memory = MemoryClient(config, problem_desc=problem_desc)
+
+
     role_models = {
         "generator": "claude-opus-4-5-20251101",
         "validator": "gpt-5.2",
@@ -426,7 +435,10 @@ def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     val_feedback = ""
 
     for attempt in range(1, max_iter + 1):
-        gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback)
+        # Retrieve advice from memory
+        advice = memory.get_advice(fsm_state=FSMState.GEN_DRAFT, attempt=attempt)
+        
+        gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback, memory_advice=advice)
         gen_response = gen_llm.generate(gen_prompt)
         llm_calls += 1
         (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
@@ -435,6 +447,7 @@ def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
             generator_cpp = gen_data.get("generator_cpp", "")
         except Exception:
             gen_feedback = "Invalid JSON for generator"
+            memory.log_outcome(FSMState.GEN_DRAFT, FailureType.JSON_FAIL, -1.0)
             continue
 
         gen_path = code_dir / f"generator_{attempt}.cpp"
@@ -444,6 +457,7 @@ def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
         if not gen_ok:
             gen_feedback = f"Generator compile failed: {gen_log}"
             (code_dir / f"generator_{attempt}.log").write_text(gen_log, encoding="utf-8")
+            memory.log_outcome(FSMState.GEN_COMPILE, FailureType.COMPILE_FAIL, -0.5)
             continue
 
         val_prompt = build_validator_prompt(problem_desc, constraints, public_tests, val_feedback)
@@ -493,22 +507,27 @@ def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
                 err = result.stderr or ""
                 gen_feedback = f"Generator runtime error: {err}"
                 (tests_dir / f"gen_{attempt}_{attempts}_runtime_err.txt").write_text(err, encoding="utf-8")
+                memory.log_outcome(FSMState.GEN_RUN, FailureType.RUNTIME_ERR, -0.2)
                 continue
 
             out = output_path.read_text(encoding="utf-8")
             if not out.strip():
                 gen_feedback = "Generator produced empty output"
                 (tests_dir / f"gen_{attempt}_{attempts}_empty.txt").write_text("EMPTY", encoding="utf-8")
+                memory.log_outcome(FSMState.GEN_RUN, FailureType.EMPTY_OUTPUT, -0.5)
                 continue
 
             v_code, _, v_err = run_program(val_exe, input_text=out, timeout=2)
             if v_code != 0:
                 val_feedback = f"Validator rejected input: {v_err}"
                 (tests_dir / f"gen_{attempt}_{attempts}_reject.txt").write_text(v_err, encoding="utf-8")
+                memory.log_outcome(FSMState.VAL_RUN, FailureType.VAL_REJECT, -0.1)
                 continue
             generated_inputs.append(out.strip() + "\n")
 
         if len(generated_inputs) >= target_count:
+            # Success! Small positive reward for generating required count
+            memory.log_outcome(FSMState.SUCCESS, None, 1.0)
             break
 
         gen_feedback = f"Only produced {len(generated_inputs)} valid inputs"
