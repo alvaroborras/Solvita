@@ -87,6 +87,13 @@ class SolvitaState(TypedDict):
     iteration: int
     max_iterations: int
     status: str  # "pending" | "success" | "max_iterations" | "error"
+    
+    # Adversarial Hack State
+    hack_round: int
+    max_hack_rounds: int
+    hack_passed: bool
+    hack_failures: Annotated[List[Dict], add]
+
 
     # Metadata layer
     execution_log: Annotated[List[str], add]
@@ -152,6 +159,13 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         iteration=0,
         max_iterations=config.get("max_iterations", 5),
         status="pending",
+
+        # Hack state
+        hack_round=0,
+        max_hack_rounds=3,
+        hack_passed=False,
+        hack_failures=[],
+
 
         # Metadata
         execution_log=[],
