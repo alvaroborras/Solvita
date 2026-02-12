@@ -367,17 +367,29 @@ Return ONLY JSON:
         analysis_data = json.loads(json_str)
     except Exception:
         analysis_data = {"analysis": "Failed to parse analysis", "suggested_fixes": []}
-        
-    return {
-        "feedback": {
-            "type": "hack_failure",
-            "failures": hack_failures,
-            "analysis": analysis_data.get("analysis", ""),
-            "generated_at": iteration
-        },
+    
+    # Build feedback_dict (inner structure)
+    feedback_dict = {
+        "type": "hack_failure",
+        "failures": hack_failures,
+        "analysis": analysis_data.get("analysis", ""),
         "suggested_fixes": analysis_data.get("suggested_fixes", []),
+        "error_pattern": "hack_failure",  # Add to inner for generate_code to read
+        "generated_at": iteration
+    }
+    
+    # Build feedback (outer structure) - matching the pattern in analyze_feedback_node
+    feedback = {
+        "feedback": feedback_dict,
+        "suggested_fixes": feedback_dict.get("suggested_fixes", []),
+        "error_pattern": "hack_failure",  # Hack failures are a distinct pattern
+    }
+    
+    return {
+        "feedback": feedback,
         "execution_log": [
             f"Analyzed {len(hack_failures)} hack failures",
             f"Root cause: {analysis_data.get('analysis', '')[:50]}..."
-        ]
+        ],
+        "llm_calls": 1,
     }
