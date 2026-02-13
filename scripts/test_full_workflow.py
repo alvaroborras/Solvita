@@ -33,7 +33,6 @@ from pprint import pprint
 from src.graph.state import create_initial_state, merge_dict
 from src.graph.workflow import run_workflow
 from src.nodes import (
-    retrieve_knowledge_node,
     plan_solution_node,
     generate_tests_node,
     generate_code_node,
@@ -41,6 +40,7 @@ from src.nodes import (
     run_tests_node,
     unified_check_node,
     analyze_feedback_node,
+    update_plan_memory_node,
     status_routing,
     compilation_routing
 )
@@ -104,19 +104,19 @@ def print_step_info(step_name: str, result: dict, elapsed: float):
             print(f"    - {log}")
 
 def run_step_mode(raw_problem: dict, config: dict, skip_gen_tests: bool = False):
-    """Manually execute nodes in sequence"""
+    """Manually execute nodes in sequence (mimics parallel plan-first workflow)"""
     print_separator(f"Starting STEP mode (Skip Gen Tests: {skip_gen_tests})")
     
     # 1. Initialize State
     state = create_initial_state(raw_problem, config)
     
-    # 2. Retrieve Knowledge
+    # 2. Plan Solution (FIRST - generates canonical problem + plan)
     start = time.time()
-    res = retrieve_knowledge_node(state)
+    res = plan_solution_node(state)
     state = manual_merge_state(state, res)
-    print_step_info("retrieve_knowledge", res, time.time() - start)
-    
-    # 3. Generate Tests (or mock)
+    print_step_info("plan_solution", res, time.time() - start)
+
+    # 3. Generate Tests (parallel with code in workflow, sequential here)
     if skip_gen_tests:
         print("\n[generate_tests] SKIPPED (Quick Mode)")
         # Mock generated tests using public tests
@@ -137,13 +137,7 @@ def run_step_mode(raw_problem: dict, config: dict, skip_gen_tests: bool = False)
         state = manual_merge_state(state, res)
         print_step_info("generate_tests", res, time.time() - start)
 
-    # 4. Plan Solution
-    start = time.time()
-    res = plan_solution_node(state)
-    state = manual_merge_state(state, res)
-    print_step_info("plan_solution", res, time.time() - start)
-
-    # 5. Iteration Loop
+    # 4. Iteration Loop (code generation + compilation + testing)
     max_steps = 10
     step_count = 0
     
@@ -152,13 +146,13 @@ def run_step_mode(raw_problem: dict, config: dict, skip_gen_tests: bool = False)
         iteration = state.get("iteration", 0)
         print_separator(f"Iteration {iteration} (Step {step_count}/{max_steps})")
         
-        # 5.1 Generate Code
+        # 4.1 Generate Code
         start = time.time()
         res = generate_code_node(state)
         state = manual_merge_state(state, res)
         print_step_info("generate_code", res, time.time() - start)
         
-        # 5.2 Compile Code
+        # 4.2 Compile Code
         start = time.time()
         res = compile_code_node(state)
         state = manual_merge_state(state, res)
@@ -170,24 +164,30 @@ def run_step_mode(raw_problem: dict, config: dict, skip_gen_tests: bool = False)
             for err in state["solution"].get("compilation_errors", []):
                 print(f"    - {err}")
         
-        # 5.3 Routing: Compile Success?
+        # 4.3 Routing: Compile Success?
         route = compilation_routing(state)
         print(f"  -> Compilation Routing: {route}")
         
         if route == "success":
-            # 5.4 Run Tests
+            # 4.4 Run Tests (join: waits for both tests + compiled code)
             start = time.time()
             res = run_tests_node(state)
             state = manual_merge_state(state, res)
             print_step_info("run_tests", res, time.time() - start)
             
-            # 5.5 Unified Check
+            # 4.5 Unified Check
             start = time.time()
             res = unified_check_node(state)
             state = manual_merge_state(state, res)
             print_step_info("unified_check", res, time.time() - start)
             
-            # 5.6 Routing: Status?
+            # 4.6 Update Plan Memory (settle rewards)
+            start = time.time()
+            res = update_plan_memory_node(state)
+            state = manual_merge_state(state, res)
+            print_step_info("update_plan_memory", res, time.time() - start)
+            
+            # 4.7 Routing: Status?
             status_route = status_routing(state)
             print(f"  -> Status Routing: {status_route}")
             
@@ -202,7 +202,7 @@ def run_step_mode(raw_problem: dict, config: dict, skip_gen_tests: bool = False)
             # Compilation failed -> analyze feedback
             pass
 
-        # 5.7 Analyze Feedback
+        # 4.8 Analyze Feedback
         print("\n[Flow] Proceeding to Analyze Feedback...")
         start = time.time()
         res = analyze_feedback_node(state)
