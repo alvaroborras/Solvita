@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 import tempfile
 from pathlib import Path
-from src.utils.cpp_execution import run_checker
+from src.utils.cpp_execution import run_checker, ExecutionLimits
 
 def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     """
@@ -46,14 +46,22 @@ def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
             expected = test.get('expected_output', '').strip()
             
             try:
-                # Run executable with test input
-                result = subprocess.run(
-                    [exe_path],
-                    input=test_input,
-                    capture_output=True,
-                    text=True,
-                    timeout=2  # 2 second timeout per test
+                # Run executable with test input (using ExecutionLimits)
+                from src.utils.cpp_execution import run_program
+                retcode, stdout, stderr = run_program(
+                    Path(exe_path),
+                    input_text=test_input,
+                    limits=ExecutionLimits.default_run()
                 )
+                
+                # Create result object for compatibility
+                class Result:
+                    def __init__(self, returncode, stdout, stderr):
+                        self.returncode = returncode
+                        self.stdout = stdout
+                        self.stderr = stderr
+                
+                result = Result(retcode, stdout, stderr)
                 
                 actual = result.stdout.strip()
                 passed_test = False

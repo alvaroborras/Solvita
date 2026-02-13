@@ -1,37 +1,38 @@
-"""Policy Network for Trainable Graph Memory.
-
-Manages strategy selection based on problem features and context.
-"""
+"""Bandit-based policy network for memory."""
 
 import json
 import logging
 import random
+import fcntl
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
-import numpy as np
+from typing import Dict, List, Optional
 
-from src.memory.types import Strategy, Observation
+from src.memory.types import MemoryItem, Observation
 
 logger = logging.getLogger(__name__)
 
 
-class PolicyNetwork:
+class BanditPolicy:
     """
-    A lightweight trainable policy for strategy selection.
+    Contextual bandit policy for item selection.
     
-    In v1, this implements a simple linear contextual bandit logic:
-    Score(strategy) = base_score + context_weights * features
+    score(item) = bias[item] + sum( W[feature, item] for feature in active_features )
     
-    For simplicity in the initial version without heavy dependencies:
-    - We use a dictionary-based weight mapping akin to a sparse linear model.
-    - We support basic "online learning" by updating weights based on rewards.
+    Online update:
+        W[f, item] <- W[f, item] + alpha * reward
+        bias[item] <- bias[item] + alpha * reward
     """
 
     def __init__(self, model_path: Optional[Path] = None):
         self.model_path = model_path
-        # Maps feature_hash -> {strategy_id: weight}
-        # This is a sparse representation of the policy matrix
+        
+        # Sparse weight matrix: feature_key -> {item_id: weight}
         self.weights: Dict[str, Dict[str, float]] = {}
+        
+        # Per-item bias (global prior)
+        self.bias: Dict[str, float] = {}
+        
+        # Hyperparameters
         self.epsilon = 0.1  # Exploration rate
         self.learning_rate = 0.01
         
@@ -39,101 +40,138 @@ class PolicyNetwork:
             self.load()
 
     def load(self):
+        """Load parameters from JSON with file locking."""
         try:
-            if self.model_path.suffix == '.json':
-                with open(self.model_path, 'r') as f:
-                    self.weights = json.load(f)
-            else:
-                # Placeholder for npz loading if we switch to dense numpy arrays later
-                pass
-            logger.info(f"Loaded policy weights from {self.model_path}")
+            with open(self.model_path, "r") as f:
+                # Acquire shared lock for reading
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    data = json.load(f)
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            
+            self.weights = data.get("weights", {})
+            self.bias = data.get("bias", {})
+            self.learning_rate = data.get("learning_rate", self.learning_rate)
+            self.epsilon = data.get("epsilon", self.epsilon)
+            logger.info(f"Loaded policy from {self.model_path}")
         except Exception as e:
-            logger.error(f"Failed to load policy weights: {e}")
+            logger.error(f"Failed to load policy: {e}")
 
     def save(self):
+        """Persist parameters to JSON (atomic write with file locking)."""
         if not self.model_path:
             return
-            
+        
         try:
             self.model_path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic write
-            temp_path = self.model_path.with_suffix('.tmp')
-            with open(temp_path, 'w') as f:
-                json.dump(self.weights, f, indent=0)
+            temp_path = self.model_path.with_suffix(".tmp")
+            payload = {
+                "weights": self.weights,
+                "bias": self.bias,
+                "learning_rate": self.learning_rate,
+                "epsilon": self.epsilon,
+            }
+            
+            # Write to temp file with exclusive lock
+            with open(temp_path, "w") as f:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    json.dump(payload, f, indent=0)
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            
+            # Atomic rename
             temp_path.replace(self.model_path)
+            logger.debug(f"Saved policy to {self.model_path}")
         except Exception as e:
-            logger.error(f"Failed to save policy weights: {e}")
+            logger.error(f"Failed to save policy: {e}")
 
-    def predict(self, observation: Observation, available_strategies: List[Strategy], top_k: int = 3) -> List[Strategy]:
+    def predict(
+        self,
+        observation: Observation,
+        available_items: List[MemoryItem],
+        top_k: int = 3,
+    ) -> List[MemoryItem]:
         """
-        Select best strategies for the given observation.
-        """
-        if not available_strategies:
-            return []
-
-        # 1. Feature extraction (simplified for v1)
-        # We assume external featurizer gives us a relevant hash/key
-        # For now, we mix global bias with feature-specific bias
+        Select the best items for the given observation.
         
-        # In a real implementation, 'features' would be a dense vector.
-        # Here we treat features as sparse keys (e.g., tags)
-        active_features = self._extract_active_keys(observation)
+        Returns:
+            Top-K items sorted by score (descending).
+        """
+        if not available_items:
+            return []
+        
+        feature_keys = observation.feature_keys
         
         scores = []
-        for strat in available_strategies:
-            score = self._compute_score(strat, active_features)
-            # Add small noise for tie-breaking and exploration
+        for item in available_items:
+            score = self._compute_score(item, feature_keys)
+            # Add noise for tie-breaking and exploration
             noise = random.uniform(0, 0.01)
-            scores.append((score + noise, strat))
-            
-        # Exploration: with probability epsilon, shuffle a bit? 
-        # For code generation, we prefer Exploitation + slight noise, 
-        # so standard Top-K on noisy scores is usually sufficient.
+            scores.append((score + noise, item))
         
         scores.sort(key=lambda x: x[0], reverse=True)
-        return [s for _, s in scores[:top_k]]
+        return [item for _, item in scores[:top_k]]
 
-    def update(self, observation: Observation, strategy_ids: List[str], reward: float):
+    def update(
+        self,
+        observation: Observation,
+        item_ids: List[str],
+        reward: float,
+    ):
         """
-        Update policy parameters based on reward.
-        """
-        active_features = self._extract_active_keys(observation)
+        Update policy weights based on reward.
         
-        for sid in strategy_ids:
-            for feat in active_features:
+        Reward convention:
+            +1.0 = success
+            -1.0 = total failure
+            0..1 = partial success (e.g., pass_rate)
+        """
+        feature_keys = observation.feature_keys
+        
+        for item_id in item_ids:
+            # Update bias
+            current_bias = self.bias.get(item_id, 0.0)
+            self.bias[item_id] = current_bias + self.learning_rate * reward
+            
+            # Update feature weights
+            for feat in feature_keys:
                 if feat not in self.weights:
                     self.weights[feat] = {}
-                
-                current_w = self.weights[feat].get(sid, 0.0)
-                # Simple gradient update rule: w = w + alpha * reward
-                # (Assuming 'reward' is centered, e.g. -0.5 to +1.0)
-                new_w = current_w + self.learning_rate * reward
-                self.weights[feat][sid] = new_w
+                current_w = self.weights[feat].get(item_id, 0.0)
+                self.weights[feat][item_id] = current_w + self.learning_rate * reward
 
-    def _extract_active_keys(self, obs: Observation) -> List[str]:
-        """Convert observation to sparse string keys."""
-        keys = ["GLOBAL_BIAS"]
+    def batch_update(self, records: List[Dict]):
+        """
+        Offline batch update from training data.
         
-        # Add FSM state bias
-        keys.append(f"FSM:{obs.fsm_state.value}")
-        
-        # Add Failure type bias if present (re-ranking after failure)
-        if obs.failure_type:
-            keys.append(f"FAIL:{obs.failure_type.value}")
-            
-        # Add simple tag-based features if available in raw_problem_desc
-        # (This is a placeholder; real feature extraction should happen upstream)
-        
-        return keys
+        Each record:
+        {
+            "observation": Observation,
+            "item_ids": List[str],
+            "reward": float,
+        }
+        """
+        for rec in records:
+            self.update(
+                observation=rec["observation"],
+                item_ids=rec["item_ids"],
+                reward=rec["reward"],
+            )
 
-    def _compute_score(self, strategy: Strategy, active_features: List[str]) -> float:
-        total = 0.0
-        for feat in active_features:
+    def _compute_score(self, item: MemoryItem, feature_keys: List[str]) -> float:
+        """Compute score for a single item."""
+        total = self.bias.get(item.id, 0.0)
+        
+        for feat in feature_keys:
             w_map = self.weights.get(feat, {})
-            total += w_map.get(strategy.id, 0.0)
-            
-        # Boost strategies that match the current context tags
-        # e.g., if we are in "FAIL:TIMEOUT", boost "performance" tags
-        # This is the "Graph Memory" part blended into the policy
+            total += w_map.get(item.id, 0.0)
+        
+        # Small boost from item tags matching active TAG features
+        active_tags = {k.split("TAG:")[-1] for k in feature_keys if k.startswith("TAG:")}
+        if active_tags and item.tags:
+            overlap = len(active_tags.intersection(set(item.tags)))
+            total += 0.05 * overlap  # Small prior boost for tag match
         
         return total

@@ -1,4 +1,4 @@
-"""Core data types for Trainable Graph Memory."""
+"""Core data types for Trainable Memory v2."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -6,69 +6,31 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 
-class StrategyType(str, Enum):
-    ADVICE = "ADVICE"
-    WARNING = "WARNING"
-
-
-class FSMState(str, Enum):
-    # Generator phases
-    GEN_DRAFT = "GEN_DRAFT"
-    GEN_COMPILE = "GEN_COMPILE" 
-    GEN_RUN = "GEN_RUN"
-    
-    # Validator phases
-    VAL_DRAFT = "VAL_DRAFT"
-    VAL_COMPILE = "VAL_COMPILE"
-    VAL_RUN = "VAL_RUN"
-    
-    # Checker phases
-    CHK_DRAFT = "CHK_DRAFT"
-    CHK_COMPILE = "CHK_COMPILE"
-    CHK_RUN = "CHK_RUN"
-    
-    # Solver phases
-    SOLVE_DRAFT = "SOLVE_DRAFT"
-    SOLVE_COMPILE = "SOLVE_COMPILE"
-    SOLVE_RUN = "SOLVE_RUN"
-    SOLVE_CHECK = "SOLVE_CHECK"
-    
-    # Terminal
-    SUCCESS = "SUCCESS"
-    FAIL = "FAIL"
-
-
-class FailureType(str, Enum):
-    # Parse/Validation
-    JSON_FAIL = "JSON_FAIL"
-    
-    # Compilation
-    COMPILE_FAIL = "COMPILE_FAIL"
-    
-    # Runtime
-    TIMEOUT = "TIMEOUT"
-    RUNTIME_ERR = "RUNTIME_ERR"
-    EMPTY_OUTPUT = "EMPTY_OUTPUT"
-    
-    # Logic
-    VAL_REJECT = "VAL_REJECT"      # Generator output rejected by validator
-    CHK_FAIL = "CHK_FAIL"          # Checker rejected output
-    SOLVE_WA = "SOLVE_WA"          # Solver output mismatch
-    
-    # Unknown
-    UNKNOWN = "UNKNOWN"
+class MemoryNamespace(str, Enum):
+    """Agent-specific memory namespaces."""
+    PLAN = "plan"
+    SOLVE = "solve"
+    TEST = "test"
 
 
 @dataclass
-class Strategy:
-    """A reusable test generation strategy."""
-    id: str  # Stable ID (e.g., hash of text)
-    text: str  # Human-readable advice
-    kind: StrategyType = StrategyType.ADVICE
+class MemoryItem:
+    """
+    A memory item that can be selected and injected.
+    
+    The `payload` field is namespace-specific:
+    - plan: {problem_tags, subfunctions, canonical_hints}
+    - solve: {step_strategies, skills, anti_patterns}
+    - test: {constraints_patterns, generation_strategies, validator_pitfalls}
+    """
+    id: str  # Stable ID (hash-based or UUID)
+    namespace: MemoryNamespace
+    text: str  # Human-readable summary
+    payload: Dict[str, Any]  # Namespace-specific structured data
     tags: List[str] = field(default_factory=list)
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
     # Statistics
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     uses: int = 0
     avg_reward: float = 0.0
     last_used: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -77,8 +39,9 @@ class Strategy:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "namespace": self.namespace.value if isinstance(self.namespace, MemoryNamespace) else self.namespace,
             "text": self.text,
-            "kind": self.kind,
+            "payload": self.payload,
             "tags": self.tags,
             "created_at": self.created_at,
             "uses": self.uses,
@@ -88,12 +51,12 @@ class Strategy:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Strategy":
-        # Handle backward compatibility or missing fields
+    def from_dict(cls, data: Dict[str, Any]) -> "MemoryItem":
         return cls(
             id=data["id"],
+            namespace=MemoryNamespace(data["namespace"]),
             text=data["text"],
-            kind=StrategyType(data.get("kind", StrategyType.ADVICE)),
+            payload=data.get("payload", {}),
             tags=data.get("tags", []),
             created_at=data.get("created_at", datetime.now().isoformat()),
             uses=data.get("uses", 0),
@@ -105,14 +68,78 @@ class Strategy:
 
 @dataclass
 class Observation:
-    """Context for retrieving strategies or updating policy."""
-    # Problem features
-    features: List[float]  # e.g., token hash vector + problem signature bits
+    """
+    Rich observation for policy network.
     
-    # Context
-    fsm_state: FSMState
-    failure_type: Optional[FailureType] = None
+    Features are extracted from problem.canonical + FSM state + failure type.
+    """
+    # Context (reused from v1)
+    fsm_state: str  # e.g. "SOLVE_DRAFT", "GEN_DRAFT"
+    failure_type: Optional[str] = None
     attempt_count: int = 0
     
-    # Raw data (optional, for debugging)
+    # Rich features from canonical problem
+    canonical: Dict[str, Any] = field(default_factory=dict)
+    
+    # Derived feature keys (populated by featurizer)
+    feature_keys: List[str] = field(default_factory=list)
+    
+    # Raw data for debugging
     raw_problem_desc: str = ""
+
+
+@dataclass
+class MemoryEvent:
+    """
+    A logged event: observation + selected items + outcome reward.
+    
+    These are append-only and enable trajectory-level analysis.
+    """
+    timestamp: str
+    namespace: MemoryNamespace
+    observation: Observation
+    selected_item_ids: List[str]
+    reward: float
+    
+    # Optional metadata
+    problem_hash: Optional[str] = None
+    iteration: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp,
+            "namespace": self.namespace.value if isinstance(self.namespace, MemoryNamespace) else self.namespace,
+            "observation": {
+                "fsm_state": self.observation.fsm_state,
+                "failure_type": self.observation.failure_type,
+                "attempt_count": self.observation.attempt_count,
+                "canonical": self.observation.canonical,
+                "feature_keys": self.observation.feature_keys,
+                "raw_problem_desc": self.observation.raw_problem_desc,
+            },
+            "selected_item_ids": self.selected_item_ids,
+            "reward": self.reward,
+            "problem_hash": self.problem_hash,
+            "iteration": self.iteration,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MemoryEvent":
+        obs_data = data["observation"]
+        obs = Observation(
+            fsm_state=obs_data["fsm_state"],
+            failure_type=obs_data.get("failure_type"),
+            attempt_count=obs_data.get("attempt_count", 0),
+            canonical=obs_data.get("canonical", {}),
+            feature_keys=obs_data.get("feature_keys", []),
+            raw_problem_desc=obs_data.get("raw_problem_desc", ""),
+        )
+        return cls(
+            timestamp=data["timestamp"],
+            namespace=MemoryNamespace(data["namespace"]),
+            observation=obs,
+            selected_item_ids=data["selected_item_ids"],
+            reward=data["reward"],
+            problem_hash=data.get("problem_hash"),
+            iteration=data.get("iteration", 0),
+        )

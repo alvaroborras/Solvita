@@ -1,8 +1,11 @@
 """Analyze Feedback Node - Analyze failures and provide improvement suggestions"""
 
 from typing import Dict, Any, TYPE_CHECKING, List, Optional
+from pathlib import Path
+import tempfile
 from loguru import logger
 from src.llm import UnifiedLLMClient
+from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
 
 if TYPE_CHECKING:
@@ -29,7 +32,15 @@ def analyze_feedback_node(state: "SolvitaState") -> Dict[str, Any]:
     hack_failures = state.get('hack_failures', [])
     
     # Get context information
-    problem_desc = state['problem'].get('description', '')
+    # Prefer canonical problem representation if available
+    canonical = state['problem'].get('canonical', {})
+    if canonical:
+        problem_desc = f"""Objective: {canonical.get('objective', '')}
+Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}
+Required Properties: {canonical.get('required_properties', [])}"""
+    else:
+        problem_desc = state['problem'].get('description', '')
+    
     algorithm = state.get('plan', {}).get('algorithm_choice', 'Unknown')
     steps = state.get('plan', {}).get('implementation_steps', [])
     iteration = state.get('iteration', 0)
@@ -105,51 +116,88 @@ Be concise and actionable."""
     }
 
 
-def _select_representative_failures(failed_tests: List[Dict], max_count: int = 3) -> List[Dict]:
-    """Select representative failures: Public > Shortest Input > Max Error"""
+def _select_representative_failures(failed_tests: List[Dict], max_count: int = 10) -> List[Dict]:
+    """
+    Select up to max_count representative failures covering:
+    - Different error types (Timeout, RE, WA, Checker)
+    - Shortest inputs (traceable)
+    - Largest diffs (numeric)
+    - Different input scales (small/large)
+    """
+    if not failed_tests:
+        return []
+    
     selected = []
+    selected_ids = set()
     
-    # 1. Priority: Public test failures
-    public_fails = [t for t in failed_tests if str(t.get('test_id', '')).startswith('public') or 'public' in str(t.get('input', ''))] # heuristic if test_id not distinct
-    # Actually checking test_id usually works if run_tests sets it clearly. 
-    # run_tests sets integer test_id. We can't distinguish public easily unless we assume first K are public.
-    # But usually public tests are first. Let's pick the very first failure (often a public or simple case).
+    # Helper to add unique test
+    def add_test(test):
+        test_id = id(test)
+        if test_id not in selected_ids:
+            selected.append(test)
+            selected_ids.add(test_id)
+            return True
+        return False
     
-    if failed_tests:
-        selected.append(failed_tests[0])
+    # 1. Priority: Different error types
+    error_types = {}
+    for t in failed_tests:
+        error = t.get('error', '')
+        if 'Timeout' in error or 'timeout' in error.lower():
+            error_types.setdefault('timeout', []).append(t)
+        elif t.get('passed') == False and t.get('actual') == '':
+            error_types.setdefault('runtime_error', []).append(t)
+        elif 'Checker' in error:
+            error_types.setdefault('checker', []).append(t)
+        else:
+            error_types.setdefault('wrong_answer', []).append(t)
     
-    # 2. Priority: Shortest input (easiest to trace)
-    remaining = [t for t in failed_tests if t not in selected]
-    # Sort by input length
+    # Add one from each error type
+    for error_type in ['timeout', 'runtime_error', 'checker', 'wrong_answer']:
+        if error_type in error_types and error_types[error_type]:
+            add_test(error_types[error_type][0])
+            if len(selected) >= max_count:
+                return selected
+    
+    # 2. Priority: Shortest inputs (easiest to trace)
+    remaining = [t for t in failed_tests if id(t) not in selected_ids]
     remaining.sort(key=lambda t: len(str(t.get('input', ''))))
     
-    if remaining:
-        selected.append(remaining[0])
-        
-    # 3. Priority: Largest numeric error (if applicable)
-    # Try to find one with large diff if possible
-    remaining = [t for t in failed_tests if t not in selected]
-    max_err_test = None
-    max_err_val = -1.0
+    for t in remaining[:3]:  # Add up to 3 shortest
+        add_test(t)
+        if len(selected) >= max_count:
+            return selected
     
+    # 3. Priority: Largest numeric errors
+    remaining = [t for t in failed_tests if id(t) not in selected_ids]
+    numeric_errors = []
     for t in remaining:
         try:
             act = float(t.get('actual', 0))
             exp = float(t.get('expected', 0))
             err = abs(act - exp)
-            if err > max_err_val:
-                max_err_val = err
-                max_err_test = t
+            numeric_errors.append((err, t))
         except:
             pass
-            
-    if max_err_test:
-        selected.append(max_err_test)
-    elif remaining:
-        # Fallback: just take next one
-        selected.append(remaining[0])
-        
-    return selected[:max_count]
+    
+    numeric_errors.sort(key=lambda x: x[0], reverse=True)
+    for _, t in numeric_errors[:2]:  # Add up to 2 with largest errors
+        add_test(t)
+        if len(selected) >= max_count:
+            return selected
+    
+    # 4. Fill remaining slots with diverse input sizes
+    remaining = [t for t in failed_tests if id(t) not in selected_ids]
+    if remaining:
+        # Sort by input length and pick evenly spaced
+        remaining.sort(key=lambda t: len(str(t.get('input', ''))))
+        step = max(1, len(remaining) // (max_count - len(selected)))
+        for i in range(0, len(remaining), step):
+            add_test(remaining[i])
+            if len(selected) >= max_count:
+                break
+    
+    return selected
 
 
 def _analyze_error_pattern(failed_tests: List[Dict]) -> str:
@@ -181,6 +229,57 @@ def _analyze_error_pattern(failed_tests: List[Dict]) -> str:
         return f"Outputs vary (avg diff: {avg_diff:.4g}). Likely logic error or edge case handling."
 
 
+def _run_diagnostic_sanitizer(code: str, failed_tests: List[Dict]) -> str:
+    """
+    Run diagnostic compilation with sanitizers on smallest failing test.
+    
+    Returns sanitizer output or empty string if no useful info.
+    """
+    if not failed_tests or not code:
+        return ""
+    
+    # Pick smallest failing test
+    smallest_test = min(failed_tests, key=lambda t: len(str(t.get('input', ''))))
+    test_input = smallest_test.get('input', '')
+    
+    if not test_input:
+        return ""
+    
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            src_path = tmp / "diagnostic.cpp"
+            exe_path = tmp / "diagnostic.exe"
+            
+            src_path.write_text(code, encoding="utf-8")
+            
+            # Compile with sanitizers
+            ok, compile_log = compile_cpp(
+                src_path, exe_path,
+                limits=ExecutionLimits.diagnostic_compile(),
+                diagnostic=True
+            )
+            
+            if not ok:
+                return f"Diagnostic compile failed: {compile_log[:500]}"
+            
+            # Run with sanitizers
+            retcode, stdout, stderr = run_program(
+                exe_path,
+                input_text=test_input,
+                limits=ExecutionLimits.default_run()
+            )
+            
+            # Sanitizer output is in stderr
+            if stderr and ('sanitizer' in stderr.lower() or 'asan' in stderr.lower() or 'ubsan' in stderr.lower()):
+                return f"Sanitizer detected issues:\n{stderr[:1000]}"
+            
+            return ""
+    except Exception as e:
+        logger.warning(f"Diagnostic sanitizer failed: {e}")
+        return ""
+
+
 def _analyze_test_failures(
     llm: UnifiedLLMClient, 
     code: str, 
@@ -189,14 +288,15 @@ def _analyze_test_failures(
     algorithm: str,
     steps: List[str],
     iteration: int,
-    pass_rate: float
+    pass_rate: float,
+    diagnostic_output: str = ""
 ) -> Dict:
     """Analyze test failures with full context"""
     if not failed_tests:
         return {'error_type': 'none', 'analysis': 'No failures', 'suggested_fixes': [], 'failures': []}
     
-    # Smart selection
-    selected_tests = _select_representative_failures(failed_tests)
+    # Smart selection: up to 10 representative failures
+    selected_tests = _select_representative_failures(failed_tests, max_count=10)
     error_pattern = _analyze_error_pattern(failed_tests)
     
     # Format failures for prompt
@@ -216,6 +316,11 @@ def _analyze_test_failures(
     
     failures_text = '\n\n'.join(failure_details)
     steps_text = '\n'.join([f"- {s}" for s in steps])
+    
+    # Add diagnostic output if available
+    diagnostic_section = ""
+    if diagnostic_output:
+        diagnostic_section = f"\n## Diagnostic Sanitizer Output\n{diagnostic_output}\n"
     
     prompt = f"""You are a competitive programming debugging expert. Analyze the following failures and provide CONCRETE fixes.
 
@@ -240,7 +345,7 @@ Error Pattern: {error_pattern}
 
 ## Representative Failures (most important cases to fix)
 {failures_text}
-
+{diagnostic_section}
 ## Your Task
 1. Pick the SIMPLEST failure case above. Trace the code execution step-by-step with that input. Track key variables.
 2. Identify WHERE and WHY the code produces wrong output.

@@ -1,11 +1,123 @@
 """
-Shared utilities for C++ execution, compilation, and checking.
+Shared utilities for C++ execution, compilation, and checking with sandboxing.
 """
 
+import os
 import shutil
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Callable
+
+# Resource limiting (Linux only)
+try:
+    import resource
+    HAS_RESOURCE = True
+except ImportError:
+    HAS_RESOURCE = False
+
+
+@dataclass
+class ExecutionLimits:
+    """Resource limits for compilation and execution."""
+    cpu_seconds: Optional[int] = None  # CPU time limit (RLIMIT_CPU)
+    wall_seconds: Optional[int] = None  # Wall clock timeout (subprocess.run timeout)
+    memory_bytes: Optional[int] = None  # Address space limit (RLIMIT_AS)
+    fsize_bytes: Optional[int] = None  # Maximum file size (RLIMIT_FSIZE)
+    nproc: Optional[int] = None  # Maximum number of processes (RLIMIT_NPROC)
+    nofile: Optional[int] = None  # Maximum number of open files (RLIMIT_NOFILE)
+    
+    @staticmethod
+    def default_compile() -> "ExecutionLimits":
+        """Default limits for compilation."""
+        return ExecutionLimits(
+            cpu_seconds=30,
+            wall_seconds=35,
+            memory_bytes=2 * 1024 * 1024 * 1024,  # 2GB
+            fsize_bytes=50 * 1024 * 1024,  # 50MB
+            nproc=50,
+            nofile=100,
+        )
+    
+    @staticmethod
+    def default_run() -> "ExecutionLimits":
+        """Default limits for program execution."""
+        return ExecutionLimits(
+            cpu_seconds=2,
+            wall_seconds=3,
+            memory_bytes=512 * 1024 * 1024,  # 512MB
+            fsize_bytes=10 * 1024 * 1024,  # 10MB
+            nproc=1,
+            nofile=50,
+        )
+    
+    @staticmethod
+    def diagnostic_compile() -> "ExecutionLimits":
+        """Limits for diagnostic compilation with sanitizers (slower)."""
+        return ExecutionLimits(
+            cpu_seconds=60,
+            wall_seconds=70,
+            memory_bytes=4 * 1024 * 1024 * 1024,  # 4GB (sanitizers need more)
+            fsize_bytes=100 * 1024 * 1024,  # 100MB
+            nproc=50,
+            nofile=100,
+        )
+
+
+def _make_preexec_fn(limits: ExecutionLimits, work_dir: Optional[Path] = None) -> Callable:
+    """
+    Create a preexec_fn for subprocess that sets resource limits.
+    
+    Only works on Linux/Unix. Returns a no-op on Windows.
+    """
+    if not HAS_RESOURCE or sys.platform == "win32":
+        # No resource limiting on Windows
+        def noop_preexec():
+            if work_dir:
+                os.chdir(work_dir)
+        return noop_preexec
+    
+    def preexec():
+        """Set resource limits before executing the subprocess."""
+        # Change to work directory first if specified
+        if work_dir:
+            os.chdir(work_dir)
+        
+        # CPU time limit (seconds of CPU time)
+        if limits.cpu_seconds is not None:
+            resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
+        
+        # Address space limit (memory)
+        if limits.memory_bytes is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
+        
+        # File size limit
+        if limits.fsize_bytes is not None:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limits.fsize_bytes, limits.fsize_bytes))
+        
+        # Process count limit
+        if limits.nproc is not None:
+            resource.setrlimit(resource.RLIMIT_NPROC, (limits.nproc, limits.nproc))
+        
+        # Open files limit
+        if limits.nofile is not None:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (limits.nofile, limits.nofile))
+    
+    return preexec
+
+
+def _minimal_env() -> dict:
+    """Return a minimal environment for subprocess execution."""
+    # Keep essential env vars only
+    minimal = {}
+    for key in ["PATH", "HOME", "TMPDIR", "TMP", "TEMP"]:
+        if key in os.environ:
+            minimal[key] = os.environ[key]
+    
+    # Set LC_ALL to avoid locale issues
+    minimal["LC_ALL"] = "C.UTF-8"
+    return minimal
 
 
 def _detect_compiler() -> Optional[str]:
@@ -34,16 +146,18 @@ def compile_cpp(
     source_path: Path, 
     exe_path: Path, 
     include_testlib: bool = False, 
-    timeout: int = 30
+    limits: Optional[ExecutionLimits] = None,
+    diagnostic: bool = False,
 ) -> Tuple[bool, str]:
     """
-    Compile C++ source code to executable.
+    Compile C++ source code to executable with resource limits.
     
     Args:
         source_path: Path to .cpp source file
         exe_path: Path where executable should be saved
         include_testlib: Whether to include current directory in include path (for testlib.h)
-        timeout: Compilation timeout in seconds
+        limits: Resource limits (defaults to ExecutionLimits.default_compile())
+        diagnostic: If True, compile with sanitizers for debugging
         
     Returns:
         (success, output_log)
@@ -52,27 +166,43 @@ def compile_cpp(
     if not compiler:
         return False, "No C++ compiler found (tried g++ and clang++)"
 
-    cmd = [compiler, "-std=c++17", "-O2"]
+    if limits is None:
+        limits = ExecutionLimits.diagnostic_compile() if diagnostic else ExecutionLimits.default_compile()
+    
+    # Build compiler command
+    cmd = [compiler, "-std=c++17"]
+    
+    if diagnostic:
+        # Diagnostic mode: sanitizers, debug info, less optimization
+        cmd.extend(["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"])
+    else:
+        # Normal mode: optimized
+        cmd.append("-O2")
+    
     if include_testlib:
-        # Assuming testlib.h is in same dir as source or current working dir
-        # -I. adds CWD to include path
-        # Also add parent dir of source_path if needed
         cmd.append("-I.")
         if source_path.parent != Path("."):
             cmd.append(f"-I{source_path.parent}")
-            
+    
     cmd.extend([str(source_path), "-o", str(exe_path)])
     
     try:
-        # Check for CCACHE_DISABLE usage from environment (set in benchmark/test scripts)
+        # Ensure parent dir exists
+        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Run with resource limits
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=limits.wall_seconds,
+            env=_minimal_env(),
+            preexec_fn=_make_preexec_fn(limits, work_dir=source_path.parent),
         )
     except subprocess.TimeoutExpired:
-        return False, f"Compilation timed out after {timeout}s"
+        return False, f"Compilation timed out after {limits.wall_seconds}s"
+    except Exception as e:
+        return False, f"Compilation failed: {e}"
         
     output = (result.stdout or "") + (result.stderr or "")
     return result.returncode == 0, output
@@ -82,25 +212,39 @@ def run_program(
     exe_path: Path, 
     input_text: Optional[str] = None, 
     args: Optional[List[str]] = None, 
-    timeout: int = 2
+    limits: Optional[ExecutionLimits] = None,
 ) -> Tuple[int, str, str]:
     """
-    Run an executable with stdin input or arguments.
+    Run an executable with stdin input or arguments, with resource limits.
+    
+    Args:
+        exe_path: Path to executable
+        input_text: Input to pass via stdin
+        args: Command-line arguments
+        limits: Resource limits (defaults to ExecutionLimits.default_run())
     
     Returns:
         (return_code, stdout, stderr)
     """
+    if limits is None:
+        limits = ExecutionLimits.default_run()
+    
     cmd = [str(exe_path)]
     if args:
         cmd.extend(args)
-        
+    
     try:
+        # Run in parent directory of executable with minimal env
+        work_dir = exe_path.parent
+        
         result = subprocess.run(
             cmd,
             input=input_text,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=limits.wall_seconds,
+            env=_minimal_env(),
+            preexec_fn=_make_preexec_fn(limits, work_dir=work_dir),
         )
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
@@ -114,11 +258,18 @@ def run_checker(
     input_path: Path, 
     output_path: Path, 
     answer_path: Path, 
-    timeout: int = 2
+    limits: Optional[ExecutionLimits] = None,
 ) -> Tuple[bool, str]:
     """
-    Run a Testlib checker.
+    Run a Testlib checker with resource limits.
     Usage: checker <input_file> <output_file> <answer_file>
+    
+    Args:
+        checker_exe: Path to checker executable
+        input_path: Path to input file
+        output_path: Path to output file
+        answer_path: Path to answer file
+        limits: Resource limits (defaults to ExecutionLimits.default_run())
     
     Returns:
         (is_correct, message)
@@ -126,7 +277,7 @@ def run_checker(
     ret, out, err = run_program(
         checker_exe,
         args=[str(input_path), str(output_path), str(answer_path)],
-        timeout=timeout,
+        limits=limits,
     )
     
     # Testlib checkers usually return 0 for OK, 1 for WA, 2 for PE, 3 for Fail

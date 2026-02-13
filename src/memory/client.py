@@ -1,157 +1,256 @@
-"""Trainable Memory Client.
+"""Memory client for namespace-isolated trainable memory."""
 
-The main entry point for interacting with the memory system.
-"""
-
-import json
 import logging
 import hashlib
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 
-from src.memory.types import Strategy, StrategyType, FSMState, FailureType, Observation
-from src.memory.graph import MemoryGraph
-from src.memory.policy import PolicyNetwork
+from src.memory.types import (
+    MemoryNamespace,
+    MemoryItem,
+    MemoryEvent,
+    Observation,
+)
+from src.memory.store import MemoryStore
+from src.memory.policy import BanditPolicy
+from src.memory.featurizer import Featurizer
+from src.memory.skill_loader import SkillLoader
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryClient:
     """
-    Client for the Trainable Graph Memory system.
+    Unified memory client supporting plan/solve/test namespaces.
     
     Usage:
-        client = MemoryClient(config)
-        advice = client.get_advice(problem_desc, fsm_state)
-        client.log_outcome(fsm_state, failure_type, reward)
+        client = MemoryClient(namespace="plan", config=config, problem_desc=desc)
+        injection_text, item_ids = client.get_injection(observation)
+        # ... agent generates output ...
+        client.log_event(observation, item_ids, reward)
     """
 
-    def __init__(self, config: Dict[str, Any], problem_desc: str = ""):
+    def __init__(
+        self,
+        namespace: MemoryNamespace,
+        config: Dict[str, Any],
+        problem_desc: str = "",
+        canonical: Optional[Dict[str, Any]] = None,
+    ):
+        if isinstance(namespace, str):
+            namespace = MemoryNamespace(namespace)
+        
+        self.namespace = namespace
         self.config = config or {}
         self.enabled = self.config.get("trainable_memory", {}).get("enabled", False)
-        self.top_k = self.config.get("trainable_memory", {}).get("top_k", 3)
-        self.data_dir = Path(self.config.get("trainable_memory", {}).get("data_dir", "data/memory"))
+        self.top_k = self.config.get("trainable_memory", {}).get(f"{namespace.value}_top_k", 3)
+        self.data_dir = Path(
+            self.config.get("trainable_memory", {}).get("data_dir", "data/memory")
+        )
         
         self.problem_desc = problem_desc
-        # Compute stable problem hash (v1: simple md5 of description)
+        self.canonical = canonical or {}
         self.problem_hash = hashlib.md5(problem_desc.encode("utf-8")).hexdigest()
         
-        self.graph: Optional[MemoryGraph] = None
-        self.policy: Optional[PolicyNetwork] = None
+        self.store: Optional[MemoryStore] = None
+        self.policy: Optional[BanditPolicy] = None
+        self.featurizer: Optional[Featurizer] = None
+        self.skill_loader: Optional[SkillLoader] = None
         
-        # Last suggested strategy IDs (for update tracking)
+        # Last suggested item IDs (for convenience)
         self.last_suggested_ids: List[str] = []
 
         if self.enabled:
-            logger.info(f"Initializing Trainable Memory at {self.data_dir}")
+            logger.info(f"Initializing Memory [{namespace.value}] at {self.data_dir} (SQLite)")
             try:
-                self.graph = MemoryGraph(self.data_dir)
-                self.graph.initialize()
+                self.store = MemoryStore(namespace, self.data_dir)
+                self.store.initialize()
                 
-                self.policy = PolicyNetwork(self.data_dir / "policy_params.json")
+                # Initialize policy
+                policy_path = self.data_dir / namespace.value / "policy.json"
+                self.policy = BanditPolicy(policy_path)
+                
+                # Initialize featurizer
+                self.featurizer = Featurizer()
+                
+                # Initialize skill loader (for solve namespace)
+                if namespace == MemoryNamespace.SOLVE:
+                    self.skill_loader = SkillLoader()
+                
             except Exception as e:
-                logger.error(f"Failed to initialize memory, disabling for this run: {e}")
+                logger.error(f"Failed to initialize memory, disabling: {e}")
                 self.enabled = False
         else:
-            logger.debug("Trainable Memory is disabled in config.")
+            logger.debug(f"Memory [{namespace.value}] is disabled in config.")
 
-    def get_advice(self, fsm_state: Union[str, FSMState], failure_type: Optional[str] = None, attempt: int = 0) -> str:
+    def get_injection(
+        self,
+        fsm_state: str,
+        failure_type: Optional[str] = None,
+        attempt_count: int = 0,
+    ) -> Tuple[str, List[str]]:
         """
-        Retrieve formatted advice string for the current context.
+        Retrieve items for injection into the agent prompt.
+        
+        Returns:
+            (injection_text, selected_item_ids)
         """
-        if not self.enabled or not self.graph or not self.policy:
-            return ""
-
+        if not self.enabled or not self.store:
+            return "", []
+        
         try:
-            # Convert strings to Enums
-            if isinstance(fsm_state, str):
-                try:
-                    fsm_state = FSMState(fsm_state)
-                except ValueError:
-                    fsm_state = FSMState.GEN_DRAFT
-            
-            f_type = None
-            if failure_type:
-                try:
-                    f_type = FailureType(failure_type)
-                except ValueError:
-                    f_type = FailureType.UNKNOWN
-
-            # Prepare observation
+            # Build observation
             obs = Observation(
-                features=[0.0],  # TODO: real features
                 fsm_state=fsm_state,
-                failure_type=f_type,
-                attempt_count=attempt,
-                raw_problem_desc=self.problem_desc
+                failure_type=failure_type,
+                attempt_count=attempt_count,
+                canonical=self.canonical,
+                raw_problem_desc=self.problem_desc,
             )
-
-            # Get candidates
-            candidates = self.graph.get_all_strategies()
             
-            # Predict
-            chosen = self.policy.predict(obs, candidates, top_k=self.top_k)
-            self.last_suggested_ids = [s.id for s in chosen]
+            # Extract features (if featurizer available)
+            if self.featurizer:
+                obs.feature_keys = self.featurizer.extract_features(obs, self.namespace)
+            
+            # Get candidate items
+            candidates = self.store.get_all_items()
+            
+            # Select items using policy (if available)
+            if self.policy:
+                chosen = self.policy.predict(obs, candidates, top_k=self.top_k)
+            else:
+                # Fallback: select by avg_reward
+                chosen = sorted(candidates, key=lambda x: x.avg_reward, reverse=True)[:self.top_k]
+            
+            self.last_suggested_ids = [item.id for item in chosen]
             
             if not chosen:
-                return ""
-
-            # Format output
-            lines = ["\n[Strategies from Memory]"]
-            for s in chosen:
-                prefix = "ADVICE" if s.kind == StrategyType.ADVICE else "WARNING"
-                lines.append(f"- {prefix}: {s.text}")
+                return "", []
             
-            return "\n".join(lines) + "\n"
-
+            # Format injection text (namespace-specific formatting)
+            injection_text = self._format_injection(chosen)
+            
+            return injection_text, self.last_suggested_ids
+        
         except Exception as e:
-            logger.error(f"Error retrieving advice: {e}")
-            return ""
+            logger.error(f"Error in get_injection: {e}")
+            return "", []
 
-    def log_outcome(self, 
-                    fsm_state: Union[str, FSMState], 
-                    failure_type: Optional[str], 
-                    reward: float):
+    def log_event(
+        self,
+        observation: Observation,
+        selected_item_ids: List[str],
+        reward: float,
+        iteration: int = 0,
+    ):
         """
-        Update memory with the outcome of the last action.
+        Log an event and update policy + item stats.
         """
-        if not self.enabled or not self.last_suggested_ids:
+        if not self.enabled or not self.store:
             return
-
+        
         try:
-            # Normalize inputs
-            if isinstance(fsm_state, str):
-                try:
-                    state_enum = FSMState(fsm_state)
-                except ValueError:
-                    state_enum = FSMState.GEN_DRAFT
-            else:
-                state_enum = fsm_state
-
-            f_type = None
-            if failure_type:
-                try:
-                    f_type = FailureType(failure_type)
-                except ValueError:
-                    f_type = FailureType.UNKNOWN
-
-            obs = Observation(
-                features=[0.0],
-                fsm_state=state_enum,
-                failure_type=f_type,
-                raw_problem_desc=self.problem_desc
+            # Create event
+            event = MemoryEvent(
+                timestamp=datetime.now().isoformat(),
+                namespace=self.namespace,
+                observation=observation,
+                selected_item_ids=selected_item_ids,
+                reward=reward,
+                problem_hash=self.problem_hash,
+                iteration=iteration,
             )
-
-            # Update Policy
-            self.policy.update(obs, self.last_suggested_ids, reward)
-            self.policy.save()
-
-            # Update Graph Stats
-            for sid in self.last_suggested_ids:
-                self.graph.update_strategy_stats(sid, reward)
-            self.graph.save_strategies()
             
-            logger.info(f"Memory updated: reward={reward:.2f} for {len(self.last_suggested_ids)} strategies")
+            # Log event to disk
+            self.store.log_event(event)
             
+            # Update policy (if available)
+            if self.policy:
+                self.policy.update(observation, selected_item_ids, reward)
+                self.policy.save()
+            
+            # Update item statistics
+            for item_id in selected_item_ids:
+                self.store.update_item_stats(item_id, reward)
+            self.store.save_items()
+            
+            logger.info(
+                f"[{self.namespace.value}] Event logged: reward={reward:.2f}, "
+                f"items={len(selected_item_ids)}"
+            )
+        
         except Exception as e:
-            logger.error(f"Error updating memory: {e}")
+            logger.error(f"Error logging event: {e}")
+
+    def log_event_simple(
+        self,
+        fsm_state: str,
+        failure_type: Optional[str],
+        reward: float,
+        item_ids: Optional[List[str]] = None,
+        attempt_count: int = 0,
+    ):
+        """
+        Convenience method: log event using simple params.
+        
+        If item_ids not provided, uses self.last_suggested_ids.
+        """
+        if item_ids is None:
+            item_ids = self.last_suggested_ids
+        
+        if not item_ids:
+            return
+        
+        obs = Observation(
+            fsm_state=fsm_state,
+            failure_type=failure_type,
+            attempt_count=attempt_count,
+            canonical=self.canonical,
+            raw_problem_desc=self.problem_desc,
+        )
+        
+        if self.featurizer:
+            obs.feature_keys = self.featurizer.extract_features(obs, self.namespace)
+        
+        self.log_event(obs, item_ids, reward)
+
+    def _format_injection(self, items: List[MemoryItem]) -> str:
+        """Format selected items for prompt injection (namespace-specific)."""
+        if not items:
+            return ""
+        
+        lines = [f"\n[Memory: {self.namespace.value.upper()} strategies]"]
+        
+        for item in items:
+            lines.append(f"- {item.text}")
+            
+            # Add payload details if relevant
+            if self.namespace == MemoryNamespace.PLAN:
+                payload = item.payload
+                if payload.get("subfunctions"):
+                    lines.append(f"  Subfunctions: {', '.join(payload['subfunctions'])}")
+                if payload.get("canonical_hints"):
+                    lines.append(f"  Hints: {payload['canonical_hints']}")
+            
+            elif self.namespace == MemoryNamespace.SOLVE:
+                payload = item.payload
+                if payload.get("step_strategies"):
+                    for strat in payload["step_strategies"][:2]:  # Show top 2
+                        lines.append(f"  - {strat}")
+                if payload.get("anti_patterns"):
+                    lines.append(f"  Avoid: {', '.join(payload['anti_patterns'][:2])}")
+                # Load skills if available
+                if self.skill_loader and payload.get("skills"):
+                    skills_text = self.skill_loader.load_skills_for_item(payload)
+                    if skills_text:
+                        lines.append(skills_text)
+            
+            elif self.namespace == MemoryNamespace.TEST:
+                payload = item.payload
+                if payload.get("generation_strategies"):
+                    for strat in payload["generation_strategies"][:2]:
+                        lines.append(f"  - {strat}")
+        
+        lines.append("")  # Trailing newline
+        return "\n".join(lines)

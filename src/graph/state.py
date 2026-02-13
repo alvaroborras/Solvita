@@ -1,6 +1,8 @@
-"""LangGraph State Definition - Simplified
+"""LangGraph State Definition
 
-Minimal state focusing on core workflow interfaces.
+Canonical state schema for the Solvita competitive-programming agent.
+Every field accessed via ``state[key]`` or ``state.get(key)`` in any node
+MUST be declared here.
 """
 
 from typing import TypedDict, List, Dict, Any, Optional, Annotated
@@ -8,10 +10,10 @@ from operator import add
 from langgraph.graph.message import add_messages
 
 
-# ========== Custom Reducers for Nested Dicts ==========
+# ========== Custom Reducers ==========
 
 def merge_dict(left: Dict, right: Dict) -> Dict:
-    """Merge two dicts, right values override left"""
+    """Merge two dicts; right values override left."""
     if left is None:
         return right or {}
     if right is None:
@@ -30,6 +32,8 @@ class ProblemData(TypedDict, total=False):
     constraints: Dict[str, Any]
     public_tests: List[Dict]
     retrieved_knowledge: List[Dict]
+    # Canonical problem representation (populated by plan_solution_node)
+    canonical: Dict[str, Any]
 
 
 class PlanData(TypedDict, total=False):
@@ -37,6 +41,9 @@ class PlanData(TypedDict, total=False):
     solution_plan: Dict[str, Any]
     algorithm_choice: str
     implementation_steps: List[str]
+    # Trainable memory fields (populated by plan_solution_node)
+    memory_item_ids: List[str]
+    memory_advice: str
 
 
 class SolutionData(TypedDict, total=False):
@@ -46,6 +53,10 @@ class SolutionData(TypedDict, total=False):
     compilation_success: bool
     compilation_errors: List[str]
     executable_path: Optional[str]
+    # Trainable memory fields (populated by generate_code_node)
+    memory_item_ids: List[str]
+    # Diagnostic mode flag (set by analyze_feedback_node when sanitizers are needed)
+    diagnostic_mode: bool
 
 
 class TestData(TypedDict, total=False):
@@ -55,6 +66,8 @@ class TestData(TypedDict, total=False):
     test_results: List[Dict]
     passed_tests: int
     pass_rate: float
+    # Checker executable path (set by generate_tests_node)
+    checker_exe: Optional[str]
 
 
 class FeedbackData(TypedDict, total=False):
@@ -66,65 +79,74 @@ class FeedbackData(TypedDict, total=False):
 # ========== Main State ==========
 
 class SolvitaState(TypedDict):
-    """Core state for Solvita workflow - minimal and focused"""
+    """Core state for Solvita workflow."""
 
-    # Input layer (never modified)
+    # -- Input layer (immutable after initialization) --
     raw_problem: Dict[str, Any]
     config: Dict[str, Any]
 
-    # Business objects layer (populated progressively by nodes)
-    # Using Annotated with merge_dict to handle concurrent updates from parallel branches
+    # -- Business objects (populated progressively by nodes) --
     problem: Annotated[ProblemData, merge_dict]
     plan: Annotated[PlanData, merge_dict]
     solution: Annotated[SolutionData, merge_dict]
     tests: Annotated[TestData, merge_dict]
     feedback: Annotated[FeedbackData, merge_dict]
 
-    # LLM conversation history (managed by LangGraph)
+    # -- LLM conversation history --
     messages: Annotated[List[Dict[str, str]], add_messages]
 
-    # Control flow layer
+    # -- Control flow --
     iteration: int
     max_iterations: int
     status: str  # "pending" | "success" | "max_iterations" | "error"
 
-    # Metadata layer
+    # -- Hack test fields (used by hack_test_node / hack_routing) --
+    hack_round: int
+    max_hack_rounds: int
+    hack_passed: bool
+    hack_failures: List[Dict]
+
+    # -- Metadata --
     execution_log: Annotated[List[str], add]
-    llm_calls: Annotated[int, add]  # Support concurrent updates from parallel nodes
+    llm_calls: Annotated[int, add]
 
 
 def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) -> SolvitaState:
     """
-    Create initial state with all fields properly initialized
-    
-    Expected raw_problem format:
-    {
-        "description": str,
-        "time_limit": int,  # in milliseconds
-        "space_limit": int,  # in MB
-        "public_tests": [{"input": str, "output": str}, ...]
-    }
+    Create initial state with all fields properly initialized.
+
+    Expected raw_problem format::
+
+        {
+            "description": str,
+            "time_limit": int,   # milliseconds
+            "space_limit": int,  # MB
+            "public_tests": [{"input": str, "output": str}, ...]
+        }
     """
     return SolvitaState(
         # Input
         raw_problem=raw_problem,
         config=config,
 
-        # Business objects - problem data extracted from raw_problem
+        # Business objects
         problem=ProblemData(
             description=raw_problem.get("description", ""),
-            types=[],  # Will be filled by retrieve_knowledge
+            types=[],
             constraints={
                 "time_limit": raw_problem.get("time_limit"),
                 "space_limit": raw_problem.get("space_limit"),
             },
             public_tests=raw_problem.get("public_tests", []),
             retrieved_knowledge=[],
+            canonical={},
         ),
         plan=PlanData(
             solution_plan={},
             algorithm_choice="",
             implementation_steps=[],
+            memory_item_ids=[],
+            memory_advice="",
         ),
         solution=SolutionData(
             code="",
@@ -132,6 +154,8 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             compilation_success=False,
             compilation_errors=[],
             executable_path=None,
+            memory_item_ids=[],
+            diagnostic_mode=False,
         ),
         tests=TestData(
             generated_tests=[],
@@ -139,6 +163,7 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             test_results=[],
             passed_tests=0,
             pass_rate=0.0,
+            checker_exe=None,
         ),
         feedback=FeedbackData(
             feedback={},
@@ -152,6 +177,12 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         iteration=0,
         max_iterations=config.get("max_iterations", 5),
         status="pending",
+
+        # Hack test
+        hack_round=0,
+        max_hack_rounds=config.get("max_hack_rounds", 3),
+        hack_passed=False,
+        hack_failures=[],
 
         # Metadata
         execution_log=[],

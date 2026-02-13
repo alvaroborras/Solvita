@@ -6,7 +6,7 @@
     <strong>Intelligent Competitive Programming Agent</strong>
   </p>
 
-  [![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
+  [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
   [![License](https://img.shields.io/badge/License-MIT-success.svg?style=for-the-badge)](LICENSE)
   [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=for-the-badge)](https://github.com/psf/black)
   [![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC.svg?style=for-the-badge&logo=pytest&logoColor=white)](https://pytest.org/)
@@ -21,13 +21,7 @@
 
 ## Introduction
 
-**Solvita** is an intelligent autonomous agent designed to solve competitive programming problems similar to those on Codeforces. By combining knowledge graphs, vector databases, and multi-model LLM technology, Solvita can automatically understand problems, retrieve relevant knowledge, generate test cases, plan solutions, and iteratively optimize code to produce passing C++ solutions.
-
-<div align="center">
-  <img src="https://img.shields.io/badge/Accuracy-85%25+-success?style=flat-square" alt="Accuracy"/>
-  <img src="https://img.shields.io/badge/Avg%20Response-30--60s-blue?style=flat-square" alt="Response Time"/>
-  <img src="https://img.shields.io/badge/Language-C++-00599C?style=flat-square&logo=cplusplus" alt="C++"/>
-</div>
+**Solvita** is an autonomous agent for solving competitive programming problems (Codeforces-style). It combines a LangGraph workflow, a trainable contextual-bandit memory system, sandboxed C++ execution, and iterative SEARCH/REPLACE patching to automatically understand problems, generate tests, plan solutions, and produce passing C++ code.
 
 ---
 
@@ -37,26 +31,26 @@
 <tr>
 <td width="50%">
 
-### Smart Knowledge Retrieval
-Hybrid retrieval system combining Neo4j knowledge graphs and vector databases for intelligent problem-solving context
+### Trainable Memory
+Contextual-bandit network that learns which strategies work for which problem types across plan, solve, and test phases
 
-### Multi-Model Support
-Compatible with OpenAI, Anthropic, and local open-source models for flexible deployment
+### Multi-Model LLM Support
+Works with any OpenAI-compatible API (GPT-4, Claude, local models) via a single config file
 
-### C++ Optimized
-Specifically designed and optimized for C++ competitive programming challenges
+### C++ Sandboxed Execution
+Resource-limited compilation and execution with `rlimit` sandboxing (CPU, memory, file size, process limits)
 
 </td>
 <td width="50%">
 
 ### Automatic Test Generation
-Intelligently generates extensive test cases based on public test examples
+Generates extensive test suites with generators, validators, and custom checkers
 
-### Iterative Optimization
-Self-improving code generation based on compilation errors and test feedback
+### SEARCH/REPLACE Patching
+Iterative code repair via structured patches instead of full rewrites
 
-### Dynamic Memory
-Continuous learning system that accumulates problem-solving experience
+### Adversarial Hack Testing
+Post-success adversarial phase that stress-tests solutions to find edge-case bugs
 
 </td>
 </tr>
@@ -68,24 +62,23 @@ Continuous learning system that accumulates problem-solving experience
 
 ```mermaid
 graph TD
-    A[Problem Input] --> B[Problem Parser]
-    B --> C[Knowledge Retrieval]
-    C --> D[Neo4j Knowledge Graph]
-    C --> E[Vector Database]
-    D --> F[Solution Planner]
-    E --> F
-    F --> G[Test Case Generator]
-    G --> H[C++ Code Generator]
-    H --> I[Compiler]
-    I --> J[Test Executor]
-    J --> K{Tests Pass?}
-    K -->|No| L[Feedback Analyzer]
-    L --> H
-    K -->|Yes| M[Output Solution]
-    
-    style A fill:#e3f2fd
-    style M fill:#c8e6c9
-    style K fill:#fff9c4
+    A[Problem Input] --> B[Plan Solution]
+    B -->|parallel| C[Generate Tests]
+    B -->|parallel| D[Generate Code]
+    D --> E[Compile Code]
+    E -->|success| F[Run Tests]
+    E -->|failed| I
+    C --> F
+    F --> G[Unified Check]
+    G --> H1[Update Plan Memory]
+    H1 --> H2[Update Solve Memory]
+    H2 -->|success| HT[Hack Test]
+    H2 -->|continue| I[Analyze Feedback]
+    H2 -->|max iterations| Z[END]
+    HT -->|hack again| HT
+    HT -->|hack failed| I
+    HT -->|all clear| Z
+    I --> D
 ```
 
 ---
@@ -94,27 +87,45 @@ graph TD
 
 ```
 solvita/
-├── config/                   # Configuration files
-│   ├── models.yaml           # LLM model configuration
-│   ├── neo4j.yaml            # Neo4j connection config
-│   └── vector_db.yaml        # Vector database config
-├── src/                      # Source code
-│   ├── agent/                # Main agent module
-│   ├── llm/                  # LLM interface module
-│   ├── knowledge/            # Knowledge management
-│   ├── parser/               # Problem parser
-│   ├── testgen/              # Test generator
-│   ├── planner/              # Solution planner
-│   ├── solver/               # Code generation & execution
-│   ├── feedback/             # Feedback analyzer
-│   └── utils/                # Utility functions
-├── data/                     # Data storage
-│   ├── problems/             # Problem storage
-│   ├── solutions/            # Solution storage
-│   └── test_cases/           # Test case storage
-├── tests/                    # Test files
-├── main.py                   # Entry point
-└── requirements.txt          # Dependencies
+├── config/
+│   └── models.yaml.example     # LLM configuration template
+├── src/
+│   ├── graph/
+│   │   ├── state.py            # SolvitaState TypedDict
+│   │   └── workflow.py         # LangGraph workflow definition
+│   ├── llm/
+│   │   └── unified_client.py   # OpenAI-compatible LLM client
+│   ├── memory/
+│   │   ├── types.py            # MemoryItem, Observation, MemoryEvent
+│   │   ├── store.py            # SQLite-backed item/event storage
+│   │   ├── policy.py           # Contextual bandit policy
+│   │   ├── featurizer.py       # Canonical problem -> feature keys
+│   │   ├── client.py           # Unified MemoryClient interface
+│   │   ├── skill_loader.py     # C++ skill snippets from skills/*.md
+│   │   └── seeds/              # Initial strategy templates
+│   ├── nodes/
+│   │   ├── plan_solution.py    # Problem analysis + canonical repr
+│   │   ├── generate_code.py    # Code gen with SEARCH/REPLACE patching
+│   │   ├── generate_tests.py   # Test suite generation
+│   │   ├── compile_code.py     # Sandboxed compilation
+│   │   ├── run_tests.py        # Sandboxed test execution
+│   │   ├── unified_check.py    # Pass/fail determination
+│   │   ├── analyze_feedback.py # Failure analysis + diagnostics
+│   │   ├── hack_test.py        # Adversarial stress testing
+│   │   ├── update_plan_memory.py
+│   │   ├── update_solve_memory.py
+│   │   └── routing.py          # Conditional edge logic
+│   └── utils/
+│       ├── cpp_execution.py    # rlimit-sandboxed compile/run
+│       └── patch_utils.py      # SEARCH/REPLACE block parser
+├── skills/                     # C++ algorithm snippets (*.md)
+├── data/memory/                # SQLite databases + policy weights
+│   ├── plan/  (memory.db, policy.json)
+│   ├── solve/ (memory.db, policy.json)
+│   └── test/  (memory.db, policy.json)
+├── tests/
+├── main.py                     # CLI entry point
+└── requirements.txt
 ```
 
 ---
@@ -123,41 +134,30 @@ solvita/
 
 ### Prerequisites
 
-<table>
-<tr>
-<td align="center"><img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white"/></td>
-<td align="center"><img src="https://img.shields.io/badge/Neo4j-4.0+-008CC1?style=flat-square&logo=neo4j&logoColor=white"/></td>
-<td align="center"><img src="https://img.shields.io/badge/C++-Compiler-00599C?style=flat-square&logo=cplusplus&logoColor=white"/></td>
-<td align="center"><img src="https://img.shields.io/badge/Vector-Database-FF6B6B?style=flat-square"/></td>
-</tr>
-</table>
+- **Python 3.10+**
+- **g++ or clang++** (C++17 support)
+- An OpenAI-compatible LLM API endpoint
 
-### Installation Steps
+### Steps
 
-**1. Clone the repository**
 ```bash
+# 1. Clone
 git clone https://github.com/S0lvita/solvita.git
 cd solvita
-```
 
-**2. Install dependencies**
-```bash
+# 2. Install dependencies
 pip install -r requirements.txt
-```
 
-**3. Configure environment**
-```bash
-# Copy configuration templates
+# 3. Configure LLM credentials (choose one method)
+
+# Option A: config file
 cp config/models.yaml.example config/models.yaml
-cp config/neo4j.yaml.example config/neo4j.yaml
-cp config/vector_db.yaml.example config/vector_db.yaml
+# Edit config/models.yaml with your base_url + api_key
 
-# Edit configuration files with your API keys and database credentials
-```
-
-**4. Initialize knowledge base**
-```bash
-python -m src.knowledge.init_knowledge_base
+# Option B: environment variables
+export SOLVITA_BASE_URL="https://api.openai.com/v1"
+export SOLVITA_API_KEY="sk-..."
+export SOLVITA_MODEL="gpt-4"
 ```
 
 ---
@@ -167,105 +167,44 @@ python -m src.knowledge.init_knowledge_base
 ### Python API
 
 ```python
-from src.agent.solvita_agent import SolvitaAgent
+from src.graph.workflow import run_workflow
 
-# Create agent instance
-agent = SolvitaAgent()
+result = run_workflow(
+    raw_problem={
+        "description": "Given an array, find two numbers that sum to target...",
+        "time_limit": 2000,
+        "space_limit": 256,
+        "public_tests": [
+            {"input": "5\n1 2 3 4 5\n6", "output": "1 5"},
+        ],
+    },
+    config={
+        "max_iterations": 5,
+        "trainable_memory": {"enabled": True, "data_dir": "data/memory"},
+    },
+)
 
-# Define problem input
-problem_input = {
-    "description": "Given an array, find two numbers that sum to target...",
-    "public_tests": [
-        {"input": "5\n1 2 3 4 5\n6", "output": "1 5"},
-        {"input": "3\n1 2 3\n4", "output": "1 3"}
-    ]
-}
-
-# Solve problem
-solution = agent.solve(problem_input)
-print(solution)
+print(result["solution"]["code"])
+print(f"Pass rate: {result['tests']['pass_rate']:.1%}")
 ```
 
 ### Command Line
 
 ```bash
-# Solve from file
-python main.py --input problem.json
-
-# Specify output file
 python main.py --input problem.json --output solution.cpp
-
-# Use specific model
-python main.py --input problem.json --model gpt-4
 ```
 
 ---
 
-## Configuration
+## Memory System
 
-### LLM Models
+See [docs/memory_architecture.md](docs/memory_architecture.md) for full details.
 
-```yaml
-# config/models.yaml
-models:
-  openai:
-    api_key: "your-openai-api-key"
-    model: "gpt-4"
-    temperature: 0.1
-  
-  anthropic:
-    api_key: "your-anthropic-api-key"
-    model: "claude-3-sonnet"
-    temperature: 0.1
-  
-  local:
-    model_path: "/path/to/local/model"
-    device: "cuda"
-```
+The trainable memory uses a **contextual bandit** that learns which strategies work for which problem types. Each namespace (plan/solve/test) has:
 
-### Neo4j Database
-
-```yaml
-# config/neo4j.yaml
-neo4j:
-  uri: "bolt://localhost:7687"
-  username: "neo4j"
-  password: "your-password"
-  database: "solvita"
-```
-
----
-
-## Performance Metrics
-
-<div align="center">
-
-| Metric | Result |
-|--------|--------|
-| **Accuracy** | 85%+ pass rate on Codeforces test set |
-| **Response Time** | Average 30-60 seconds per solution |
-| **Problem Types** | Dynamic Programming, Graph Theory, Math, Greedy, Strings |
-| **Test Generation** | 20-100 test cases per problem |
-
-</div>
-
----
-
-## Contributing
-
-We welcome community contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-### Development Setup
-
-```bash
-pip install -r requirements-dev.txt
-pytest tests/
-
-black src/
-isort src/
-
-mypy src/
-```
+- **SQLite store** for items and events
+- **Sparse linear policy** with feature-item edge weights
+- **Event logging** for offline analysis and batch training
 
 ---
 
@@ -277,23 +216,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-Special thanks to:
-
+- [LangGraph](https://github.com/langchain-ai/langgraph) - Workflow orchestration
 - [OpenAI](https://openai.com/) - GPT model support
 - [Anthropic](https://www.anthropic.com/) - Claude model support
-- [Neo4j](https://neo4j.com/) - Knowledge graph database
 - [Codeforces](https://codeforces.com/) - Competitive programming platform
-
----
-
-## Contact
-
-<div align="center">
-
-[![GitHub](https://img.shields.io/badge/GitHub-S0lvita%2Fsolvita-181717?style=for-the-badge&logo=github)](https://github.com/S0lvita/solvita)
-[![Issues](https://img.shields.io/badge/Issues-Report%20Bug-red?style=for-the-badge&logo=github)](https://github.com/S0lvita/solvita/issues)
-[![Discussions](https://img.shields.io/badge/Discussions-Join%20Us-blue?style=for-the-badge&logo=github)](https://github.com/S0lvita/solvita/discussions)
-
-</div>
 
 ---

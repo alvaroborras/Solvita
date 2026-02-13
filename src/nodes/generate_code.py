@@ -6,22 +6,22 @@ from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 from loguru import logger
 from src.llm import UnifiedLLMClient
-from src.utils.cpp_execution import sanitize_cpp, compile_cpp, run_program, run_checker
+from src.utils.cpp_execution import sanitize_cpp, compile_cpp, run_program, run_checker, ExecutionLimits
+from src.utils.patch_utils import parse_search_replace_blocks, apply_search_replace_blocks, compute_unified_diff
+from src.memory import MemoryClient, MemoryNamespace
 
 
-def _build_prompt(
+def _build_initial_prompt(
     problem_desc: str,
     algorithm: str,
     steps: List[str],
     constraints: Dict[str, Any],
     public_tests: List[Dict],
     generated_tests: List[Dict],
-    feedback_text: str,
-    specific_failures: List[Dict] = None,
-    suggested_fixes: List[str] = None,
+    memory_advice: str = "",
 ) -> str:
-    """Build the enhanced prompt with constraints, samples, and structured feedback."""
-
+    """Build prompt for initial code generation (no previous code)."""
+    
     # Format public tests
     public_block = ""
     if public_tests:
@@ -52,26 +52,8 @@ def _build_prompt(
             + "\n".join(parts)
         )
 
-    # Format specific failures (CRITICAL)
-    failures_block = ""
-    if specific_failures:
-        parts = ["CRITICAL: The following specific test cases FAILED. You MUST fix them:"]
-        for i, fail in enumerate(specific_failures[:3]): # Show top 3 failures
-            parts.append(f"  Failure {i+1} ({fail.get('type', 'Unknown Error')}):")
-            parts.append(f"    Input:\n{_indent(fail.get('input', ''), 6)}")
-            if fail.get('expected'):
-                parts.append(f"    Expected:\n{_indent(fail.get('expected', ''), 6)}")
-            if fail.get('output'):
-                parts.append(f"    Actual Output:\n{_indent(fail.get('output', ''), 6)}")
-            if fail.get('details'):
-                 parts.append(f"    Details:\n{_indent(fail.get('details', ''), 6)}")
-        failures_block = "\n".join(parts)
-
-    # Format suggested fixes
-    fixes_block = ""
-    if suggested_fixes:
-        fixes_block = "Suggested Fixes:\n" + "\n".join([f"- {fix}" for fix in suggested_fixes])
-
+    advice_section = f"\n{memory_advice}\n" if memory_advice else ""
+    
     return f"""Generate a complete C++ solution for this competitive programming problem:
 
 Problem: {problem_desc}
@@ -86,12 +68,7 @@ Implementation steps:
 {public_block}
 
 {gen_block}
-
-{feedback_text}
-
-{failures_block}
-
-{fixes_block}
+{advice_section}
 
 Requirements:
 - Use standard C++ (C++17)
@@ -100,9 +77,108 @@ Requirements:
 - Implement fast I/O
 - Handle all edge cases
 - Optimize for time complexity
-- Pay special attention to the CRITICAL FAILURES above.
 
 Generate ONLY the complete C++ code, no explanations."""
+
+
+def _build_patch_prompt(
+    prev_code: str,
+    problem_desc: str,
+    algorithm: str,
+    steps: List[str],
+    specific_failures: List[Dict],
+    suggested_fixes: List[str],
+    feedback_text: str,
+    memory_advice: str = "",
+) -> str:
+    """Build prompt for patching existing code using SEARCH/REPLACE."""
+    
+    # Format specific failures (up to 10)
+    failures_block = ""
+    if specific_failures:
+        parts = ["The following test cases are FAILING:"]
+        for i, fail in enumerate(specific_failures[:10]):
+            parts.append(f"\nFailure {i+1} ({fail.get('type', 'Unknown Error')}):")
+            # Truncate input if too long
+            inp = str(fail.get('input', ''))
+            if len(inp) > 300:
+                inp = inp[:300] + "...(truncated)"
+            parts.append(f"  Input:\n{_indent(inp, 4)}")
+            if fail.get('expected'):
+                exp = str(fail.get('expected', ''))
+                if len(exp) > 200:
+                    exp = exp[:200] + "...(truncated)"
+                parts.append(f"  Expected:\n{_indent(exp, 4)}")
+            if fail.get('output'):
+                out = str(fail.get('output', ''))
+                if len(out) > 200:
+                    out = out[:200] + "...(truncated)"
+                parts.append(f"  Actual Output:\n{_indent(out, 4)}")
+            if fail.get('details'):
+                details = str(fail.get('details', ''))
+                if len(details) > 200:
+                    details = details[:200] + "...(truncated)"
+                parts.append(f"  Details:\n{_indent(details, 4)}")
+        failures_block = "\n".join(parts)
+
+    # Format suggested fixes
+    fixes_block = ""
+    if suggested_fixes:
+        fixes_block = "Suggested Fixes:\n" + "\n".join([f"- {fix}" for fix in suggested_fixes])
+    
+    advice_section = f"\n{memory_advice}\n" if memory_advice else ""
+    
+    return f"""You are debugging a C++ solution that is FAILING tests. Your task is to generate SEARCH/REPLACE edits to fix the bugs.
+
+Problem: {problem_desc}
+
+Algorithm: {algorithm}
+
+Implementation steps:
+{chr(10).join(steps)}
+
+## Current Code (BUGGY):
+```cpp
+{prev_code}
+```
+
+## Test Failures:
+{failures_block}
+
+{feedback_text}
+
+{fixes_block}
+{advice_section}
+
+## Your Task:
+Analyze the failures and generate *SEARCH/REPLACE* edits to fix the bugs.
+
+Every *SEARCH/REPLACE* edit must use this EXACT format:
+<<<<<<< SEARCH
+<exact contiguous code snippet from the current code>
+=======
+<replacement code with the fix>
+>>>>>>> REPLACE
+
+**CRITICAL RULES:**
+1. The SEARCH block must match the current code EXACTLY (including whitespace, indentation)
+2. The SEARCH block must appear EXACTLY ONCE in the code
+3. You can have multiple SEARCH/REPLACE blocks to fix multiple issues
+4. Preserve proper indentation in the REPLACE block
+5. Make minimal, surgical changes - only fix what's broken
+
+Example:
+<<<<<<< SEARCH
+    for (int i = 1; i <= n; i++) {{
+        sum += arr[i];
+    }}
+=======
+    for (int i = 0; i < n; i++) {{
+        sum += arr[i];
+    }}
+>>>>>>> REPLACE
+
+Generate the SEARCH/REPLACE edits now:"""
 
 
 def _indent(text: str, n: int) -> str:
@@ -156,7 +232,7 @@ def _self_validate(
         exe_path = tmp / "solution.exe"
         src_path.write_text(code, encoding="utf-8")
 
-        ok, compile_log = compile_cpp(src_path, exe_path, timeout=10)
+        ok, compile_log = compile_cpp(src_path, exe_path, limits=ExecutionLimits.default_compile())
         if not ok:
             return False, [{"type": "compile_error", "message": compile_log}], 0
 
@@ -169,7 +245,7 @@ def _self_validate(
             expected = tc["expected_output"].strip()
             total_run += 1
             try:
-                retcode, stdout, stderr = run_program(exe_path, input_text=inp, timeout=2)
+                retcode, stdout, stderr = run_program(exe_path, input_text=inp, limits=ExecutionLimits.default_run())
             except Exception as e:
                 failures.append({
                     "id": tc["id"],
@@ -272,65 +348,69 @@ def _format_self_validation_feedback(failures: List[Dict], total_run: int, total
             lines.append(f"    Expected: {expected}")
             lines.append(f"    Actual:   {actual}")
 
-    lines.append("Please fix these issues and regenerate the code.")
+    lines.append("Please fix these issues.")
     return "\n".join(lines)
 
 
 def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     """
-    Generate C++ solution code using LLM with lightweight self-validation.
-
-    Responsibilities:
-    - Generate C++ code based on problem description, algorithm plan, and tests
-    - Lightweight self-validation: compile + run public + up to 5 generated tests
-    - If validation fails, retry up to 3 times before returning last attempt
-
-    Note: Full testing happens in run_tests_node. This is just a quick check.
+    Generate C++ solution code using LLM.
+    
+    - First iteration: Generate complete code
+    - Subsequent iterations: Use SEARCH/REPLACE patches to fix bugs
+    
+    All changes use the patch-based approach for traceability.
     """
     logger.info(f"[Node] Generating C++ code (version {state['solution'].get('version', 0) + 1})")
 
     llm = UnifiedLLMClient(state["config"])
     llm_calls = 0
 
-    problem_desc = state["problem"].get("description", "")
+    # Prefer canonical problem representation if available
+    canonical = state["problem"].get("canonical", {})
+    if canonical:
+        problem_desc = f"""Objective: {canonical.get('objective', '')}
+Inputs: {json.dumps(canonical.get('inputs', {}), indent=2)}
+Outputs: {json.dumps(canonical.get('outputs', {}), indent=2)}
+Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}
+Required Properties: {canonical.get('required_properties', [])}"""
+    else:
+        problem_desc = state["problem"].get("description", "")
+
     algorithm = state["plan"].get("algorithm_choice", "")
     steps = state["plan"].get("implementation_steps", [])
     constraints = state["problem"].get("constraints", {})
     public_tests = state["problem"].get("public_tests", [])
     generated_tests = state.get("tests", {}).get("generated_tests", [])
+    iteration = state.get("iteration", 0)
+    
+    # Initialize solve memory
+    memory = MemoryClient(
+        namespace=MemoryNamespace.SOLVE,
+        config=state["config"],
+        problem_desc=problem_desc,
+        canonical=canonical,
+    )
+    
+    # Get memory injection
+    failure_type = None
+    if iteration > 0:
+        feedback_data = state.get("feedback", {}).get("feedback", {})
+        error_pattern = feedback_data.get("error_pattern", "")
+        if "compile" in error_pattern.lower():
+            failure_type = "COMPILE_FAIL"
+        elif "timeout" in error_pattern.lower() or "tle" in error_pattern.lower():
+            failure_type = "TIMEOUT"
+        else:
+            failure_type = "SOLVE_WA"
+    
+    memory_advice, memory_item_ids = memory.get_injection(
+        fsm_state="SOLVE_DRAFT",
+        failure_type=failure_type,
+        attempt_count=iteration,
+    )
 
-    # Build self-validation feedback from previous iteration
-    feedback_text = ""
-    if state["iteration"] > 0:
-        feedback = state.get("feedback", {}).get("feedback", {})
-        if feedback:
-            feedback_lines = ["Previous attempt issues:"]
-            # Extract LLM analysis from analyze_feedback node
-            analysis = feedback.get("analysis")
-            error_pattern = feedback.get("error_pattern")
-            
-            if error_pattern:
-                feedback_lines.append(f"Error Pattern detected: {error_pattern}")
-            
-            if analysis:
-                feedback_lines.append(f"Analysis of previous failure:\n{analysis}")
-            
-            # Also try to include raw errors if passed (future proofing), but analysis is primary
-            if "compilation_errors" in feedback:
-                feedback_lines.append("  Compilation errors:")
-                for err in feedback["compilation_errors"]:
-                    feedback_lines.append(f"    - {err}")
-            # Note: analyze_feedback currently puts analysis in 'analysis' field, 
-            # and does not pass raw failed_tests structure. 
-            # So the analysis text is the main source of truth.
-            
-            if error_pattern or analysis:
-                feedback_lines.append("\nCRITICAL: Your previous code had the above issues.")
-                feedback_lines.append("You MUST fix these specific issues or implement a DIFFERENT approach if the same bug persists.")
-            
-            feedback_text = "\n".join(feedback_lines)
-
-    # Build verification set (lightweight: public + up to 5 generated)
+    # Build verification set
     verify_set = _build_verification_set(public_tests, generated_tests)
     checker_exe_str = state.get("tests", {}).get("checker_exe")
     checker_exe = Path(checker_exe_str) if checker_exe_str else None
@@ -338,60 +418,148 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     max_self_attempts = 3
     code = ""
     self_validation_log = []
-
-    # Extract specific failures and fixes if available
-    specific_failures = []
-    suggested_fixes = []
-    if state["iteration"] > 0:
-        feedback_data = state.get("feedback", {}).get("feedback", {})
-        specific_failures = feedback_data.get("failures", [])
-        suggested_fixes = state.get("feedback", {}).get("suggested_fixes", [])
-
-    for attempt in range(1, max_self_attempts + 1):
-        prompt = _build_prompt(
-            problem_desc, algorithm, steps,
-            constraints, public_tests, generated_tests,
-            feedback_text,
-            specific_failures=specific_failures,
-            suggested_fixes=suggested_fixes,
-        )
-
-        code = llm.generate(prompt)
-        llm_calls += 1
-        code = sanitize_cpp(code)
-
-        # Self-validate
-        passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
-
-        if passed:
-            self_validation_log.append(
-                f"Self-validation attempt {attempt}: PASSED all {len(verify_set)} cases"
+    prev_code = state["solution"].get("code", "")
+    
+    # Determine if this is initial generation or patch iteration
+    is_initial = (iteration == 0 or not prev_code)
+    
+    if is_initial:
+        # First time: generate complete code
+        logger.info("[GenCode] Initial generation (no previous code)")
+        
+        for attempt in range(1, max_self_attempts + 1):
+            prompt = _build_initial_prompt(
+                problem_desc, algorithm, steps,
+                constraints, public_tests, generated_tests,
+                memory_advice=memory_advice,
             )
-            logger.info(f"[GenCode] Self-validation passed on attempt {attempt}")
-            break
 
-        # Log failure summary
-        fail_summary = f"Self-validation attempt {attempt}: FAILED ({len(failures)} issue(s) in {total_run}/{len(verify_set)} cases)"
-        self_validation_log.append(fail_summary)
-        logger.info(f"[GenCode] {fail_summary}")
+            code = llm.generate(prompt)
+            llm_calls += 1
+            code = sanitize_cpp(code)
 
-        if attempt < max_self_attempts:
-            # Inject failure info into feedback for next attempt
-            feedback_text = _format_self_validation_feedback(failures, total_run, len(verify_set))
+            # Self-validate
+            passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
 
-    # Build solution dict (avoiding SolutionData import for circular dep fix)
+            if passed:
+                self_validation_log.append(
+                    f"Self-validation attempt {attempt}: PASSED all {len(verify_set)} cases"
+                )
+                logger.info(f"[GenCode] Self-validation passed on attempt {attempt}")
+                break
+
+            fail_summary = f"Self-validation attempt {attempt}: FAILED ({len(failures)} issue(s) in {total_run}/{len(verify_set)} cases)"
+            self_validation_log.append(fail_summary)
+            logger.info(f"[GenCode] {fail_summary}")
+
+            if attempt < max_self_attempts:
+                # For next attempt within initial generation, still regenerate complete code
+                # but inject failure info
+                pass
+    
+    else:
+        # Patch mode: use SEARCH/REPLACE to fix previous code
+        logger.info("[GenCode] Patch mode (fixing previous code)")
+        
+        # Extract feedback from previous iteration
+        feedback_text = ""
+        specific_failures = []
+        suggested_fixes = []
+        
+        if iteration > 0:
+            feedback_data = state.get("feedback", {}).get("feedback", {})
+            specific_failures = feedback_data.get("failures", [])
+            suggested_fixes = state.get("feedback", {}).get("suggested_fixes", [])
+            
+            analysis = feedback_data.get("analysis", "")
+            error_pattern = feedback_data.get("error_pattern", "")
+            if analysis:
+                feedback_text = f"Analysis: {analysis}\nError Pattern: {error_pattern}"
+        
+        for attempt in range(1, max_self_attempts + 1):
+            prompt = _build_patch_prompt(
+                prev_code,
+                problem_desc,
+                algorithm,
+                steps,
+                specific_failures,
+                suggested_fixes,
+                feedback_text,
+                memory_advice=memory_advice,
+            )
+            
+            llm_response = llm.generate(prompt)
+            llm_calls += 1
+            
+            # Parse SEARCH/REPLACE blocks
+            blocks = parse_search_replace_blocks(llm_response)
+            
+            if not blocks:
+                logger.warning(f"[GenCode] No SEARCH/REPLACE blocks found in LLM response (attempt {attempt})")
+                self_validation_log.append(f"Patch attempt {attempt}: No valid SEARCH/REPLACE blocks found")
+                code = prev_code  # Keep previous code
+                continue
+            
+            # Apply patches
+            success, patched_code, error_msg = apply_search_replace_blocks(prev_code, blocks)
+            
+            if not success:
+                logger.warning(f"[GenCode] Patch application failed: {error_msg} (attempt {attempt})")
+                self_validation_log.append(f"Patch attempt {attempt}: Failed to apply - {error_msg}")
+                code = prev_code  # Keep previous code
+                continue
+            
+            # Log the diff for traceability
+            diff = compute_unified_diff(prev_code, patched_code)
+            logger.debug(f"[GenCode] Patch diff:\n{diff}")
+            
+            code = patched_code
+            
+            # Self-validate patched code
+            passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
+            
+            if passed:
+                self_validation_log.append(
+                    f"Patch attempt {attempt}: Applied {len(blocks)} edit(s), PASSED all {len(verify_set)} cases"
+                )
+                logger.info(f"[GenCode] Patch validation passed on attempt {attempt}")
+                break
+            
+            fail_summary = f"Patch attempt {attempt}: Applied {len(blocks)} edit(s), FAILED ({len(failures)} issue(s) in {total_run}/{len(verify_set)} cases)"
+            self_validation_log.append(fail_summary)
+            logger.info(f"[GenCode] {fail_summary}")
+            
+            if attempt < max_self_attempts:
+                # For next patch attempt, inject validation failures
+                feedback_text = _format_self_validation_feedback(failures, total_run, len(verify_set))
+                # Update specific_failures with validation failures
+                specific_failures = [
+                    {
+                        "type": f.get("type", "unknown"),
+                        "input": f.get("input", ""),
+                        "expected": f.get("expected", ""),
+                        "output": f.get("actual", ""),
+                        "details": f.get("message", ""),
+                    }
+                    for f in failures
+                ]
+
+    # Build solution dict
     solution = {
         "code": code,
         "version": state["solution"].get("version", 0) + 1,
         "compilation_success": False,
         "compilation_errors": [],
         "executable_path": None,
+        "memory_item_ids": memory_item_ids,
     }
 
     return {
         "solution": solution,
         "execution_log": [
             f"Generated C++ code (v{solution['version']}), {llm_calls} LLM call(s)",
+            f"  Mode: {'initial' if is_initial else 'patch'}",
+            f"  Solve memory items injected: {len(memory_item_ids)}",
             *self_validation_log,
         ],
         "llm_calls": llm_calls,

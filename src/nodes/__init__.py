@@ -5,10 +5,7 @@
 # which in turn may import from workflow (via graph/__init__.py)
 
 def __getattr__(name: str):
-    if name == "retrieve_knowledge_node":
-        from .retrieve_knowledge import retrieve_knowledge_node
-        return retrieve_knowledge_node
-    elif name == "plan_solution_node":
+    if name == "plan_solution_node":
         from .plan_solution import plan_solution_node
         return plan_solution_node
     elif name == "generate_tests_node":
@@ -29,6 +26,12 @@ def __getattr__(name: str):
     elif name == "unified_check_node":
         from .unified_check import unified_check_node
         return unified_check_node
+    elif name == "update_plan_memory_node":
+        from .update_plan_memory import update_plan_memory_node
+        return update_plan_memory_node
+    elif name == "update_solve_memory_node":
+        from .update_solve_memory import update_solve_memory_node
+        return update_solve_memory_node
     elif name == "status_routing":
         from .routing import status_routing
         return status_routing
@@ -45,7 +48,6 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    "retrieve_knowledge_node",
     "plan_solution_node",
     "generate_tests_node",
     "generate_code_node",
@@ -53,7 +55,8 @@ __all__ = [
     "run_tests_node",
     "analyze_feedback_node",
     "unified_check_node",
-    "unified_check_node",
+    "update_plan_memory_node",
+    "update_solve_memory_node",
     "status_routing",
     "compilation_routing",
     "hack_test_node",

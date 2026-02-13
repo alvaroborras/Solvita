@@ -5,44 +5,44 @@ from typing import Dict, Any
 
 def status_routing(state: Dict[str, Any]) -> str:
     """
-    Routing function based on solution status
-    
+    Routing after memory settlement.
+
     Returns:
-    - "success": if all tests passed → go to hack_test
-    - "max_iterations": if max iterations reached → END
-    - "continue": if should continue iterating
+      - "hack": if status == "success" -> enter adversarial hack phase
+      - "continue": if still iterating
+      - "end": if max_iterations reached (give up)
     """
     status = state.get("status", "pending")
-    
+
     if status == "success":
-        return "success"
+        return "hack"
     elif status == "max_iterations":
-        return "max_iterations"
+        return "end"
     else:
         return "continue"
 
 
 def compilation_routing(state: Dict[str, Any]) -> str:
     """
-    Routing function after compilation
-    
+    Routing after compilation.
+
     Returns:
-    - "success": if compilation succeeded → go to run_tests
-    - "failed": if compilation failed → go to analyze_feedback
+      - "success": compilation ok -> proceed to run_tests
+      - "failed": compilation failed -> analyze_feedback
     """
-    if state['solution'].get('compilation_success', False):
+    if state["solution"].get("compilation_success", False):
         return "success"
-    else:
-        return "failed"
+    return "failed"
+
 
 def hack_routing(state: Dict[str, Any]) -> str:
     """
-    Routing function during Adversarial Hack Phase
-    
+    Routing during the adversarial hack phase.
+
     Returns:
-    - "hack_again": if hack passed and rounds < max_rounds (continue hacking)
-    - "end": if hack passed and rounds >= max_rounds (all clear)
-    - "hack_failed": if hack found bugs (go to analyze_feedback)
+      - "hack_again": hack passed but rounds < max -> keep hacking
+      - "end": hack passed and rounds >= max -> all clear, done
+      - "hack_failed": hack found bugs -> analyze_feedback
     """
     if state.get("hack_passed", False):
         hack_round = state.get("hack_round", 0)
