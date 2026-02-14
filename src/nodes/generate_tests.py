@@ -7,7 +7,6 @@ from pathlib import Path
 import shutil
 import subprocess
 from loguru import logger
-from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.memory import MemoryClient, FSMState, FailureType
 
@@ -178,7 +177,6 @@ Constraints:
 {json.dumps(constraints, indent=2)}
 
 Public Tests:
-{json.dumps(public_tests, indent=2)}
 {json.dumps(public_tests, indent=2)}
 {feedback_block}
 {advice_block}
