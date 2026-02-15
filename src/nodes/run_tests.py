@@ -30,8 +30,20 @@ def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     
     if not exe_path:
         logger.debug("No executable path found (waiting for compilation)")
+        updated_tests = dict(tests_data)
+        updated_tests["pending_execution"] = True
         return {
+            "tests": updated_tests,
             "execution_log": ["Waiting for compilation"],
+        }
+
+    if not tests:
+        logger.debug("No tests found (waiting for test generation)")
+        updated_tests = dict(tests_data)
+        updated_tests["pending_execution"] = True
+        return {
+            "tests": updated_tests,
+            "execution_log": ["Waiting for test generation"],
         }
     
     results = []
@@ -126,6 +138,7 @@ def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
         "test_results": results,
         "passed_tests": passed,
         "pass_rate": pass_rate,
+        "pending_execution": False,
     })
 
     return {

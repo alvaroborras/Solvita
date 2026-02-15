@@ -6,6 +6,7 @@
 
 # Runtime data
 data/memory/
+data/generated/
 
 # Python cache
 __pycache__/
@@ -17,3 +18,11 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Temporary compilation outputs
+tmp/
+
+# Local reports / guides (untracked)
+MERGE_TEST_REPORT.md
+TRAIN_SCRIPT_V2_GUIDE.md
+docs/repair_plan_1575B.md

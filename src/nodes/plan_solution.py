@@ -5,41 +5,10 @@ import json
 from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.memory import MemoryClient, MemoryNamespace
+from src.utils.json_utils import parse_json_response
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState, PlanData
-
-
-def parse_json_response(response: str) -> dict:
-    """
-    Parse JSON from LLM response, handling markdown code blocks
-
-    Supports:
-    - Pure JSON: {"key": "value"}
-    - Markdown wrapped: ```json\n{"key": "value"}\n```
-    - Generic code block: ```\n{"key": "value"}\n```
-    """
-    cleaned = response.strip()
-
-    # Remove markdown code block markers
-    if '```json' in cleaned:
-        # Extract content between ```json and ```
-        parts = cleaned.split('```json')
-        if len(parts) > 1:
-            cleaned = parts[1].split('```')[0].strip()
-    elif '```' in cleaned:
-        # Extract content between ``` and ```
-        parts = cleaned.split('```')
-        if len(parts) >= 3:
-            cleaned = parts[1].strip()
-
-    # Parse JSON
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response: {e}")
-        logger.debug(f"Response content: {cleaned[:200]}...")
-        raise
 
 
 def plan_solution_node(state: "SolvitaState") -> Dict[str, Any]:

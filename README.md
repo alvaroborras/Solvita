@@ -152,7 +152,7 @@ pip install -r requirements.txt
 
 # Option A: config file
 cp config/models.yaml.example config/models.yaml
-# Edit config/models.yaml with your base_url + api_key
+# Edit config/models.yaml with your base_url + api_key (+ optional llm.roles per node)
 
 # Option B: environment variables
 export SOLVITA_BASE_URL="https://api.openai.com/v1"

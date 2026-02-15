@@ -7,6 +7,7 @@ from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
+from src.utils.json_utils import parse_json_response
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
@@ -45,6 +46,31 @@ Required Properties: {canonical.get('required_properties', [])}"""
     steps = state.get('plan', {}).get('implementation_steps', [])
     iteration = state.get('iteration', 0)
     pass_rate = state['tests'].get('pass_rate', 0.0)
+    solution_version = state.get('solution', {}).get('version', 0)
+    pending_execution = state.get('tests', {}).get('pending_execution', False)
+
+    fingerprint = (
+        f"it={iteration}|v={solution_version}|pass={pass_rate:.6f}|"
+        f"tests={len(test_results)}|comp_errs={len(compilation_errors)}|"
+        f"hack={len(hack_failures)}"
+    )
+    existing_fingerprint = state.get('feedback', {}).get('fingerprint')
+
+    if pending_execution and not compilation_errors and not hack_failures:
+        logger.debug("Skipping feedback: tests pending execution")
+        return {
+            "execution_log": ["Feedback skipped: tests pending execution"],
+            "llm_calls": 0,
+            "skip_generate_code": True,
+        }
+
+    if existing_fingerprint == fingerprint:
+        logger.debug("Skipping feedback: already analyzed for current results")
+        return {
+            "execution_log": ["Feedback skipped: already analyzed"],
+            "llm_calls": 0,
+            "skip_generate_code": True,
+        }
     
     # Initialize LLM
     llm = UnifiedLLMClient(state['config'])
@@ -77,6 +103,7 @@ Required Properties: {canonical.get('required_properties', [])}"""
         "feedback": feedback_dict,
         "suggested_fixes": feedback_dict.get('suggested_fixes', []),
         "error_pattern": feedback_dict.get('error_pattern', ''),
+        "fingerprint": fingerprint,
     }
 
     return {
@@ -142,7 +169,7 @@ def _select_representative_failures(failed_tests: List[Dict], max_count: int = 1
     # 1. Priority: Different error types
     error_types = {}
     for t in failed_tests:
-        error = t.get('error', '')
+        error = str(t.get('error') or '')
         if 'Timeout' in error or 'timeout' in error.lower():
             error_types.setdefault('timeout', []).append(t)
         elif t.get('passed') == False and t.get('actual') == '':
@@ -367,13 +394,7 @@ Return ONLY valid JSON (no markdown, no explanation outside JSON):
     
     # Parse structured response
     try:
-        json_str = analysis.strip()
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_str:
-            json_str = json_str.split("```")[1].split("```")[0].strip()
-        
-        parsed = json.loads(json_str)
+        parsed = parse_json_response(analysis)
         analysis_text = parsed.get("analysis", analysis)
         error_pattern = parsed.get("error_pattern", error_pattern)
         suggested_fixes = parsed.get("suggested_fixes", [])
@@ -462,14 +483,7 @@ Return ONLY JSON:
     response = llm.generate(prompt)
     
     try:
-        # Simple extraction
-        json_str = response.strip()
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_str:
-            json_str = json_str.split("```")[1].split("```")[0].strip()
-            
-        analysis_data = json.loads(json_str)
+        analysis_data = parse_json_response(response)
     except Exception:
         analysis_data = {"analysis": "Failed to parse analysis", "suggested_fixes": []}
     

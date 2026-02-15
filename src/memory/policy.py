@@ -3,13 +3,55 @@
 import json
 import logging
 import random
-import fcntl
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from src.memory.types import MemoryItem, Observation
 
+# Cross-platform file locking
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+    try:
+        import msvcrt
+        HAS_MSVCRT = True
+    except ImportError:
+        HAS_MSVCRT = False
+
 logger = logging.getLogger(__name__)
+
+
+# ========== Cross-platform file locking helpers ==========
+
+def lock_file(f, exclusive=False):
+    """
+    Acquire file lock (cross-platform).
+    
+    Args:
+        f: File object
+        exclusive: If True, acquire exclusive lock; else shared lock
+    """
+    if HAS_FCNTL:
+        # Unix/Linux
+        lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(f.fileno(), lock_type)
+    elif HAS_MSVCRT:
+        # Windows
+        if exclusive:
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        # Note: Windows doesn't have shared locks via msvcrt
+    # If no locking available, proceed without locking (best effort)
+
+
+def unlock_file(f):
+    """Release file lock (cross-platform)."""
+    if HAS_FCNTL:
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    elif HAS_MSVCRT:
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class BanditPolicy:
@@ -45,10 +87,10 @@ class BanditPolicy:
             with open(self.model_path, "r") as f:
                 # Acquire shared lock for reading
                 try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    lock_file(f, exclusive=False)
                     data = json.load(f)
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    unlock_file(f)
             
             self.weights = data.get("weights", {})
             self.bias = data.get("bias", {})
@@ -76,10 +118,10 @@ class BanditPolicy:
             # Write to temp file with exclusive lock
             with open(temp_path, "w") as f:
                 try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    lock_file(f, exclusive=True)
                     json.dump(payload, f, indent=0)
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    unlock_file(f)
             
             # Atomic rename
             temp_path.replace(self.model_path)

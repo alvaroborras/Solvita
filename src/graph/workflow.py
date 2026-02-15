@@ -30,9 +30,12 @@ from src.nodes import (
     update_plan_memory_node,
     update_solve_memory_node,
     hack_test_node,
+    join_ready_node,
+    join_wait_node,
     status_routing,
     compilation_routing,
     hack_routing,
+    join_routing,
 )
 from typing import Dict, Any
 from loguru import logger
@@ -58,6 +61,8 @@ def create_solvita_workflow() -> StateGraph:
 
     # Phase 3: Compilation + test execution
     workflow.add_node("compile_code", compile_code_node)
+    workflow.add_node("join_ready", join_ready_node)
+    workflow.add_node("join_wait", join_wait_node)
     workflow.add_node("run_tests", run_tests_node)
 
     # Phase 4: Evaluation + memory settlement
@@ -88,13 +93,23 @@ def create_solvita_workflow() -> StateGraph:
         "compile_code",
         compilation_routing,
         {
-            "success": "run_tests",
+            "success": "join_ready",
             "failed": "analyze_feedback",
         },
     )
 
-    # Join: generate_tests -> run_tests (waits for compile_code too)
-    workflow.add_edge("generate_tests", "run_tests")
+    # Join: generate_tests -> join_ready (waits for compile_code too)
+    workflow.add_edge("generate_tests", "join_ready")
+
+    # Conditional join barrier before running tests
+    workflow.add_conditional_edges(
+        "join_ready",
+        join_routing,
+        {
+            "ready": "run_tests",
+            "wait": "join_wait",
+        },
+    )
 
     # After running tests, check + settle memory
     workflow.add_edge("run_tests", "unified_check")

@@ -44,6 +44,15 @@ def __getattr__(name: str):
     elif name == "hack_routing":
         from .routing import hack_routing
         return hack_routing
+    elif name == "join_ready_node":
+        from .join_ready import join_ready_node
+        return join_ready_node
+    elif name == "join_wait_node":
+        from .join_ready import join_wait_node
+        return join_wait_node
+    elif name == "join_routing":
+        from .routing import join_routing
+        return join_routing
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -61,5 +70,8 @@ __all__ = [
     "compilation_routing",
     "hack_test_node",
     "hack_routing",
+    "join_ready_node",
+    "join_wait_node",
+    "join_routing",
 ]
 

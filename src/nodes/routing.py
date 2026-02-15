@@ -51,3 +51,20 @@ def hack_routing(state: Dict[str, Any]) -> str:
             return "end"
         return "hack_again"
     return "hack_failed"
+
+
+def join_routing(state: Dict[str, Any]) -> str:
+        """
+        Routing for the compile/tests join.
+
+        Returns:
+            - "ready": both compile and tests are ready
+            - "wait": otherwise
+        """
+        tests = state.get("tests", {})
+        tests_ready = tests.get("ready", False) and bool(tests.get("generated_tests"))
+        compile_ready = state.get("solution", {}).get("compilation_success", False)
+
+        if tests_ready and compile_ready:
+                return "ready"
+        return "wait"

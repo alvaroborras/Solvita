@@ -229,19 +229,18 @@ def main():
     parser.add_argument("--workflow", action="store_true", help="Run using LangGraph run_workflow()")
     parser.add_argument("--step", action="store_true", help="Run using manual step-by-step execution")
     parser.add_argument("--quick", action="store_true", help="Quick mode (skip generate_tests) for step mode")
-    parser.add_argument("--model", default="claude-opus-4-5-20251101", help="LLM model to use")
+    parser.add_argument("--model", default=None, help="LLM model to use (optional, defaults to config/models.yaml)")
     
     args = parser.parse_args()
 
     raw_problem = load_problem(args.problem)
     
     config = {
-        "model": args.model,
         "temperature": 0.1,
         "max_iterations": 3,
-        "base_url": "http://14.103.68.46/v1",
-        "api_key": "sk-<redacted>",
     }
+    if args.model:
+        config["model"] = args.model
     
     start_time = time.time()
     final_state = {}

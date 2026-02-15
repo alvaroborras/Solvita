@@ -66,8 +66,12 @@ class TestData(TypedDict, total=False):
     test_results: List[Dict]
     passed_tests: int
     pass_rate: float
+    pending_execution: bool
+    ready: bool
     # Checker executable path (set by generate_tests_node)
     checker_exe: Optional[str]
+    # Validator executable path (set by generate_tests_node)
+    validator_exe: Optional[str]
 
 
 class FeedbackData(TypedDict, total=False):
@@ -163,7 +167,10 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             test_results=[],
             passed_tests=0,
             pass_rate=0.0,
+            pending_execution=False,
+            ready=False,
             checker_exe=None,
+            validator_exe=None,
         ),
         feedback=FeedbackData(
             feedback={},

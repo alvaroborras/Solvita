@@ -1,0 +1,27 @@
+# Solvita LLM runtime configuration
+# Fill required fields before running workflow.
+
+llm:
+  # Required: OpenAI-compatible endpoint and key
+  base_url: "http://14.103.68.46/v1"
+  api_key: "sk-<redacted>"
+
+  # Default model for all nodes (can be overridden by roles below)
+  model: "gpt-5.2"
+  temperature: 0.1
+  max_tokens: 8192
+
+  # Optional per-role overrides to match previous behavior
+  roles:
+    code:
+      model: "gpt-5.2"
+    generator:
+      model: "claude-opus-4-5-20251101"
+    validator:
+      model: "gpt-5.2"
+    checker:
+      model: "gpt-5.2"
+    output:
+      model: "gpt-5.2"
+    hacker:
+      model: "claude-opus-4-6"

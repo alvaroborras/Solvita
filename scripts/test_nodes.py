@@ -268,7 +268,7 @@ def main():
     parser.add_argument("problem", nargs="?", help="Path to problem JSON file")
     parser.add_argument("--quick", action="store_true", help="Quick mode: skip generate_tests")
     parser.add_argument("--list", action="store_true", help="List available problems")
-    parser.add_argument("--model", default="claude-opus-4-5-20251101", help="LLM model to use")
+    parser.add_argument("--model", default=None, help="LLM model to use (optional, defaults to config/models.yaml)")
     parser.add_argument("--max-iters", type=int, default=3, help="Max iterations")
 
     args = parser.parse_args()
@@ -288,13 +288,12 @@ def main():
 
     # Config
     config = {
-        "model": args.model,
         "temperature": 0.1,
         "max_tokens": 128000,
         "max_iterations": args.max_iters,
-        "base_url": "http://14.103.68.46/v1",
-        "api_key": "sk-<redacted>",
     }
+    if args.model:
+        config["model"] = args.model
 
     # Run
     start_all = time.time()

@@ -65,6 +65,25 @@ class ExecutionLimits:
         )
 
 
+def _make_run_kwargs(limits: ExecutionLimits, work_dir: Optional[Path] = None, **base_kwargs) -> dict:
+    """
+    Build subprocess.run kwargs with platform-appropriate settings.
+    
+    On Unix/Linux: Uses preexec_fn for resource limits
+    On Windows: Returns base_kwargs without preexec_fn (not supported)
+    """
+    kwargs = dict(base_kwargs)
+    
+    # Only use preexec_fn on Unix/Linux platforms
+    if sys.platform != "win32" and HAS_RESOURCE:
+        kwargs["preexec_fn"] = _make_preexec_fn(limits, work_dir=work_dir)
+    elif work_dir:
+        # On Windows, change directory using cwd parameter instead
+        kwargs["cwd"] = str(work_dir)
+    
+    return kwargs
+
+
 def _make_preexec_fn(limits: ExecutionLimits, work_dir: Optional[Path] = None) -> Callable:
     """
     Create a preexec_fn for subprocess that sets resource limits.
@@ -166,6 +185,12 @@ def compile_cpp(
     if not compiler:
         return False, "No C++ compiler found (tried g++ and clang++)"
 
+    source_abs = source_path.resolve()
+    exe_abs = exe_path.resolve()
+
+    if not source_abs.exists():
+        return False, f"Source file not found: {source_abs}"
+
     if limits is None:
         limits = ExecutionLimits.diagnostic_compile() if diagnostic else ExecutionLimits.default_compile()
     
@@ -180,25 +205,38 @@ def compile_cpp(
         cmd.append("-O2")
     
     if include_testlib:
-        cmd.append("-I.")
-        if source_path.parent != Path("."):
-            cmd.append(f"-I{source_path.parent}")
+        cmd.extend(["-include", "cstdint"])
+        include_dirs = [source_abs.parent]
+
+        for parent in source_abs.parents:
+            testlib_candidate = parent / "testlib.h"
+            if testlib_candidate.exists():
+                include_dirs.append(parent)
+                break
+
+        seen_dirs = set()
+        for inc_dir in include_dirs:
+            inc_key = str(inc_dir)
+            if inc_key not in seen_dirs:
+                cmd.append(f"-I{inc_dir}")
+                seen_dirs.add(inc_key)
     
-    cmd.extend([str(source_path), "-o", str(exe_path)])
+    cmd.extend([str(source_abs), "-o", str(exe_abs)])
     
     try:
         # Ensure parent dir exists
-        exe_path.parent.mkdir(parents=True, exist_ok=True)
+        exe_abs.parent.mkdir(parents=True, exist_ok=True)
         
         # Run with resource limits
-        result = subprocess.run(
-            cmd,
+        run_kwargs = _make_run_kwargs(
+            limits,
+            work_dir=source_abs.parent,
             capture_output=True,
             text=True,
             timeout=limits.wall_seconds,
             env=_minimal_env(),
-            preexec_fn=_make_preexec_fn(limits, work_dir=source_path.parent),
         )
+        result = subprocess.run(cmd, **run_kwargs)
     except subprocess.TimeoutExpired:
         return False, f"Compilation timed out after {limits.wall_seconds}s"
     except Exception as e:
@@ -237,15 +275,16 @@ def run_program(
         # Run in parent directory of executable with minimal env
         work_dir = exe_path.parent
         
-        result = subprocess.run(
-            cmd,
+        run_kwargs = _make_run_kwargs(
+            limits,
+            work_dir=work_dir,
             input=input_text,
             capture_output=True,
             text=True,
             timeout=limits.wall_seconds,
             env=_minimal_env(),
-            preexec_fn=_make_preexec_fn(limits, work_dir=work_dir),
         )
+        result = subprocess.run(cmd, **run_kwargs)
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         return -1, "", "Timeout"
@@ -276,7 +315,7 @@ def run_checker(
     """
     ret, out, err = run_program(
         checker_exe,
-        args=[str(input_path), str(output_path), str(answer_path)],
+        args=[str(input_path.resolve()), str(output_path.resolve()), str(answer_path.resolve())],
         limits=limits,
     )
     

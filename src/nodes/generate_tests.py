@@ -8,83 +8,12 @@ import shutil
 import subprocess
 from loguru import logger
 from src.llm import UnifiedLLMClient
-from src.memory import MemoryClient, FSMState, FailureType
+from src.memory import MemoryClient, MemoryNamespace
+from src.utils.json_utils import parse_json_response
+from src.utils.problem_utils import extract_problem_code
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState, TestData
-
-
-def parse_json_response(response: str) -> dict:
-    """
-    Parse JSON from LLM response, handling markdown code blocks
-
-    Supports:
-    - Pure JSON: {"key": "value"}
-    - Markdown wrapped: ```json\n{"key": "value"}\n```
-    - Generic code block: ```\n{"key": "value"}\n```
-    """
-    cleaned = response.strip()
-
-    if "```json" in cleaned:
-        parts = cleaned.split("```json")
-        if len(parts) > 1:
-            cleaned = parts[1].split("```")[0].strip()
-    elif "```" in cleaned:
-        parts = cleaned.split("```")
-        if len(parts) >= 3:
-            cleaned = parts[1].strip()
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(cleaned[start : end + 1])
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {e}")
-                logger.debug(f"Response content: {cleaned[start : min(end + 1, start + 200)]}...")
-                raise
-        logger.error("Failed to parse JSON response: no JSON object found")
-        logger.debug(f"Response content: {cleaned[:200]}...")
-        raise
-
-
-def extract_problem_code(raw_problem: Dict[str, Any]) -> Optional[str]:
-    '''
-    正则提取题号，用于AC解的路径拼接
-
-    支持多种格式：
-    - _metadata.problem_id: "1575_A"
-    - _metadata.name: "1575_A. Another Sorting Problem"
-    - _metadata.question_id: "1873_A"
-    '''
-    metadata = raw_problem.get("_metadata", {})
-
-    # 尝试多个可能的字段
-    problem_id = None
-    for key in ("problem_id", "name", "question_id"):
-        val = metadata.get(key)
-        if val:
-            problem_id = val
-            break
-
-    if not problem_id:
-        return None
-
-    # 如果是 "1575_A. Another Sorting Problem" 格式，提取 "1575_A"
-    if isinstance(problem_id, str):
-        # 尝试匹配 "数字_字母" 格式
-        match = re.match(r"^(\d+_[A-Z])", problem_id)
-        if match:
-            return match.group(1)
-        # 如果已经是 "1575_A" 格式，直接返回
-        match = re.match(r"^(\d+_[A-Z])$", problem_id)
-        if match:
-            return problem_id
-
-    return None
 
 
 def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
@@ -336,41 +265,45 @@ def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int
     lines = [f"Your code failed {len(failed)} out of {total_run} cases tested ({total_verify} total):"]
 
     # Categorize failures
-    compile_errors = [f for f in failed if f.get("type") == "compile_error"]
     runtime_errors = [f for f in failed if f.get("type") == "runtime_error"]
     wrong_answers = [f for f in failed if f.get("type") == "wrong_answer"]
 
     # Pick representative failures (up to 3 total)
     picked = []
-    if compile_errors:
-        picked.append(compile_errors[0])
     if runtime_errors:
         picked.append(runtime_errors[0])
     if wrong_answers:
         picked.extend(wrong_answers[:2])
 
-    for f in picked[:3]:
-        if f.get("type") == "compile_error":
-            lines.append(f"  Compilation error:\n    {f.get('message', '?')[:500]}")
-        elif f.get("type") == "runtime_error":
-            lines.append(f"  Runtime error on test {f.get('id', '?')}:")
-            lines.append(f"    Error: {f.get('message', '?')}")
-        elif f.get("type") == "wrong_answer":
-            lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
-            inp = f.get('input', '?')[:100]
-            expected = f.get('expected', '?')[:100]
-            actual = f.get('actual', '?')[:100]
-            lines.append(f"    Input:    {inp}")
-            lines.append(f"    Expected: {expected}")
-            lines.append(f"    Actual:   {actual}")
+    # If no typed entries, fall back to raw entries (legacy compatibility)
+    if not picked:
+        picked = failed[:3]
 
-    lines.append("")
-    lines.append("Debug checklist (verify these in your code):")
-    lines.append("  1. Index base: output should use 1-based indices (not 0-based)")
-    lines.append("  2. Comparison logic: odd positions (1,3,5...) ascending, even positions descending")
-    lines.append("  3. String length: all input strings have exactly m characters")
-    lines.append("  4. Output format: numbers separated by spaces, ending with newline")
-    lines.append("  5. Edge cases: n=1, or when strings differ at first position")
+    for f in picked[:3]:
+        ftype = f.get("type", "unknown")
+        if ftype == "runtime_error":
+            lines.append(f"  Runtime error on test {f.get('id', '?')}:")
+            lines.append(f"    Error: {f.get('error', f.get('message', '?'))}")
+            inp = str(f.get('input', ''))[:200]
+            if inp:
+                lines.append(f"    Input (truncated): {inp}")
+        elif ftype == "wrong_answer":
+            lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
+            inp = str(f.get('input', '?'))[:200]
+            actual = str(f.get('output', f.get('actual', '?')))[:200]
+            checker_msg = str(f.get('error', ''))[:300]
+            lines.append(f"    Input (truncated):  {inp}")
+            lines.append(f"    Output (truncated): {actual}")
+            if checker_msg:
+                lines.append(f"    Checker message:    {checker_msg}")
+        else:
+            # Unknown/untyped failure - show whatever info is available
+            lines.append(f"  Failure on test {f.get('id', '?')}:")
+            error_msg = str(f.get('error', f.get('message', 'unknown error')))[:300]
+            lines.append(f"    Error: {error_msg}")
+            inp = str(f.get('input', ''))[:200]
+            if inp:
+                lines.append(f"    Input (truncated): {inp}")
 
     lines.append("")
     lines.append("Please fix these issues and regenerate the code.")
@@ -408,16 +341,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     )
 
 
-    role_models = {
-        "generator": "claude-opus-4-5-20251101",
-        "validator": "gpt-5.2",
-        "checker": "gpt-5.2",
-        "output": "gpt-5.2",
-    }
-
     def role_client(role: str) -> UnifiedLLMClient:
-        role_cfg = dict(config)
-        role_cfg["model"] = role_models[role]
+        role_cfg = UnifiedLLMClient.build_role_config(config, role)
         return UnifiedLLMClient(role_cfg)
 
     gen_llm = role_client("generator")
@@ -448,6 +373,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     generated_inputs: List[str] = []
     gen_feedback = ""
     val_feedback = ""
+    validator_exe: Optional[Path] = None
 
     for attempt in range(1, max_iter + 1):
         # Retrieve advice from memory
@@ -499,6 +425,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             val_feedback = f"Validator compile failed: {val_log}"
             (code_dir / f"validator_{attempt}.log").write_text(val_log, encoding="utf-8")
             continue
+        validator_exe = val_exe
 
         generated_inputs = []
         attempts = 0
@@ -536,7 +463,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 memory.log_event_simple("GEN_RUN", "EMPTY_OUTPUT", -0.5, attempt_count=attempt)
                 continue
 
-            v_code, _, v_err = run_program(val_exe, input_text=out, timeout=2)
+            v_code, _, v_err = run_program(val_exe, input_text=out, limits=ExecutionLimits.default_run())
             if v_code != 0:
                 val_feedback = f"Validator rejected input: {v_err}"
                 (tests_dir / f"gen_{attempt}_{attempts}_reject.txt").write_text(v_err, encoding="utf-8")
@@ -555,6 +482,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         logger.warning("[GV] Failed to generate inputs, using public tests only")
 
     generated_outputs: List[str] = []
+    checker_exe: Optional[Path] = None
     ac_exe: Optional[Path] = None
 
     if ac_path and ac_path.exists():
@@ -566,7 +494,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
     if generated_inputs and ac_exe:
         for idx, inp in enumerate(generated_inputs):
-            code, out, err = run_program(ac_exe, input_text=inp, timeout=2)
+            code, out, err = run_program(ac_exe, input_text=inp, limits=ExecutionLimits.default_run())
             if code != 0:
                 logger.warning(f"[AC] Runtime error on input {idx}: {err}")
                 generated_outputs = []
@@ -575,7 +503,6 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
     if generated_inputs and not generated_outputs:
         checker_feedback = ""
-        checker_exe = None
         for attempt in range(1, max_iter + 1):
             checker_prompt = build_checker_prompt(problem_desc, constraints, public_tests, checker_feedback)
             checker_response = chk_llm.generate(checker_prompt, temperature=0.0)
@@ -644,6 +571,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     failed = []
                     timeout_or_runtime = False
                     total_run = 0
+                    logger.info(f"[SOLVER] Verifying solver_{tier_idx + 1}_{attempt} on {len(generated_inputs)} tests...")
                     for i, inp in enumerate(generated_inputs):
                         total_run += 1
                         input_path = tests_dir / f"gen_{i}.in"
@@ -652,21 +580,24 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                         cleaned_input = inp.rstrip("\n") + "\n"
                         input_path.write_text(cleaned_input, encoding="utf-8")
                         try:
-                            code, out, err = run_program(solver_exe, input_text=inp, timeout=2)
+                            code, out, err = run_program(solver_exe, input_text=inp, limits=ExecutionLimits.default_run())
                         except Exception as ex:
                             code, out, err = 1, "", str(ex)
 
 
                         if code != 0 or not out.strip():
                             timeout_or_runtime = True
-                            failed.append({"id": i, "error": err or "runtime error", "input": inp})
+                            failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp})
                             break
 
 
                         output_path.write_text(out.strip() + "\n", encoding="utf-8")
                         ok, err = run_checker(checker_exe, input_path, output_path, output_path)
                         if not ok:
-                            failed.append({"id": i, "error": err, "input": inp, "output": out})
+                            failed.append({"type": "wrong_answer", "id": i, "error": err, "input": inp, "output": out})
+                            # Early termination: stop after collecting enough failures
+                            if len(failed) >= 5:
+                                break
 
 
                     if not failed:
@@ -675,11 +606,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                             for i in range(len(generated_inputs))
                         ]
                         solver_ok = True
+                        logger.info(f"[SOLVER] solver_{tier_idx + 1}_{attempt} PASSED all {len(generated_inputs)} tests")
                         break
 
 
+                    logger.warning(f"[SOLVER] solver_{tier_idx + 1}_{attempt} FAILED: {len(failed)}/{total_run} tests failed")
                     solver_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
-                    (tests_dir / f"solver_{tier_idx + 1}_{attempt}_failed.json").write_text(solver_feedback, encoding="utf-8")
+                    (tests_dir / f"solver_{tier_idx + 1}_{attempt}_failed.txt").write_text(solver_feedback, encoding="utf-8")
                     output_feedback = solver_feedback  # Update outer feedback for next iteration
 
                     if timeout_or_runtime:
@@ -714,7 +647,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         
         # Also remove temporary marker files from failed validation/generation attempts
         for pattern in ["gen_*_*_reject.txt", "gen_*_*_empty.txt", "gen_*_*_runtime_err.txt",
-                        "solver_*_*_failed.json"]:
+                        "solver_*_*_failed.txt", "solver_*_*_failed.json"]:
             stale_markers = glob.glob(str(tests_dir / pattern))
             for f in stale_markers:
                 try:
@@ -758,7 +691,10 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "test_results": [],
         "passed_tests": 0,
         "pass_rate": 0.0,
+        "pending_execution": False,
+        "ready": True,
         "checker_exe": str(checker_exe) if checker_exe else None,
+        "validator_exe": str(validator_exe) if validator_exe else None,
     }
 
     return {

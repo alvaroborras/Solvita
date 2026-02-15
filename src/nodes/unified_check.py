@@ -21,6 +21,13 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
 
     logger.info(f"[Node] Unified check (iteration {current_iteration}/{max_iterations})")
 
+    if state.get('tests', {}).get('pending_execution', False):
+        logger.debug("  Waiting for compilation/test generation; skipping unified decision")
+        return {
+            "status": state.get("status", "pending"),
+            "execution_log": ["Waiting for compilation/test generation before unified check"],
+        }
+
     # Check 1: Are all tests passing?
     compilation_success = state.get('solution', {}).get('compilation_success', False)
     total_tests = state.get('tests', {}).get('total_tests', 0)

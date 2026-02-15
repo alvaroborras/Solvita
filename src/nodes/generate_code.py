@@ -9,6 +9,7 @@ from src.llm import UnifiedLLMClient
 from src.utils.cpp_execution import sanitize_cpp, compile_cpp, run_program, run_checker, ExecutionLimits
 from src.utils.patch_utils import parse_search_replace_blocks, apply_search_replace_blocks, compute_unified_diff
 from src.memory import MemoryClient, MemoryNamespace
+from src.utils.problem_utils import extract_problem_code
 
 
 def _build_initial_prompt(
@@ -363,7 +364,17 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     logger.info(f"[Node] Generating C++ code (version {state['solution'].get('version', 0) + 1})")
 
-    llm = UnifiedLLMClient(state["config"])
+    if state.get("skip_generate_code", False):
+        logger.info("[GenCode] Skipping generation: feedback not ready or unchanged")
+        return {
+            "execution_log": ["Code generation skipped: feedback not ready or unchanged"],
+            "llm_calls": 0,
+            "skip_generate_code": False,
+        }
+
+    # Use 'code' role for better code generation quality
+    code_config = UnifiedLLMClient.build_role_config(state["config"], "code")
+    llm = UnifiedLLMClient(code_config)
     llm_calls = 0
 
     # Prefer canonical problem representation if available
@@ -545,9 +556,17 @@ Required Properties: {canonical.get('required_properties', [])}"""
                 ]
 
     # Build solution dict
+    version = state["solution"].get("version", 0) + 1
+    problem_code = extract_problem_code(state.get("raw_problem", {}))
+    if problem_code:
+        out_dir = Path("data") / "generated" / problem_code / "code"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"solution_v{version}.cpp").write_text(code, encoding="utf-8")
+        (out_dir / "solution_latest.cpp").write_text(code, encoding="utf-8")
+
     solution = {
         "code": code,
-        "version": state["solution"].get("version", 0) + 1,
+        "version": version,
         "compilation_success": False,
         "compilation_errors": [],
         "executable_path": None,

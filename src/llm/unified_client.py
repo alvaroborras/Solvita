@@ -36,12 +36,88 @@ class UnifiedLLMClient:
 
         self.client = self._initialize_client()
 
-        # Default values
-        self.base_url = self.config.get('base_url', 'http://14.103.68.46/v1')
-        self.api_key = self.config.get('api_key', 'sk-<redacted>')
-        self.model = self.config.get('model', 'claude-opus-4-5-20251101')
-        self.temperature = self.config.get('temperature', 0.1)
-        self.max_tokens = self.config.get('max_tokens', 128000)
+    @staticmethod
+    def _config_candidates(config: Dict[str, Any]) -> List[Path]:
+        candidates: List[Path] = []
+
+        cfg_path = config.get("config_path")
+        if cfg_path:
+            p = Path(cfg_path)
+            candidates.append(p / "models.yaml" if p.is_dir() else p)
+
+        env_cfg_path = os.environ.get("SOLVITA_CONFIG_PATH")
+        if env_cfg_path:
+            p = Path(env_cfg_path)
+            candidates.append(p / "models.yaml" if p.is_dir() else p)
+
+        candidates.extend(
+            [
+                Path("config/models.yaml"),
+                Path(__file__).resolve().parents[2] / "config" / "models.yaml",
+            ]
+        )
+
+        deduped: List[Path] = []
+        seen = set()
+        for item in candidates:
+            key = str(item.resolve()) if item.exists() else str(item)
+            if key not in seen:
+                deduped.append(item)
+                seen.add(key)
+        return deduped
+
+    @classmethod
+    def _load_yaml_root(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Try to load YAML root config from config/models.yaml."""
+        for config_path in cls._config_candidates(config):
+            if config_path.exists():
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f)
+                    if isinstance(data, dict):
+                        return data
+                except Exception as e:
+                    logger.warning(f"Failed to load config from {config_path}: {e}")
+        return {}
+
+    @classmethod
+    def resolve_role_overrides(cls, config: Dict[str, Any], role: str) -> Dict[str, Any]:
+        """Resolve per-role LLM overrides from runtime config and YAML."""
+        role_overrides: Dict[str, Any] = {}
+        yaml_root = cls._load_yaml_root(config)
+
+        llm_section = yaml_root.get("llm", {}) if isinstance(yaml_root, dict) else {}
+        yaml_roles = llm_section.get("roles", {}) if isinstance(llm_section, dict) else {}
+        if role in yaml_roles:
+            value = yaml_roles[role]
+            if isinstance(value, dict):
+                role_overrides.update(value)
+            elif isinstance(value, str):
+                role_overrides["model"] = value
+
+        yaml_roles_legacy = yaml_root.get("llm_roles", {}) if isinstance(yaml_root, dict) else {}
+        if role in yaml_roles_legacy:
+            value = yaml_roles_legacy[role]
+            if isinstance(value, dict):
+                role_overrides.update(value)
+            elif isinstance(value, str):
+                role_overrides["model"] = value
+
+        cfg_roles = config.get("llm_roles", {}) if isinstance(config, dict) else {}
+        if role in cfg_roles:
+            value = cfg_roles[role]
+            if isinstance(value, dict):
+                role_overrides.update(value)
+            elif isinstance(value, str):
+                role_overrides["model"] = value
+
+        return role_overrides
+
+    @classmethod
+    def build_role_config(cls, config: Dict[str, Any], role: str) -> Dict[str, Any]:
+        role_cfg = dict(config or {})
+        role_cfg.update(cls.resolve_role_overrides(role_cfg, role))
+        return role_cfg
 
     def _resolve_config(self) -> Dict[str, Any]:
         """Merge config dict -> YAML file -> env vars, fail if incomplete."""
@@ -49,13 +125,14 @@ class UnifiedLLMClient:
         resolved: Dict[str, Any] = {
             "base_url": "",
             "api_key": "",
-            "model": "gpt-4",
+            "model": "",
             "temperature": 0.1,
             "max_tokens": 128000,
         }
 
         # Layer 1: YAML file (lowest priority for base_url/api_key)
-        yaml_cfg = self._load_yaml_config()
+        yaml_root = self._load_yaml_root(self.config)
+        yaml_cfg = yaml_root.get("llm", {}) if isinstance(yaml_root, dict) else {}
         if yaml_cfg:
             for key in resolved:
                 if key in yaml_cfg:
@@ -66,16 +143,32 @@ class UnifiedLLMClient:
             "base_url": "SOLVITA_BASE_URL",
             "api_key": "SOLVITA_API_KEY",
             "model": "SOLVITA_MODEL",
+            "temperature": "SOLVITA_TEMPERATURE",
+            "max_tokens": "SOLVITA_MAX_TOKENS",
         }
         for key, env_key in env_map.items():
             val = os.environ.get(env_key)
             if val:
-                resolved[key] = val
+                if key == "temperature":
+                    try:
+                        resolved[key] = float(val)
+                    except ValueError:
+                        logger.warning(f"Invalid {env_key}: {val}")
+                elif key == "max_tokens":
+                    try:
+                        resolved[key] = int(val)
+                    except ValueError:
+                        logger.warning(f"Invalid {env_key}: {val}")
+                else:
+                    resolved[key] = val
 
         # Layer 3: Explicit config dict (highest priority)
         for key in resolved:
             if key in self.config and self.config[key]:
                 resolved[key] = self.config[key]
+
+        if not resolved["model"]:
+            resolved["model"] = "gpt-4"
 
         # Validate required fields
         if not resolved["base_url"] or not resolved["api_key"]:
@@ -87,28 +180,6 @@ class UnifiedLLMClient:
             )
 
         return resolved
-
-    @staticmethod
-    def _load_yaml_config() -> Optional[Dict[str, Any]]:
-        """Try to load LLM config from config/models.yaml."""
-        # Try project-relative path first, then absolute
-        candidates = [
-            Path("config/models.yaml"),
-            Path(__file__).resolve().parents[2] / "config" / "models.yaml",
-        ]
-        for config_path in candidates:
-            if config_path.exists():
-                try:
-                    with open(config_path, "r") as f:
-                        data = yaml.safe_load(f)
-                    if data and "llm" in data:
-                        return data["llm"]
-                except Exception as e:
-                    logger.warning(f"Failed to load config from {config_path}: {e}")
-        return None
-
-
-
     def _initialize_client(self):
         """Initialize the OpenAI-compatible HTTP client."""
         try:

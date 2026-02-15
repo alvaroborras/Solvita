@@ -1,6 +1,7 @@
 """Compile Code Node - Compile C++ code with sandboxed execution"""
 
 import tempfile
+import platform
 from pathlib import Path
 from typing import Dict, Any, TYPE_CHECKING
 from loguru import logger
@@ -51,10 +52,17 @@ def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
     updated_solution = dict(state["solution"])
 
     if ok:
+        # On Windows, g++ automatically adds .exe extension
+        # Update the path to match the actual executable
+        if platform.system() == "Windows" and not exe_path.suffix:
+            actual_exe_path = exe_path.with_suffix(".exe")
+        else:
+            actual_exe_path = exe_path
+        
         updated_solution.update({
             "compilation_success": True,
             "compilation_errors": [],
-            "executable_path": str(exe_path),
+            "executable_path": str(actual_exe_path),
         })
         log_msg = "Code compiled successfully"
         if diagnostic:

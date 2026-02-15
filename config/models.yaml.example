@@ -8,6 +8,17 @@ llm:
   model: "your-model-name"
   temperature: 0.1
   max_tokens: 128000
+  roles:
+    generator:
+      model: "your-generator-model"
+    validator:
+      model: "your-validator-model"
+    checker:
+      model: "your-checker-model"
+    output:
+      model: "your-output-model"
+    hacker:
+      model: "your-hacker-model"
 
 # Example 2: Using GPT-4
 # llm:
