@@ -147,7 +147,7 @@ class Featurizer:
     def _test_features(self, canonical: dict) -> List[str]:
         """Extract test-relevant features (input/output format, constraint complexity)."""
         features = []
-        
+
         # Input format
         if "input_format" in canonical:
             inp = canonical["input_format"]
@@ -159,7 +159,7 @@ class Featurizer:
                 features.append("INPUT:string")
             if "tree" in inp.lower():
                 features.append("INPUT:tree")
-        
+
         # Output format
         if "output_format" in canonical:
             out = canonical["output_format"]
@@ -169,5 +169,35 @@ class Featurizer:
                 features.append("OUTPUT:array")
             if "string" in out.lower():
                 features.append("OUTPUT:string")
-        
+
+        # Checker type: multi-solution vs single-solution
+        if "is_multi_solution" in canonical:
+            if canonical["is_multi_solution"]:
+                features.append("CHECKER:multi")
+            else:
+                features.append("CHECKER:single")
+
+        # Graph structure type (chain/star/tree/dag/bipartite/complete)
+        if "graph_type" in canonical:
+            graph_type = str(canonical["graph_type"]).lower()
+            features.append(f"GRAPH:{graph_type}")
+        # Also infer from problem_type list
+        if "problem_type" in canonical:
+            pts = canonical["problem_type"]
+            if isinstance(pts, list):
+                for pt in pts:
+                    pt_lower = pt.lower()
+                    if pt_lower in ("tree", "dag", "graph", "bipartite"):
+                        features.append(f"GRAPH:{pt_lower}")
+
+        # Integer overflow risk: constraints with values near 1e18
+        if "constraints" in canonical:
+            constraints = canonical["constraints"]
+            if isinstance(constraints, dict):
+                for val in constraints.values():
+                    val_str = str(val)
+                    if any(marker in val_str for marker in ("1e18", "10^18", "1000000000000000000", "1e9")):
+                        features.append("CONSTR:overflow_risk")
+                        break
+
         return features

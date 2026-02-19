@@ -26,3 +26,5 @@ tmp/
 MERGE_TEST_REPORT.md
 TRAIN_SCRIPT_V2_GUIDE.md
 docs/repair_plan_1575B.md
+
+.agent

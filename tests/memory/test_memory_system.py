@@ -45,10 +45,10 @@ def test_store_seeding(temp_memory_dir):
     """Test that store seeds items on cold start."""
     store = MemoryStore(MemoryNamespace.PLAN, temp_memory_dir)
     store.initialize()
-    
-    # Check files created
-    assert (temp_memory_dir / "plan" / "items.jsonl").exists()
-    
+
+    # Check SQLite DB created (store migrated from jsonl to SQLite)
+    assert (temp_memory_dir / "plan" / "memory.db").exists()
+
     # Check seeding happened
     items = store.get_all_items()
     assert len(items) > 0
@@ -99,11 +99,11 @@ def test_event_logging(temp_memory_dir):
     )
     
     store.log_event(event)
-    
-    # Check event file exists
-    events_path = temp_memory_dir / "test" / "events.jsonl"
-    assert events_path.exists()
-    
+
+    # Check SQLite DB exists (events stored in SQLite, not jsonl)
+    db_path = temp_memory_dir / "test" / "memory.db"
+    assert db_path.exists()
+
     # Read back
     events = store.get_events()
     assert len(events) == 1
@@ -195,11 +195,10 @@ def test_client_integration(temp_memory_dir):
         canonical={"problem_type": ["dp"]},
     )
     client.log_event(obs, item_ids, 1.0, iteration=0)
-    
-    # Check persistence
-    assert (temp_memory_dir / "plan" / "items.jsonl").exists()
+
+    # Check persistence (SQLite DB, policy json)
+    assert (temp_memory_dir / "plan" / "memory.db").exists()
     assert (temp_memory_dir / "plan" / "policy.json").exists()
-    assert (temp_memory_dir / "plan" / "events.jsonl").exists()
 
 
 def test_namespace_isolation(temp_memory_dir):
@@ -242,18 +241,178 @@ def test_namespace_isolation(temp_memory_dir):
 def test_client_disabled(temp_memory_dir):
     """Test that client gracefully handles disabled state."""
     config = {"trainable_memory": {"enabled": False}}
-    
+
     client = MemoryClient(
         namespace=MemoryNamespace.TEST,
         config=config,
         problem_desc="test",
     )
-    
+
     assert not client.enabled
-    
+
     injection, ids = client.get_injection("GEN_DRAFT")
     assert injection == ""
     assert ids == []
-    
+
     # Should not crash
     client.log_event_simple("GEN_DRAFT", None, 1.0)
+
+
+# ──────────────────────────────────────────────────────────────
+# New tests for the improved test-memory system
+# ──────────────────────────────────────────────────────────────
+
+def test_test_seed_items_coverage():
+    """Verify test seed items cover all 8 required categories."""
+    from src.memory.seeds.test_items import TEST_SEED_ITEMS
+
+    # Minimum count requirement
+    assert len(TEST_SEED_ITEMS) >= 20, (
+        f"Expected >= 20 seed items, got {len(TEST_SEED_ITEMS)}"
+    )
+
+    # All expected tag categories must be present
+    all_tags = set()
+    for item in TEST_SEED_ITEMS:
+        all_tags.update(item.get("tags", []))
+
+    required_categories = {
+        "boundary",       # Category 1: Boundary / Constraint
+        "corner_cases",   # Category 2: Structural Extremes
+        "graph",          # Category 3: Graph Structures
+        "tree",           # Category 4: Tree Structures
+        "overflow",       # Category 5: Arithmetic / Overflow
+        "string",         # Category 6: String
+        "stress",         # Category 7: Performance / Stress
+        "checker",        # Category 8: Checker / Multi-solution
+    }
+    missing = required_categories - all_tags
+    assert not missing, f"Missing tag categories in test seeds: {missing}"
+
+    # Each item must have the required payload fields
+    for item in TEST_SEED_ITEMS:
+        payload = item.get("payload", {})
+        assert "generation_strategies" in payload, (
+            f"Item '{item['text'][:50]}' missing 'generation_strategies'"
+        )
+        assert "validator_pitfalls" in payload, (
+            f"Item '{item['text'][:50]}' missing 'validator_pitfalls'"
+        )
+
+
+def test_featurizer_checker_and_graph_features():
+    """Verify new featurizer features: CHECKER:*, GRAPH:*, CONSTR:overflow_risk."""
+    featurizer = Featurizer()
+
+    # Test multi-solution checker feature
+    obs_multi = Observation(
+        fsm_state="GEN_DRAFT",
+        canonical={
+            "is_multi_solution": True,
+            "input_format": "graph adjacency list",
+        },
+    )
+    features = featurizer.extract_features(obs_multi, MemoryNamespace.TEST)
+    assert "CHECKER:multi" in features
+    assert "INPUT:graph" in features
+
+    # Test single-solution checker feature
+    obs_single = Observation(
+        fsm_state="GEN_DRAFT",
+        canonical={"is_multi_solution": False},
+    )
+    features = featurizer.extract_features(obs_single, MemoryNamespace.TEST)
+    assert "CHECKER:single" in features
+
+    # Test graph_type feature
+    obs_tree = Observation(
+        fsm_state="GEN_DRAFT",
+        canonical={"graph_type": "tree"},
+    )
+    features = featurizer.extract_features(obs_tree, MemoryNamespace.TEST)
+    assert "GRAPH:tree" in features
+
+    # Test overflow_risk feature
+    obs_overflow = Observation(
+        fsm_state="GEN_DRAFT",
+        canonical={"constraints": {"a": "up to 1e18", "n": "1000"}},
+    )
+    features = featurizer.extract_features(obs_overflow, MemoryNamespace.TEST)
+    assert "CONSTR:overflow_risk" in features
+
+    # Test inferred graph feature from problem_type
+    obs_dag = Observation(
+        fsm_state="GEN_DRAFT",
+        canonical={"problem_type": ["dag", "dp"]},
+    )
+    features = featurizer.extract_features(obs_dag, MemoryNamespace.TEST)
+    assert "GRAPH:dag" in features
+
+
+def test_gradient_reward_range():
+    """Verify that gradient reward values stay within [-1.0, +1.0]."""
+    from src.nodes.update_test_memory import _compute_test_reward
+
+    # Full success
+    assert _compute_test_reward({"status": "success"}) == 1.0
+
+    # Max iterations (hard failure)
+    assert _compute_test_reward({"status": "max_iterations"}) == -1.0
+
+    # Error state
+    assert _compute_test_reward({"status": "error"}) == -1.0
+
+    # Partial pass rates
+    for pass_rate in [0.0, 0.25, 0.5, 0.75, 1.0]:
+        reward = _compute_test_reward(
+            {"status": "pending", "tests": {"pass_rate": pass_rate}}
+        )
+        assert -1.0 <= reward <= 1.0, (
+            f"Reward {reward} out of [-1, +1] for pass_rate={pass_rate}"
+        )
+
+    # 50% pass rate should yield 0.0
+    assert _compute_test_reward(
+        {"status": "pending", "tests": {"pass_rate": 0.5}}
+    ) == pytest.approx(0.0)
+
+
+def test_update_test_memory_node_no_crash(temp_memory_dir):
+    """Verify update_test_memory_node runs without exceptions."""
+    from src.nodes.update_test_memory import update_test_memory_node
+
+    config = {
+        "trainable_memory": {
+            "enabled": True,
+            "data_dir": str(temp_memory_dir),
+            "test_top_k": 2,
+        }
+    }
+
+    # Prepare a partial state with test_memory_item_ids
+    client = MemoryClient(
+        namespace=MemoryNamespace.TEST,
+        config=config,
+        problem_desc="array sum problem",
+        canonical={"problem_type": ["array"]},
+    )
+    _, item_ids = client.get_injection("GEN_DRAFT")
+
+    state = {
+        "config": config,
+        "problem": {
+            "description": "array sum problem",
+            "canonical": {"problem_type": ["array"]},
+        },
+        "test_memory_item_ids": item_ids,
+        "status": "pending",
+        "tests": {"pass_rate": 0.8, "total_tests": 10, "test_results": []},
+        "iteration": 1,
+    }
+
+    result = update_test_memory_node(state)
+    assert "execution_log" in result
+    assert len(result["execution_log"]) > 0
+
+    # Verify policy file was created
+    assert (temp_memory_dir / "test" / "policy.json").exists()

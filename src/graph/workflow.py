@@ -1,13 +1,13 @@
 """LangGraph Workflow Definition for Solvita Agent
 
 Workflow overview
-=================
+==================
 1. plan_solution  (canonical problem + strategy selection)
    fan-out ->  2a. generate_tests  (parallel)
    fan-out ->  2b. generate_code   (parallel)
 3. generate_code -> compile_code
    join   ->  run_tests  (waits for both tests + compiled code)
-4. unified_check -> update_plan_memory -> update_solve_memory
+4. unified_check -> update_plan_memory -> update_solve_memory -> update_test_memory
 5. status_routing:
    - "continue" -> analyze_feedback -> generate_code  (iterate)
    - "hack"     -> hack_test -> hack_routing
@@ -29,6 +29,7 @@ from src.nodes import (
     analyze_feedback_node,
     update_plan_memory_node,
     update_solve_memory_node,
+    update_test_memory_node,
     hack_test_node,
     join_ready_node,
     join_wait_node,
@@ -69,6 +70,7 @@ def create_solvita_workflow() -> StateGraph:
     workflow.add_node("unified_check", unified_check_node)
     workflow.add_node("update_plan_memory", update_plan_memory_node)
     workflow.add_node("update_solve_memory", update_solve_memory_node)
+    workflow.add_node("update_test_memory", update_test_memory_node)
 
     # Phase 5: Adversarial hack testing
     workflow.add_node("hack_test", hack_test_node)
@@ -111,14 +113,15 @@ def create_solvita_workflow() -> StateGraph:
         },
     )
 
-    # After running tests, check + settle memory
+    # After running tests, check + settle all three memory namespaces
     workflow.add_edge("run_tests", "unified_check")
     workflow.add_edge("unified_check", "update_plan_memory")
     workflow.add_edge("update_plan_memory", "update_solve_memory")
+    workflow.add_edge("update_solve_memory", "update_test_memory")
 
-    # Status routing (after both memory updates are settled)
+    # Status routing (after all three memory namespaces are settled)
     workflow.add_conditional_edges(
-        "update_solve_memory",
+        "update_test_memory",
         status_routing,
         {
             "continue": "analyze_feedback",

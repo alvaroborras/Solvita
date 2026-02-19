@@ -340,7 +340,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         canonical=canonical,
     )
 
-
+    # Track item IDs used for injection (for end-of-workflow settlement)
+    last_memory_item_ids: List[str] = []
     def role_client(role: str) -> UnifiedLLMClient:
         role_cfg = UnifiedLLMClient.build_role_config(config, role)
         return UnifiedLLMClient(role_cfg)
@@ -382,7 +383,9 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             failure_type=None,
             attempt_count=attempt,
         )
-        
+        if item_ids:
+            last_memory_item_ids = item_ids
+
         gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback, memory_advice=advice)
         gen_response = gen_llm.generate(gen_prompt)
         llm_calls += 1
@@ -472,11 +475,17 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             generated_inputs.append(out.strip() + "\n")
 
         if len(generated_inputs) >= target_count:
-            # Success! Small positive reward for generating required count
-            memory.log_event_simple("SUCCESS", None, 1.0, attempt_count=attempt)
+            # Gradient reward: +1.0 for 100% success, scales linearly
+            ratio = min(len(generated_inputs) / max(target_count, 1), 1.0)
+            reward = ratio * 2.0 - 1.0  # maps [0, 1] -> [-1.0, +1.0]
+            memory.log_event_simple("GEN_DONE", None, reward, attempt_count=attempt)
             break
 
-        gen_feedback = f"Only produced {len(generated_inputs)} valid inputs"
+        gen_feedback = f"Only produced {len(generated_inputs)} valid inputs out of {target_count} target"
+        # Partial reward for partial success
+        ratio = len(generated_inputs) / max(target_count, 1)
+        partial_reward = ratio * 2.0 - 1.0
+        memory.log_event_simple("GEN_PARTIAL", "LOW_YIELD", partial_reward, attempt_count=attempt)
 
     if not generated_inputs:
         logger.warning("[GV] Failed to generate inputs, using public tests only")
@@ -706,4 +715,5 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             f"Other: {test_counts['generated']}",
         ],
         "llm_calls": llm_calls,
+        "test_memory_item_ids": last_memory_item_ids,
     }

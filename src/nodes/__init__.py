@@ -32,6 +32,9 @@ def __getattr__(name: str):
     elif name == "update_solve_memory_node":
         from .update_solve_memory import update_solve_memory_node
         return update_solve_memory_node
+    elif name == "update_test_memory_node":
+        from .update_test_memory import update_test_memory_node
+        return update_test_memory_node
     elif name == "status_routing":
         from .routing import status_routing
         return status_routing
@@ -66,6 +69,7 @@ __all__ = [
     "unified_check_node",
     "update_plan_memory_node",
     "update_solve_memory_node",
+    "update_test_memory_node",
     "status_routing",
     "compilation_routing",
     "hack_test_node",
