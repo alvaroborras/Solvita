@@ -36,7 +36,8 @@ class ExecutionLimits:
             wall_seconds=35,
             memory_bytes=2 * 1024 * 1024 * 1024,  # 2GB
             fsize_bytes=50 * 1024 * 1024,  # 50MB
-            nproc=50,
+            nproc=None,  # Do not limit: g++ needs to fork cc1plus; user-level RLIMIT_NPROC
+                         # would block compilation if the server already has many processes.
             nofile=100,
         )
     
@@ -60,7 +61,7 @@ class ExecutionLimits:
             wall_seconds=70,
             memory_bytes=4 * 1024 * 1024 * 1024,  # 4GB (sanitizers need more)
             fsize_bytes=100 * 1024 * 1024,  # 100MB
-            nproc=50,
+            nproc=None,  # Same reason as default_compile: don't limit process count.
             nofile=100,
         )
 
