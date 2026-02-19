@@ -267,7 +267,10 @@ def run_program(
     """
     if limits is None:
         limits = ExecutionLimits.default_run()
-    
+
+    # Resolve to absolute path to avoid chdir conflicts in preexec_fn
+    exe_path = exe_path.resolve()
+
     cmd = [str(exe_path)]
     if args:
         cmd.extend(args)
