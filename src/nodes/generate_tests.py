@@ -65,8 +65,7 @@ Hard requirements:
 - Use rnd.next(...) for randomness (no std::random, no srand/rand)
 - Do not parse or set a random seed inside the program
 - Do not print any extra text
-- Keep individual string lengths small (2-6 characters)
-- Limit n to <= 200 to keep output size manageable
+- Keep individual string lengths small (2-6 characters) unless constraints strictly dictate otherwise.
 - For n strings of length m, ensure n <= 26^m (number of possible unique strings)
 - Use std::unordered_set<std::string> for deduplication
 
@@ -243,20 +242,15 @@ Schema:
 
 
 
-def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], tier_instruction: str, feedback: str) -> str:
+def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    return f"""You are a solver agent. Write a complete C++17 program that reads a single test case from stdin and prints the correct output.
+    return f"""You are a Brute-Force Oracle agent. Write a C++17 Oracle that guarantees 100% correctness by using exhaustive search. Ignore Performance.
 
 Core instruction:
-- {tier_instruction}
-
-Hard requirements:
-- Output ONLY the C++17 source code, no markdown, no explanations
-- Do NOT use non-standard headers like #include <bits/stdc++.h>
-- Deterministic, no randomness
-- Handle all edge cases
-- Use standard libraries only
-- Use fast I/O
+- You must SELECT ONE of the provided C++ Brute-Force templates.
+- Fill in the logic where it says `// [LLM FILL HERE]`.
+- Do NOT alter the main algorithmic structure of the template.
+- Output ONLY a JSON object containing the template name and completed code.
 
 Problem Description:
 {problem_desc}
@@ -266,8 +260,17 @@ Constraints:
 
 Public Tests:
 {json.dumps(public_tests, indent=2)}
+
+Available Templates (JSON format):
+{templates_json}
+
 {feedback_block}
-Return ONLY the C++17 code.
+Return ONLY a JSON object. No other text, no markdown.
+Schema:
+{{
+  "template_name": "<name of chosen template>",
+  "solver_cpp": "<complete filled C++17 source>"
+}}
 """
 
 
@@ -568,129 +571,133 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         if checker_exe is None:
             logger.warning("[CHECKER] Failed to build checker, using public tests only")
         else:
-            solver_tiers = [
-                "Implement the simplest correct solution. CORRECTNESS IS THE ONLY GOAL. Use brute force, exhaustive search, or the most naive algorithm possible. Ignore time and memory limits entirely. Even O(n!) is fine if it is provably correct.",
-                "Implement a moderately optimized solution. Correctness is still more important than performance, but try to handle inputs up to ~1000.",
-                "Implement an efficient solution that meets the stated constraints. Use optimal algorithms and data structures.",
-            ]
+            oracle_memory = MemoryClient(
+                namespace=MemoryNamespace.ORACLE,
+                config=config,
+                problem_desc=problem_desc,
+                canonical=canonical,
+            )
+            oracle_advice, oracle_item_ids = oracle_memory.get_injection(
+                fsm_state="SOLVER",
+                failure_type=None,
+                attempt_count=0
+            )
 
             output_feedback = ""
             solver_ok = False
-            for tier_idx, tier_instruction in enumerate(solver_tiers):
-                solver_feedback = output_feedback
-                for attempt in range(1, output_max_iter + 1):
-                    solver_prompt = build_solver_prompt(problem_desc, constraints, public_tests, tier_instruction, solver_feedback)
-                    solver_response = out_llm.generate(solver_prompt)
-                    llm_calls += 1
-                    (code_dir / f"solver_{tier_idx + 1}_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
-                    solver_cpp = sanitize_cpp(solver_response)
+            for attempt in range(1, output_max_iter + 1):
+                solver_prompt = build_solver_prompt(problem_desc, constraints, public_tests, oracle_advice, output_feedback)
+                solver_response = out_llm.generate(solver_prompt)
+                llm_calls += 1
+                (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
+                try:
+                    solver_data = parse_json_response(solver_response)
+                    solver_cpp = solver_data.get("solver_cpp", "")
+                    tmpl_name = solver_data.get("template_name", "UNKNOWN")
+                    logger.info(f"[SOLVER] LLM chose template: {tmpl_name}")
+                except Exception:
+                    output_feedback = "Invalid JSON (must return pure JSON with template_name and solver_cpp)"
+                    continue
 
-                    solver_path = code_dir / f"solver_{tier_idx + 1}_{attempt}.cpp"
-                    solver_path.write_text(solver_cpp, encoding="utf-8")
-                    solver_exe = code_dir / f"solver_{tier_idx + 1}_{attempt}.exe"
-                    solver_compile_ok, solver_log = compile_cpp(solver_path, solver_exe, include_testlib=False)
-                    if not solver_compile_ok:
-                        solver_feedback = f"Solver compile failed: {solver_log}"
-                        (code_dir / f"solver_{tier_idx + 1}_{attempt}.log").write_text(solver_log, encoding="utf-8")
+                solver_cpp = sanitize_cpp(solver_cpp)
+                solver_path = code_dir / f"solver_bf_{attempt}.cpp"
+                solver_path.write_text(solver_cpp, encoding="utf-8")
+                solver_exe = code_dir / f"solver_bf_{attempt}.exe"
+                solver_compile_ok, solver_log = compile_cpp(solver_path, solver_exe, include_testlib=False)
+                if not solver_compile_ok:
+                    output_feedback = f"Solver compile failed: {solver_log}"
+                    (code_dir / f"solver_bf_{attempt}.log").write_text(solver_log, encoding="utf-8")
+                    continue
+
+                # ===== CRITICAL: Cross-validate solver on public tests first =====
+                solver_public_ok = True
+                solver_limits = ExecutionLimits.default_run()
+                if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
+                    solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
+                for pi, pt in enumerate(public_tests):
+                    pt_input = pt.get("input", "")
+                    pt_expected = pt.get("output", "")
+                    if not pt_input.strip() or not pt_expected.strip():
                         continue
+                    try:
+                        s_code, s_out, s_err = run_program(solver_exe, input_text=pt_input, limits=solver_limits)
+                    except Exception:
+                        s_code, s_out, s_err = 1, "", "exception"
+                    if s_code != 0 or not s_out.strip():
+                        solver_public_ok = False
+                        output_feedback = f"Solver crashed on public test {pi}: {s_err}"
+                        break
+                    
+                    # Use checker with proper separate files
+                    pub_in = tests_dir / f"solver_pub_{pi}.in"
+                    pub_out = tests_dir / f"solver_pub_{pi}.out"
+                    pub_ans = tests_dir / f"solver_pub_{pi}.ans"
+                    pub_in.write_text(pt_input, encoding="utf-8")
+                    pub_out.write_text(s_out.strip() + "\n", encoding="utf-8")
+                    pub_ans.write_text(pt_expected.strip() + "\n", encoding="utf-8")
+                    chk_ok, chk_msg = run_checker(checker_exe, pub_in, pub_out, pub_ans)
+                    if not chk_ok:
+                        solver_public_ok = False
+                        output_feedback = f"Solver wrong on public test {pi}: {chk_msg}"
+                        break
 
+                if not solver_public_ok:
+                    logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED public test cross-validation: {output_feedback}")
+                    continue
 
-                    # ===== CRITICAL: Cross-validate solver on public tests first =====
-                    # Before trusting the solver on generated tests (where we have no
-                    # reference answer), verify it produces correct outputs on public
-                    # tests (where we DO have known correct answers).
-                    solver_public_ok = True
+                failed = []
+                timeout_or_runtime = False
+                total_run = 0
+                logger.info(f"[SOLVER] Verifying solver_bf_{attempt} on {len(generated_inputs)} micro-tests...")
+                for i, inp in enumerate(generated_inputs):
+                    total_run += 1
+                    input_path = tests_dir / f"gen_{i}.in"
+                    output_path = tests_dir / f"gen_{i}.out"
+                    cleaned_input = inp.rstrip("\n") + "\n"
+                    input_path.write_text(cleaned_input, encoding="utf-8")
+                    
                     solver_limits = ExecutionLimits.default_run()
                     if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
                         solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
-                    for pi, pt in enumerate(public_tests):
-                        pt_input = pt.get("input", "")
-                        pt_expected = pt.get("output", "")
-                        if not pt_input.strip() or not pt_expected.strip():
-                            continue
-                        try:
-                            s_code, s_out, s_err = run_program(solver_exe, input_text=pt_input, limits=solver_limits)
-                        except Exception:
-                            s_code, s_out, s_err = 1, "", "exception"
-                        if s_code != 0 or not s_out.strip():
-                            solver_public_ok = False
-                            solver_feedback = f"Solver crashed on public test {pi}: {s_err}"
-                            break
-                        # Use checker with proper separate files
-                        pub_in = tests_dir / f"solver_pub_{pi}.in"
-                        pub_out = tests_dir / f"solver_pub_{pi}.out"
-                        pub_ans = tests_dir / f"solver_pub_{pi}.ans"
-                        pub_in.write_text(pt_input, encoding="utf-8")
-                        pub_out.write_text(s_out.strip() + "\n", encoding="utf-8")
-                        pub_ans.write_text(pt_expected.strip() + "\n", encoding="utf-8")
-                        chk_ok, chk_msg = run_checker(checker_exe, pub_in, pub_out, pub_ans)
-                        if not chk_ok:
-                            solver_public_ok = False
-                            solver_feedback = f"Solver wrong on public test {pi}: {chk_msg}"
-                            break
+                        
+                    try:
+                        code, out, err = run_program(solver_exe, input_text=inp, limits=solver_limits)
+                    except Exception as ex:
+                        code, out, err = 1, "", str(ex)
 
-                    if not solver_public_ok:
-                        logger.warning(f"[SOLVER] solver_{tier_idx + 1}_{attempt} FAILED public test cross-validation: {solver_feedback}")
-                        continue
+                    if code != 0 or not out.strip():
+                        timeout_or_runtime = True
+                        failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp})
+                        break
 
-                    failed = []
-                    timeout_or_runtime = False
-                    total_run = 0
-                    logger.info(f"[SOLVER] Verifying solver_{tier_idx + 1}_{attempt} on {len(generated_inputs)} tests...")
-                    for i, inp in enumerate(generated_inputs):
-                        total_run += 1
-                        input_path = tests_dir / f"gen_{i}.in"
-                        output_path = tests_dir / f"gen_{i}.out"
-                        # Clean trailing empty lines from input
-                        cleaned_input = inp.rstrip("\n") + "\n"
-                        input_path.write_text(cleaned_input, encoding="utf-8")
-                        # Use generous time limits for brute-force solvers
-                        solver_limits = ExecutionLimits.default_run()
-                        if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
-                            solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10)
-                        try:
-                            code, out, err = run_program(solver_exe, input_text=inp, limits=solver_limits)
-                        except Exception as ex:
-                            code, out, err = 1, "", str(ex)
-
-
-                        if code != 0 or not out.strip():
-                            timeout_or_runtime = True
-                            failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp})
-                            break
-
-
-                        output_path.write_text(out.strip() + "\n", encoding="utf-8")
-                        # Verify solver output using the independent verifier checker.
-                        # The checker is designed to independently validate correctness
-                        # WITHOUT reading from ans, so we pass output_path as a dummy ans.
-                        # testlib requires 3 args (input, output, answer) but our verifier
-                        # only reads inf and ouf.
+                    output_path.write_text(out.strip() + "\n", encoding="utf-8")
+                    
+                    # T2.3 Micro-bound Certification matching against dataset ground-truth
+                    if ac_exe and generated_outputs:
+                        if out.strip() != generated_outputs[i].strip():
+                            failed.append({"type": "wrong_answer", "id": i, "error": "Mismatch with dataset ac_solution (Certification Failed)", "input": inp, "output": out})
+                            if len(failed) >= 5: break
+                    else:
                         ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
                         if not ok:
                             failed.append({"type": "wrong_answer", "id": i, "error": chk_err, "input": inp, "output": out})
-                            # Early termination: stop after collecting enough failures
-                            if len(failed) >= 5:
-                                break
+                            if len(failed) >= 5: break
 
+                if not failed:
+                    generated_outputs = [
+                        (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
+                        for i in range(len(generated_inputs))
+                    ]
+                    solver_ok = True
+                    logger.info(f"[SOLVER] solver_bf_{attempt} PASSED all {len(generated_inputs)} tests (Certified!)")
+                    break
 
-                    if not failed:
-                        generated_outputs = [
-                            (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
-                            for i in range(len(generated_inputs))
-                        ]
-                        solver_ok = True
-                        logger.info(f"[SOLVER] solver_{tier_idx + 1}_{attempt} PASSED all {len(generated_inputs)} tests")
-                        break
+                logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED: {len(failed)}/{total_run} micro-tests failed")
+                output_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
+                (tests_dir / f"solver_bf_{attempt}_failed.txt").write_text(output_feedback, encoding="utf-8")
 
-
-                    logger.warning(f"[SOLVER] solver_{tier_idx + 1}_{attempt} FAILED: {len(failed)}/{total_run} tests failed")
-                    solver_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
-                    (tests_dir / f"solver_{tier_idx + 1}_{attempt}_failed.txt").write_text(solver_feedback, encoding="utf-8")
-                    output_feedback = solver_feedback  # Update outer feedback for next iteration
-
-                    if timeout_or_runtime:
-                        break
+                if timeout_or_runtime:
+                    break
 
                 if solver_ok:
                     break
@@ -781,4 +788,5 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         ],
         "llm_calls": llm_calls,
         "test_memory_item_ids": last_memory_item_ids,
+        "oracle_memory_item_ids": oracle_item_ids if 'oracle_item_ids' in locals() else [],
     }

@@ -7,7 +7,7 @@ Workflow overview
    fan-out ->  2b. generate_code   (parallel)
 3. generate_code -> compile_code
    join   ->  run_tests  (waits for both tests + compiled code)
-4. unified_check -> update_plan_memory -> update_solve_memory -> update_test_memory
+4. unified_check -> update_plan_memory -> update_solve_memory -> update_test_memory -> update_oracle_memory
 5. status_routing:
    - "continue" -> analyze_feedback -> generate_code  (iterate)
    - "hack"     -> hack_test -> hack_routing
@@ -30,6 +30,7 @@ from src.nodes import (
     update_plan_memory_node,
     update_solve_memory_node,
     update_test_memory_node,
+    update_oracle_memory_node,
     hack_test_node,
     join_ready_node,
     join_wait_node,
@@ -71,6 +72,7 @@ def create_solvita_workflow() -> StateGraph:
     workflow.add_node("update_plan_memory", update_plan_memory_node)
     workflow.add_node("update_solve_memory", update_solve_memory_node)
     workflow.add_node("update_test_memory", update_test_memory_node)
+    workflow.add_node("update_oracle_memory", update_oracle_memory_node)
 
     # Phase 5: Adversarial hack testing
     workflow.add_node("hack_test", hack_test_node)
@@ -118,10 +120,11 @@ def create_solvita_workflow() -> StateGraph:
     workflow.add_edge("unified_check", "update_plan_memory")
     workflow.add_edge("update_plan_memory", "update_solve_memory")
     workflow.add_edge("update_solve_memory", "update_test_memory")
+    workflow.add_edge("update_test_memory", "update_oracle_memory")
 
-    # Status routing (after all three memory namespaces are settled)
+    # Status routing (after all four memory namespaces are settled)
     workflow.add_conditional_edges(
-        "update_test_memory",
+        "update_oracle_memory",
         status_routing,
         {
             "continue": "analyze_feedback",

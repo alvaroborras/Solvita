@@ -12,6 +12,7 @@ class MemoryNamespace(str, Enum):
     SOLVE = "solve"
     TEST = "test"
     HACK = "hack"
+    ORACLE = "oracle"
 
 
 @dataclass
@@ -24,6 +25,7 @@ class MemoryItem:
     - solve: {step_strategies, skills, anti_patterns}
     - test: {constraints_patterns, generation_strategies, validator_pitfalls}
     - hack: {adversarial_patterns, edge_cases}
+    - oracle: {brute_force_strategies, complexity_notes}
     """
     id: str  # Stable ID (hash-based or UUID)
     namespace: MemoryNamespace

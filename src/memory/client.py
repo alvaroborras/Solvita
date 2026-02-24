@@ -251,6 +251,21 @@ class MemoryClient:
                 if payload.get("generation_strategies"):
                     for strat in payload["generation_strategies"][:2]:
                         lines.append(f"  - {strat}")
+                        
+            elif self.namespace == MemoryNamespace.HACK:
+                payload = item.payload
+                if payload.get("adversarial_patterns"):
+                    lines.append(f"  Patterns: {', '.join(payload['adversarial_patterns'][:3])}")
+                if payload.get("edge_cases"):
+                    lines.append(f"  Edge Cases: {', '.join(payload['edge_cases'][:3])}")
+                    
+            elif self.namespace == MemoryNamespace.ORACLE:
+                payload = item.payload
+                if payload.get("brute_force_strategies"):
+                    lines.append(f"  Strategy: {', '.join(payload['brute_force_strategies'])}")
+                if payload.get("code_template"):
+                    lines.append(f"  Template Hint:\n```cpp\n{payload['code_template']}\n```")
         
         lines.append("")  # Trailing newline
         return "\n".join(lines)
+
