@@ -36,7 +36,7 @@ class MemoryStore:
     def _get_conn(self):
         """Context manager for database connections."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30.0)
             self._conn.row_factory = sqlite3.Row
         try:
             yield self._conn
@@ -184,12 +184,13 @@ class MemoryStore:
 
     def _seed_items(self):
         """Seed initial items based on namespace."""
-        from src.memory.seeds import PLAN_SEED_ITEMS, SOLVE_SEED_ITEMS, TEST_SEED_ITEMS
+        from src.memory.seeds import PLAN_SEED_ITEMS, SOLVE_SEED_ITEMS, TEST_SEED_ITEMS, HACK_SEED_ITEMS
         
         seed_map = {
             MemoryNamespace.PLAN: PLAN_SEED_ITEMS,
             MemoryNamespace.SOLVE: SOLVE_SEED_ITEMS,
             MemoryNamespace.TEST: TEST_SEED_ITEMS,
+            MemoryNamespace.HACK: HACK_SEED_ITEMS,
         }
         
         seed_items = seed_map.get(self.namespace, [])

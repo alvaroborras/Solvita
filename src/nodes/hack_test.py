@@ -14,14 +14,21 @@ import tempfile
 import subprocess
 from pathlib import Path
 from src.utils.cpp_execution import run_checker, run_program, ExecutionLimits
+from src.memory import MemoryClient, MemoryNamespace, Observation
 
 
-def build_hacker_prompt(problem_desc: str, constraints: Dict[str, Any], code: str) -> str:
+def build_hacker_prompt(problem_desc: str, constraints: Dict[str, Any], code: str, memory_advice: str = "") -> str:
     constraints_json = json.dumps(constraints, indent=2)
+    
+    advice_section = ""
+    if memory_advice:
+        advice_section = f"\n=== HACKER STRATEGY ADVICE ===\n{memory_advice}\n=============================\n"
+        
     return f"""You are a competitive programming hacker. Your goal is to find a test case that breaks the given solution.
 
 Problem Description:
 {problem_desc}
+{advice_section}
 
 ⚠️ CONSTRAINTS (EVERY test input MUST satisfy ALL of these):
 {constraints_json}
@@ -102,11 +109,34 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
         logger.error("No executable found for hack test")
         return {"hack_passed": False, "hack_round": hack_round, "hack_failures": [{"error": "No executable"}]}
 
+    # Initialize Memory Client
+    canonical = state.get("problem", {}).get("canonical", {})
+    memory = MemoryClient(
+        namespace=MemoryNamespace.HACK,
+        config=state.get("config", {}),
+        problem_desc=problem_desc,
+        canonical=canonical,
+    )
+
+    obs = Observation(
+        fsm_state="HACK_GEN",
+        attempt_count=hack_round,
+        canonical=canonical,
+        raw_problem_desc=problem_desc,
+    )
+    if memory.featurizer:
+        obs.feature_keys = memory.featurizer.extract_features(obs, MemoryNamespace.HACK)
+
+    advice, item_ids = memory.get_injection(obs)
+    
+    # Store items for update_hacker_memory_node to attribute reward
+    state["hacker_memory_item_ids"] = item_ids
+
     # Initialize LLM
     llm = UnifiedLLMClient(config)
 
     # 1. Generate Hack Tests
-    prompt = build_hacker_prompt(problem_desc, constraints, code)
+    prompt = build_hacker_prompt(problem_desc, constraints, code, advice)
     response = llm.generate(prompt)
 
     try:

@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING, Optional
 from loguru import logger
 from src.utils.cpp_execution import compile_cpp, ExecutionLimits
 
@@ -37,20 +37,16 @@ def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
     # Use a persistent temp directory (not auto-deleted) so the executable
     # survives for downstream run_tests_node.  Cleanup happens at workflow end.
     tmp_dir = Path(tempfile.mkdtemp(prefix="solvita_compile_"))
-    src_path = tmp_dir / "solution.cpp"
-    exe_path = tmp_dir / "solution"
-
-    src_path.write_text(code, encoding="utf-8")
 
     # Choose limits: diagnostic mode uses sanitizers, normal mode uses -O2
     diagnostic = state.get("solution", {}).get("diagnostic_mode", False)
     limits = ExecutionLimits.diagnostic_compile() if diagnostic else ExecutionLimits.default_compile()
 
-    ok, output = compile_cpp(src_path, exe_path, limits=limits, diagnostic=diagnostic)
+    exe_path, errors = prepare_executable(code, "C++", tmp_dir, diagnostic, limits)
 
     updated_solution = dict(state["solution"])
 
-    if ok:
+    if exe_path:
         updated_solution.update({
             "compilation_success": True,
             "compilation_errors": [],
@@ -64,7 +60,6 @@ def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
             "execution_log": [log_msg],
         }
     else:
-        errors = _parse_compilation_errors(output)
         updated_solution.update({
             "compilation_success": False,
             "compilation_errors": errors,
@@ -74,6 +69,47 @@ def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
             "solution": updated_solution,
             "execution_log": [f"Compilation failed: {len(errors)} error(s)"],
         }
+
+def prepare_executable(code: str, lang: str, tmp_dir: Path, diagnostic: bool = False, limits: Optional[ExecutionLimits] = None) -> tuple[Optional[Path], list[str]]:
+    """
+    Prepare an executable from source code.
+    For C++, writes to a .cpp file and compiles it.
+    For Python 3, writes to a .py file, adds a shebang, and makes it executable.
+    
+    Returns:
+    - executable_path (if successful)
+    - list of error messages (if failed)
+    """
+    if lang.lower() in ("c++", "cpp"):
+        src_path = tmp_dir / "solution.cpp"
+        exe_path = tmp_dir / "solution"
+        src_path.write_text(code, encoding="utf-8")
+        
+        ok, output = compile_cpp(src_path, exe_path, limits=limits, diagnostic=diagnostic)
+        if ok:
+            return exe_path, []
+        else:
+            return None, _parse_compilation_errors(output)
+            
+    elif lang.lower() in ("python", "python3", "python 3"):
+        exe_path = tmp_dir / "solution.py"
+        
+        # Ensure it starts with python3 shebang
+        code_lines = code.splitlines()
+        if not code_lines or not code_lines[0].startswith("#!"):
+            code = "#!/usr/bin/env python3\n" + code
+            
+        exe_path.write_text(code, encoding="utf-8")
+        
+        # Make the script executable
+        try:
+            exe_path.chmod(exe_path.stat().st_mode | 0o111)
+            return exe_path, []
+        except Exception as e:
+            return None, [f"Failed to make Python script executable: {e}"]
+            
+    else:
+        return None, [f"Unsupported language: {lang}"]
 
 
 def _parse_compilation_errors(output: str) -> list[str]:

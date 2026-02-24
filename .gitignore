@@ -28,3 +28,10 @@ TRAIN_SCRIPT_V2_GUIDE.md
 docs/repair_plan_1575B.md
 
 .agent
+
+data/
+scripts/extract_1149e.py
+scripts/rigorous_verify_1037e.py
+scripts/find_1037e_fail.py
+
+investigate_1037_e.log

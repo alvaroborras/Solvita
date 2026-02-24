@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -54,6 +55,8 @@ def unlock_file(f):
         msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+_policy_lock = threading.Lock()
+
 class BanditPolicy:
     """
     Contextual bandit policy for item selection.
@@ -68,7 +71,7 @@ class BanditPolicy:
     def __init__(self, model_path: Optional[Path] = None):
         self.model_path = model_path
         
-        # Sparse weight matrix: feature_key -> {item_id: weight}
+        # Feature weights W[feature_key][item_id]
         self.weights: Dict[str, Dict[str, float]] = {}
         
         # Per-item bias (global prior)
@@ -84,13 +87,14 @@ class BanditPolicy:
     def load(self):
         """Load parameters from JSON with file locking."""
         try:
-            with open(self.model_path, "r") as f:
-                # Acquire shared lock for reading
-                try:
-                    lock_file(f, exclusive=False)
-                    data = json.load(f)
-                finally:
-                    unlock_file(f)
+            with _policy_lock:
+                with open(self.model_path, "r") as f:
+                    # Acquire shared lock for reading
+                    try:
+                        lock_file(f, exclusive=False)
+                        data = json.load(f)
+                    finally:
+                        unlock_file(f)
             
             self.weights = data.get("weights", {})
             self.bias = data.get("bias", {})
@@ -106,25 +110,28 @@ class BanditPolicy:
             return
         
         try:
-            self.model_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self.model_path.with_suffix(".tmp")
-            payload = {
-                "weights": self.weights,
-                "bias": self.bias,
-                "learning_rate": self.learning_rate,
-                "epsilon": self.epsilon,
-            }
-            
-            # Write to temp file with exclusive lock
-            with open(temp_path, "w") as f:
-                try:
-                    lock_file(f, exclusive=True)
-                    json.dump(payload, f, indent=0)
-                finally:
-                    unlock_file(f)
-            
-            # Atomic rename
-            temp_path.replace(self.model_path)
+            with _policy_lock:
+                self.model_path.parent.mkdir(parents=True, exist_ok=True)
+                # Instead of a global .tmp, we use a thread-safe name or just write directly 
+                # since we now hold a threading lock for this process.
+                temp_path = self.model_path.with_name(f"{self.model_path.name}.{threading.get_ident()}.tmp")
+                payload = {
+                    "weights": self.weights,
+                    "bias": self.bias,
+                    "learning_rate": self.learning_rate,
+                    "epsilon": self.epsilon,
+                }
+                
+                # Write to temp file with exclusive lock
+                with open(temp_path, "w") as f:
+                    try:
+                        lock_file(f, exclusive=True)
+                        json.dump(payload, f, indent=0)
+                    finally:
+                        unlock_file(f)
+                
+                # Atomic rename
+                temp_path.replace(self.model_path)
             logger.debug(f"Saved policy to {self.model_path}")
         except Exception as e:
             logger.error(f"Failed to save policy: {e}")

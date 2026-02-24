@@ -164,49 +164,66 @@ Schema:
 
 def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    builtin = [
-        "ncmp (ordered int64 sequence)",
-        "rcmp4 (float sequence, abs/rel 1e-4)",
-        "rcmp6 (float sequence, abs/rel 1e-6)",
-        "rcmp9 (float sequence, abs/rel 1e-9)",
-        "wcmp (token comparison)",
-        "hcmp (big integers)",
-        "nyesno (YES/NO case-insensitive)",
-        "fcmp (full-text exact)",
-    ]
-    return f"""You are a checker agent. Decide whether the problem has multiple valid outputs.
-If single-solution, implement a checker that computes the expected output and compares against the candidate output.
-If multi-solution, implement a checker that validates the candidate output against the problem requirements.
+    return f"""You are a checker/verifier agent. Write a C++17 program that **independently verifies**
+whether a candidate output is correct for a given input — WITHOUT needing any reference answer.
+
+CRITICAL DESIGN PRINCIPLE:
+Verifying a solution is far easier than computing it. Your checker must independently
+determine correctness by re-deriving the answer or checking invariants, NOT by comparing
+against a reference. DO NOT read from the `ans` stream at all.
+
+Approach (choose one based on the problem):
+A) For problems with a unique answer: Compute the correct answer yourself using a simple
+   brute-force algorithm (even O(n^3) or O(n^4) is fine — checkers run on small data),
+   then compare against the candidate output.
+B) For problems with multiple valid answers: Read the candidate output and verify it
+   satisfies all problem constraints (e.g., is it a valid permutation? Does the graph
+   satisfy the required property? Is the value optimal?).
 
 Hard requirements:
 - Use testlib: #include "testlib.h"
 - Do NOT use non-standard headers like #include <bits/stdc++.h>
 - Call registerTestlibCmd(argc, argv)
-- Read input via inf, candidate output via ouf, reference answer via ans when applicable
-- For multi-solution, ignore ans and validate output against requirements
-- Use quitf(_ok/_wa/_fail) with specific error messages
+- Read input via inf (the test input)
+- Read candidate output via ouf (the output to verify)
+- DO NOT read from ans — your checker must work without any reference answer
+- Use quitf(_ok, "...") if the candidate output is correct
+- Use quitf(_wa, "...") with a specific error message if incorrect
+- Implement your own verification logic inside the checker
 
-Minimal skeleton (illustrative only):
+Minimal skeleton (approach A — unique answer):
 #include "testlib.h"
+#include <vector>
 int main(int argc, char* argv[]) {{
   registerTestlibCmd(argc, argv);
+  // 1. Read the input
   int n = inf.readInt();
-  int ansv = ans.readInt();
-  int outv = ouf.readInt();
-  if (outv != ansv) quitf(_wa, "mismatch");
+  // ... read full input ...
+  
+  // 2. Compute the correct answer independently (brute force is OK)
+  int expected = brute_force_solve(n, ...);
+  
+  // 3. Read and verify the candidate output
+  int got = ouf.readInt();
+  if (got != expected) quitf(_wa, "expected %d, got %d", expected, got);
   quitf(_ok, "ok");
 }}
 
-Input files:
-- argv[1]: input file path
-- argv[2]: output file path (candidate output)
-
-Exit code:
-- 0 if correct
-- non-zero if incorrect (write a short error to stderr)
-
-Built-in comparator types you can use inside your checker if needed:
-{json.dumps(builtin, indent=2)}
+Minimal skeleton (approach B — multiple valid answers):
+#include "testlib.h"
+#include <vector>
+int main(int argc, char* argv[]) {{
+  registerTestlibCmd(argc, argv);
+  // 1. Read the input
+  int n = inf.readInt();
+  
+  // 2. Read the candidate output
+  int answer = ouf.readInt();
+  
+  // 3. Verify it satisfies the problem constraints
+  if (!is_valid(answer, ...)) quitf(_wa, "invalid answer");
+  quitf(_ok, "ok");
+}}
 
 Problem Description:
 {problem_desc}
@@ -220,7 +237,6 @@ Public Tests:
 Return ONLY a JSON object. No other text, no markdown.
 Schema:
 {{
-  "is_multi_solution": false,
   "checker_cpp": "<complete C++17 source>"
 }}
 """
@@ -535,10 +551,12 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             public_ok = True
             for i, pt in enumerate(public_tests):
                 input_path = tests_dir / f"public_{i}.in"
-                output_path = tests_dir / f"public_{i}.out"
+                candidate_path = tests_dir / f"public_{i}.out"
+                answer_path = tests_dir / f"public_{i}.ans"
                 input_path.write_text(pt.get("input", ""), encoding="utf-8")
-                output_path.write_text(pt.get("output", ""), encoding="utf-8")
-                ok, err = run_checker(checker_exe, input_path, output_path, output_path)
+                candidate_path.write_text(pt.get("output", ""), encoding="utf-8")
+                answer_path.write_text(pt.get("output", ""), encoding="utf-8")
+                ok, err = run_checker(checker_exe, input_path, candidate_path, answer_path)
                 if not ok:
                     public_ok = False
                     checker_feedback = f"Public test {i} failed: {err}"
@@ -551,9 +569,9 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             logger.warning("[CHECKER] Failed to build checker, using public tests only")
         else:
             solver_tiers = [
-                "Implement the simplest correct solution. You may ignore time and memory limits; brute force is acceptable.",
-                "Optimize moderately to handle larger inputs, but correctness is more important than performance.",
-                "Implement a solution that meets the stated constraints efficiently.",
+                "Implement the simplest correct solution. CORRECTNESS IS THE ONLY GOAL. Use brute force, exhaustive search, or the most naive algorithm possible. Ignore time and memory limits entirely. Even O(n!) is fine if it is provably correct.",
+                "Implement a moderately optimized solution. Correctness is still more important than performance, but try to handle inputs up to ~1000.",
+                "Implement an efficient solution that meets the stated constraints. Use optimal algorithms and data structures.",
             ]
 
             output_feedback = ""
@@ -577,6 +595,44 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                         continue
 
 
+                    # ===== CRITICAL: Cross-validate solver on public tests first =====
+                    # Before trusting the solver on generated tests (where we have no
+                    # reference answer), verify it produces correct outputs on public
+                    # tests (where we DO have known correct answers).
+                    solver_public_ok = True
+                    solver_limits = ExecutionLimits.default_run()
+                    if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
+                        solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
+                    for pi, pt in enumerate(public_tests):
+                        pt_input = pt.get("input", "")
+                        pt_expected = pt.get("output", "")
+                        if not pt_input.strip() or not pt_expected.strip():
+                            continue
+                        try:
+                            s_code, s_out, s_err = run_program(solver_exe, input_text=pt_input, limits=solver_limits)
+                        except Exception:
+                            s_code, s_out, s_err = 1, "", "exception"
+                        if s_code != 0 or not s_out.strip():
+                            solver_public_ok = False
+                            solver_feedback = f"Solver crashed on public test {pi}: {s_err}"
+                            break
+                        # Use checker with proper separate files
+                        pub_in = tests_dir / f"solver_pub_{pi}.in"
+                        pub_out = tests_dir / f"solver_pub_{pi}.out"
+                        pub_ans = tests_dir / f"solver_pub_{pi}.ans"
+                        pub_in.write_text(pt_input, encoding="utf-8")
+                        pub_out.write_text(s_out.strip() + "\n", encoding="utf-8")
+                        pub_ans.write_text(pt_expected.strip() + "\n", encoding="utf-8")
+                        chk_ok, chk_msg = run_checker(checker_exe, pub_in, pub_out, pub_ans)
+                        if not chk_ok:
+                            solver_public_ok = False
+                            solver_feedback = f"Solver wrong on public test {pi}: {chk_msg}"
+                            break
+
+                    if not solver_public_ok:
+                        logger.warning(f"[SOLVER] solver_{tier_idx + 1}_{attempt} FAILED public test cross-validation: {solver_feedback}")
+                        continue
+
                     failed = []
                     timeout_or_runtime = False
                     total_run = 0
@@ -588,8 +644,12 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                         # Clean trailing empty lines from input
                         cleaned_input = inp.rstrip("\n") + "\n"
                         input_path.write_text(cleaned_input, encoding="utf-8")
+                        # Use generous time limits for brute-force solvers
+                        solver_limits = ExecutionLimits.default_run()
+                        if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
+                            solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10)
                         try:
-                            code, out, err = run_program(solver_exe, input_text=inp, limits=ExecutionLimits.default_run())
+                            code, out, err = run_program(solver_exe, input_text=inp, limits=solver_limits)
                         except Exception as ex:
                             code, out, err = 1, "", str(ex)
 
@@ -601,9 +661,14 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
 
                         output_path.write_text(out.strip() + "\n", encoding="utf-8")
-                        ok, err = run_checker(checker_exe, input_path, output_path, output_path)
+                        # Verify solver output using the independent verifier checker.
+                        # The checker is designed to independently validate correctness
+                        # WITHOUT reading from ans, so we pass output_path as a dummy ans.
+                        # testlib requires 3 args (input, output, answer) but our verifier
+                        # only reads inf and ouf.
+                        ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
                         if not ok:
-                            failed.append({"type": "wrong_answer", "id": i, "error": err, "input": inp, "output": out})
+                            failed.append({"type": "wrong_answer", "id": i, "error": chk_err, "input": inp, "output": out})
                             # Early termination: stop after collecting enough failures
                             if len(failed) >= 5:
                                 break

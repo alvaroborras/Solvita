@@ -93,6 +93,8 @@ class SolvitaState(TypedDict):
     problem: Annotated[ProblemData, merge_dict]
     plan: Annotated[PlanData, merge_dict]
     solution: Annotated[SolutionData, merge_dict]
+    oracle_solution: Optional[Dict[str, Any]]
+    buggy_solution: Optional[Dict[str, Any]]
     tests: Annotated[TestData, merge_dict]
     feedback: Annotated[FeedbackData, merge_dict]
 
@@ -161,6 +163,8 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             memory_item_ids=[],
             diagnostic_mode=False,
         ),
+        oracle_solution=None,
+        buggy_solution=None,
         tests=TestData(
             generated_tests=[],
             total_tests=0,

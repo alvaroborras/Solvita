@@ -190,14 +190,25 @@ class Featurizer:
                     if pt_lower in ("tree", "dag", "graph", "bipartite"):
                         features.append(f"GRAPH:{pt_lower}")
 
-        # Integer overflow risk: constraints with values near 1e18
+        # Integer overflow risk and SCALE features from n constraint
         if "constraints" in canonical:
             constraints = canonical["constraints"]
             if isinstance(constraints, dict):
+                # Integer overflow risk
                 for val in constraints.values():
                     val_str = str(val)
                     if any(marker in val_str for marker in ("1e18", "10^18", "1000000000000000000", "1e9")):
                         features.append("CONSTR:overflow_risk")
                         break
+                        
+                # SCALE buckets based on N
+                if "n" in constraints:
+                    val_str = str(constraints["n"]).replace(" ", "").lower()
+                    if "1e6" in val_str or "10^6" in val_str or "1000000" in val_str:
+                        features.append("SCALE:1M")
+                    elif "1e5" in val_str or "10^5" in val_str or "100000" in val_str:
+                        features.append("SCALE:100K")
+                    elif "1e3" in val_str or "10^3" in val_str or "1000" in val_str:
+                        features.append("SCALE:1K")
 
         return features

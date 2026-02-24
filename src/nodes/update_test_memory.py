@@ -22,14 +22,14 @@ def _compute_test_reward(state: Dict[str, Any]) -> float:
     """
     Compute reward for test memory items based on workflow outcome.
 
-    The test memory is rewarded based on how well the generated tests helped
-    exercise the solution — proxied by the overall pass_rate.
+    The test memory is rewarded based on the pass rate of the tests against 
+    the Oracle solution. We assume the Oracle is ground truth, so:
+    High pass rate = Generated tests are valid = High Reward
+    Low pass rate = Generated tests are malformed/buggy = Low/Negative Reward
 
     Reward scale:
-        +1.0  : workflow succeeded (all tests passed)
-        -1.0  : reached max_iterations or unrecoverable error
-         else : pass_rate * 2.0 - 1.0  → maps [0%, 100%] → [-1.0, +1.0]
-                so 100% → +1.0, 50% → 0.0, 0% → -1.0
+        pass_rate * 2.0 - 1.0  → maps [0%, 100%] → [-1.0, +1.0]
+        so 100% pass_rate → +1.0, 50% → 0.0, 0% → -1.0
     """
     status = state.get("status", "pending")
 

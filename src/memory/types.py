@@ -11,6 +11,7 @@ class MemoryNamespace(str, Enum):
     PLAN = "plan"
     SOLVE = "solve"
     TEST = "test"
+    HACK = "hack"
 
 
 @dataclass
@@ -22,6 +23,7 @@ class MemoryItem:
     - plan: {problem_tags, subfunctions, canonical_hints}
     - solve: {step_strategies, skills, anti_patterns}
     - test: {constraints_patterns, generation_strategies, validator_pitfalls}
+    - hack: {adversarial_patterns, edge_cases}
     """
     id: str  # Stable ID (hash-based or UUID)
     namespace: MemoryNamespace
