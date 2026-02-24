@@ -3,6 +3,7 @@ Shared utilities for C++ execution, compilation, and checking with sandboxing.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,24 +106,29 @@ def _make_preexec_fn(limits: ExecutionLimits, work_dir: Optional[Path] = None) -
             os.chdir(work_dir)
         
         # CPU time limit (seconds of CPU time)
-        if limits.cpu_seconds is not None:
-            resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
+        cpu_sec = limits.cpu_seconds
+        if cpu_sec is not None:
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_sec, cpu_sec))
         
         # Address space limit (memory)
-        if limits.memory_bytes is not None:
-            resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
+        mem_bytes = limits.memory_bytes
+        if mem_bytes is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         
         # File size limit
-        if limits.fsize_bytes is not None:
-            resource.setrlimit(resource.RLIMIT_FSIZE, (limits.fsize_bytes, limits.fsize_bytes))
+        fsize = limits.fsize_bytes
+        if fsize is not None:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
         
         # Process count limit
-        if limits.nproc is not None:
-            resource.setrlimit(resource.RLIMIT_NPROC, (limits.nproc, limits.nproc))
+        nproc = limits.nproc
+        if nproc is not None:
+            resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
         
         # Open files limit
-        if limits.nofile is not None:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (limits.nofile, limits.nofile))
+        nofile = limits.nofile
+        if nofile is not None:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
     
     return preexec
 
@@ -150,15 +156,34 @@ def _detect_compiler() -> Optional[str]:
 
 
 def sanitize_cpp(code: str) -> str:
-    """Strip markdown code blocks from LLM output."""
+    """
+    Strip markdown code blocks from LLM output.
+    Also performs security scanning to reject malicious OS-level calls (T1.2).
+    Raises ValueError if malicious code is detected.
+    """
     code = code.strip()
     if code.startswith("```"):
         lines = code.split("\n")
         if lines and lines[0].startswith("```"):
-            lines = lines[1:]
+            lines.pop(0)
         if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
+            lines.pop()
         code = "\n".join(lines).strip()
+        
+    # Security Scan (T1.2)
+    dangerous_patterns = [
+        r"#include\s*<unistd\.h>",
+        r"#include\s*<sys/socket\.h>",
+        r"#include\s*<windows\.h>",
+        r"\bsystem\s*\(",
+        r"\bfork\s*\(",
+        r"\bexec[a-z]*\s*\(",
+        r"\bpopen\s*\(",
+    ]
+    for pattern in dangerous_patterns:
+        if re.search(pattern, code):
+            raise ValueError(f"SECURITY_VIOLATION: Detect banned pattern '{pattern}' in C++ source.")
+            
     return code
 
 
@@ -191,6 +216,12 @@ def compile_cpp(
 
     if not source_abs.exists():
         return False, f"Source file not found: {source_abs}"
+
+    try:
+        source_content = source_abs.read_text(encoding="utf-8")
+        sanitize_cpp(source_content)
+    except ValueError as e:
+        return False, f"COMPILE_ERROR: {str(e)}"
 
     if limits is None:
         limits = ExecutionLimits.diagnostic_compile() if diagnostic else ExecutionLimits.default_compile()
@@ -291,7 +322,7 @@ def run_program(
         result = subprocess.run(cmd, **run_kwargs)
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
-        return -1, "", "Timeout"
+        return 124, "", "Time Limit Exceeded"
     except Exception as e:
         return -1, "", str(e)
 

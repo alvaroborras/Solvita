@@ -26,6 +26,7 @@ tmp/
 MERGE_TEST_REPORT.md
 TRAIN_SCRIPT_V2_GUIDE.md
 docs/repair_plan_1575B.md
+solvita_train_tanh_schema.md
 
 .agent
 
@@ -35,3 +36,8 @@ scripts/rigorous_verify_1037e.py
 scripts/find_1037e_fail.py
 
 investigate_1037_e.log
+
+genesis/
+C++17 暴力算法模板库构建.md
+docs/research_topic_oracle_tle.md
+implementation_plan.md.resolved
