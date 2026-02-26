@@ -1,20 +1,14 @@
 """LangGraph Workflow Definition for Solvita Agent
 
-Workflow overview
-==================
-1. plan_solution  (canonical problem + strategy selection)
-   fan-out ->  2a. generate_tests  (parallel)
-   fan-out ->  2b. generate_code   (parallel)
-3. generate_code -> compile_code
-   join   ->  run_tests  (waits for both tests + compiled code)
-4. unified_check -> update_plan_memory -> update_solve_memory -> update_test_memory -> update_oracle_memory
-5. status_routing:
-   - "continue" -> analyze_feedback -> generate_code  (iterate)
-   - "hack"     -> hack_test -> hack_routing
-                      hack_again -> hack_test
-                      hack_failed -> analyze_feedback
-                      end -> END
-   - "end"      -> END
+Workflow overview (三阶段子图架构)
+=====================================
+Phase 1: TestGen  — generate_tests
+          ↓ phase_transition (清空 messages)
+Phase 2: CodeGen  — plan_solution → generate_code/tests → run_tests
+                    → unified_check → memory settlement → status_routing
+          ↓ phase_transition (清空 messages)
+Phase 3: Hacker   — hack_test → hack_routing → update_hacker_memory
+                    → END | re-inject failures back to CodeGen (via top-level)
 """
 
 from langgraph.graph import StateGraph, END
@@ -38,62 +32,54 @@ from src.nodes import (
     compilation_routing,
     hack_routing,
     join_routing,
+    phase_transition_node,
+    update_hacker_memory_node,
 )
 from typing import Dict, Any
 from loguru import logger
 
 
-def create_solvita_workflow() -> StateGraph:
-    """
-    Create the complete Solvita LangGraph workflow.
+# ============================================================
+# Phase 1: TestGen Subgraph
+# ============================================================
 
-    Returns:
-        Compiled StateGraph ready for execution.
-    """
-    workflow = StateGraph(SolvitaState)
+def create_testgen_subgraph():
+    """Phase 1 — 暴力神谕测试集生成子图"""
+    g = StateGraph(SolvitaState)
+    g.add_node("generate_tests", generate_tests_node)
+    g.set_entry_point("generate_tests")
+    g.add_edge("generate_tests", END)
+    return g.compile()
 
-    # ========== Nodes ==========
 
-    # Phase 1: Planning
-    workflow.add_node("plan_solution", plan_solution_node)
+# ============================================================
+# Phase 2: CodeGen Subgraph
+# ============================================================
 
-    # Phase 2: Parallel generation
-    workflow.add_node("generate_tests", generate_tests_node)
-    workflow.add_node("generate_code", generate_code_node)
+def create_codegen_subgraph():
+    """Phase 2 — 正向代码生成 + 内部重试子图"""
+    g = StateGraph(SolvitaState)
 
-    # Phase 3: Compilation + test execution
-    workflow.add_node("compile_code", compile_code_node)
-    workflow.add_node("join_ready", join_ready_node)
-    workflow.add_node("join_wait", join_wait_node)
-    workflow.add_node("run_tests", run_tests_node)
+    g.add_node("plan_solution", plan_solution_node)
+    g.add_node("generate_code", generate_code_node)
+    g.add_node("compile_code", compile_code_node)
+    g.add_node("join_ready", join_ready_node)
+    g.add_node("join_wait", join_wait_node)
+    g.add_node("run_tests", run_tests_node)
+    g.add_node("unified_check", unified_check_node)
+    g.add_node("update_plan_memory", update_plan_memory_node)
+    g.add_node("update_solve_memory", update_solve_memory_node)
+    g.add_node("update_test_memory", update_test_memory_node)
+    g.add_node("update_oracle_memory", update_oracle_memory_node)
+    g.add_node("analyze_feedback", analyze_feedback_node)
 
-    # Phase 4: Evaluation + memory settlement
-    workflow.add_node("unified_check", unified_check_node)
-    workflow.add_node("update_plan_memory", update_plan_memory_node)
-    workflow.add_node("update_solve_memory", update_solve_memory_node)
-    workflow.add_node("update_test_memory", update_test_memory_node)
-    workflow.add_node("update_oracle_memory", update_oracle_memory_node)
+    g.set_entry_point("plan_solution")
 
-    # Phase 5: Adversarial hack testing
-    workflow.add_node("hack_test", hack_test_node)
+    # plan -> parallel: generate_code (tests already generated in Phase 1)
+    g.add_edge("plan_solution", "generate_code")
+    g.add_edge("generate_code", "compile_code")
 
-    # Phase 6: Feedback analysis (for failed iterations)
-    workflow.add_node("analyze_feedback", analyze_feedback_node)
-
-    # ========== Edges ==========
-
-    # Entry point
-    workflow.set_entry_point("plan_solution")
-
-    # Parallel fan-out: plan -> tests AND plan -> code
-    workflow.add_edge("plan_solution", "generate_tests")
-    workflow.add_edge("plan_solution", "generate_code")
-
-    # Code generation -> compilation
-    workflow.add_edge("generate_code", "compile_code")
-
-    # Conditional: compilation success or failure
-    workflow.add_conditional_edges(
+    g.add_conditional_edges(
         "compile_code",
         compilation_routing,
         {
@@ -102,11 +88,9 @@ def create_solvita_workflow() -> StateGraph:
         },
     )
 
-    # Join: generate_tests -> join_ready (waits for compile_code too)
-    workflow.add_edge("generate_tests", "join_ready")
-
-    # Conditional join barrier before running tests
-    workflow.add_conditional_edges(
+    # join_ready acts as a barrier waiting for both test + compile
+    # In Phase 2, tests are already ready from Phase 1, so join goes straight to run_tests
+    g.add_conditional_edges(
         "join_ready",
         join_routing,
         {
@@ -115,42 +99,102 @@ def create_solvita_workflow() -> StateGraph:
         },
     )
 
-    # After running tests, check + settle all three memory namespaces
-    workflow.add_edge("run_tests", "unified_check")
-    workflow.add_edge("unified_check", "update_plan_memory")
-    workflow.add_edge("update_plan_memory", "update_solve_memory")
-    workflow.add_edge("update_solve_memory", "update_test_memory")
-    workflow.add_edge("update_test_memory", "update_oracle_memory")
+    g.add_edge("run_tests", "unified_check")
+    g.add_edge("unified_check", "update_plan_memory")
+    g.add_edge("update_plan_memory", "update_solve_memory")
+    g.add_edge("update_solve_memory", "update_test_memory")
+    g.add_edge("update_test_memory", "update_oracle_memory")
 
-    # Status routing (after all four memory namespaces are settled)
-    workflow.add_conditional_edges(
+    # status_routing: "continue" loops internally; "hack" / "end" exit the subgraph
+    g.add_conditional_edges(
         "update_oracle_memory",
         status_routing,
         {
             "continue": "analyze_feedback",
-            "hack": "hack_test",
+            "hack": END,   # signals top-level to proceed to Phase 3
             "end": END,
         },
     )
 
-    # Hack test adversarial phase
-    workflow.add_conditional_edges(
+    g.add_edge("analyze_feedback", "generate_code")
+
+    return g.compile()
+
+
+# ============================================================
+# Phase 3: Hacker Subgraph
+# ============================================================
+
+def create_hacker_subgraph():
+    """Phase 3 — 对抗性 Hack + 内存结算子图"""
+    g = StateGraph(SolvitaState)
+
+    g.add_node("hack_test", hack_test_node)
+    g.add_node("update_hacker_memory", update_hacker_memory_node)
+
+    g.set_entry_point("hack_test")
+
+    g.add_conditional_edges(
         "hack_test",
         hack_routing,
         {
             "hack_again": "hack_test",
-            "hack_failed": "analyze_feedback",
-            "end": END,
+            "hack_failed": "update_hacker_memory",
+            "end": "update_hacker_memory",
         },
     )
 
-    # Feedback -> regenerate code
-    workflow.add_edge("analyze_feedback", "generate_code")
+    g.add_edge("update_hacker_memory", END)
 
-    compiled_workflow = workflow.compile()
-    logger.info("Solvita workflow graph compiled successfully")
-    return compiled_workflow
+    return g.compile()
 
+
+# ============================================================
+# Top-level Orchestrator
+# ============================================================
+
+def create_solvita_workflow():
+    """
+    顶层 Orchestrator 图：串联三个 Phase 子图，Phase 间插入 phase_transition_node。
+
+    拓扑：
+        testgen_phase
+          → phase_transition_1 (TESTGEN → CODEGEN, 清空 messages)
+          → codegen_phase
+          → phase_transition_2 (CODEGEN → HACKER, 清空 messages)
+          → hacker_phase
+          → END
+    """
+    workflow = StateGraph(SolvitaState)
+
+    # 编译三个子图
+    testgen_sg = create_testgen_subgraph()
+    codegen_sg = create_codegen_subgraph()
+    hacker_sg = create_hacker_subgraph()
+
+    # 注册节点
+    workflow.add_node("testgen_phase", testgen_sg)
+    workflow.add_node("phase_transition_1", phase_transition_node)
+    workflow.add_node("codegen_phase", codegen_sg)
+    workflow.add_node("phase_transition_2", phase_transition_node)
+    workflow.add_node("hacker_phase", hacker_sg)
+
+    # 边
+    workflow.set_entry_point("testgen_phase")
+    workflow.add_edge("testgen_phase", "phase_transition_1")
+    workflow.add_edge("phase_transition_1", "codegen_phase")
+    workflow.add_edge("codegen_phase", "phase_transition_2")
+    workflow.add_edge("phase_transition_2", "hacker_phase")
+    workflow.add_edge("hacker_phase", END)
+
+    compiled = workflow.compile()
+    logger.info("Solvita Orchestrator workflow compiled successfully (3-phase subgraph architecture)")
+    return compiled
+
+
+# ============================================================
+# Entry point
+# ============================================================
 
 def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> Dict[str, Any]:
     """
@@ -170,20 +214,20 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
         }
 
     logger.info("=" * 60)
-    logger.info("Starting Solvita Workflow")
+    logger.info("Starting Solvita Workflow (3-Phase Orchestrator)")
     logger.info("=" * 60)
 
     initial_state = create_initial_state(raw_problem, config)
     workflow = create_solvita_workflow()
 
-    # Each iteration involves ~7 nodes; 5 iterations + hack rounds = ~50
     final_state = workflow.invoke(
         initial_state,
-        {"recursion_limit": 100},
+        {"recursion_limit": 150},
     )
 
     logger.info("=" * 60)
     logger.info(f"Workflow Complete: {final_state.get('status', 'unknown')}")
+    logger.info(f"Final Phase: {final_state.get('current_phase', 'unknown')}")
     logger.info(f"Iterations: {final_state.get('iteration', 0)}")
     logger.info(f"LLM Calls: {final_state.get('llm_calls', 0)}")
     logger.info(f"Pass Rate: {final_state['tests'].get('pass_rate', 0.0):.1%}")

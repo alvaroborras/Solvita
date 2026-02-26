@@ -111,6 +111,12 @@ class SolvitaState(TypedDict):
     max_hack_rounds: int
     hack_passed: bool
     hack_failures: List[Dict]
+    hacker_reward: float
+    hacker_memory_item_ids: List[str]
+    oracle_memory_item_ids: List[str]
+
+    # -- Phase routing (set by phase_transition_node) --
+    current_phase: str  # "TESTGEN" | "CODEGEN" | "HACKER"
 
     # -- Metadata --
     execution_log: Annotated[List[str], add]
@@ -194,6 +200,10 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         max_hack_rounds=config.get("max_hack_rounds", 3),
         hack_passed=False,
         hack_failures=[],
+        hacker_reward=0.0,
+        hacker_memory_item_ids=[],
+        oracle_memory_item_ids=[],
+        current_phase="TESTGEN",
 
         # Metadata
         execution_log=[],
