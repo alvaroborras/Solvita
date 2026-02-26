@@ -51,6 +51,7 @@ def train_one_hacker(item: dict, config: dict, trial_idx: int) -> dict:
     # 这里要模拟成：TestGen 已经成功跑完了，并且 CodeGen 写出了一个 buggy 的实现。
     raw_problem = {
         "id": problem_id,
+        "_metadata": {"problem_id": problem_id},  # hack_test_node 实际读这里来确定目录名
         "description": description,
         "time_limit": 2000,
         "space_limit": 256,

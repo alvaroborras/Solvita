@@ -101,10 +101,11 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
     # 1. 伪造初始 State
     raw_problem = {
         "id": problem_id,
+        "_metadata": {"problem_id": problem_id},  # generate_tests_node 实际读这里来确定目录名
         "description": description,
         "time_limit": 2000,
         "space_limit": 256,
-        "public_tests": [{"input": "some stdin\n", "output": "some stdout\n"}] # 给定兜底 public_test 避免节点断言失败
+        "public_tests": [{"input": "some stdin\n", "output": "some stdout\n"}]
     }
     state = create_initial_state(raw_problem, config)
     state["iteration"] = trial_idx
