@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-scripts/train_hacker.py — 离线训练 Hacker Memory
+scripts/train_hacker.py — 离线训练 Hacker Memory (Native Driver)
 
 用途：
-    从 solvita_train_tanh.jsonl 批量读取题目，编译 incorrect_solution（buggy 代码），
-    让 LLM 用 HACK 种子库生成对抗性输入攻击该 buggy 代码，将奖励信号写入 HACK SQLite。
+    从 dataset 批量读取题目，组装初始 SolvitaState，将 bug 代码注入，
+    直接驱动现有的 `hack_test_node` 和 `update_hacker_memory_node`。
+    以此评估 Hacker 攻击策略在真实业务管线中的表现。
 
 用法：
     python scripts/train_hacker.py \\
         --dataset <workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl \\
         --limit 200 \\
-        --data-dir data/memory \\
-        --config config/default.yaml
+        --data-dir data/memory
 """
 
 import argparse
@@ -21,59 +21,24 @@ import sys
 import tempfile
 from pathlib import Path
 
+# 加入项目根目录到 sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from src.llm import UnifiedLLMClient
-from src.memory import MemoryClient, MemoryNamespace, Observation
-from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
-from src.utils.json_utils import parse_json_response
-
-
-MAX_HACK_RETRIES = 3
+from src.graph.state import SolvitaState, create_initial_state
+from src.nodes.hack_test import hack_test_node
+from src.nodes.update_hacker_memory import update_hacker_memory_node
 
 
 # ─────────────────────────────────────────────────────────────
-# 构建 Hacker Prompt（与 hack_test.py 中一致）
+# 单道题训练 (Driver Wrap)
 # ─────────────────────────────────────────────────────────────
 
-def build_hacker_prompt(description: str, code: str, memory_advice: str, validator_feedback: str = "") -> str:
-    advice_section = f"\n=== HACKER STRATEGY ADVICE ===\n{memory_advice}\n==============================\n" if memory_advice else ""
-    feedback_section = (
-        f"\n=== PREVIOUS ATTEMPT REJECTED ===\n{validator_feedback}\nGenerate DIFFERENT inputs.\n=================================\n"
-        if validator_feedback else ""
-    )
-    return f"""You are a competitive programming hacker. Find inputs that break the buggy solution below.
-
-Problem:
-{description}
-{advice_section}{feedback_section}
-Buggy Solution:
-```cpp
-{code}
-```
-
-Generate 1-5 adversarial test inputs that trigger bugs in this code.
-
-Return ONLY valid JSON:
-{{
-    "analysis": "<what bugs you found>",
-    "hack_tests": [
-        {{"input": "<complete stdin string with newlines>"}}
-    ]
-}}
-"""
-
-
-# ─────────────────────────────────────────────────────────────
-# 单道题 Hack 训练（内部重试）
-# ─────────────────────────────────────────────────────────────
-
-def train_one_hacker(item: dict, llm: "UnifiedLLMClient", config: dict, trial_idx: int) -> dict:
+def train_one_hacker(item: dict, config: dict, trial_idx: int) -> dict:
     problem_id = item.get("id", f"item_{trial_idx}")
     description = item.get("description", "")
     incorrect_solutions = item.get("incorrect_solution", [])
-    correct_solutions = item.get("correct_solution", [])
 
     if not description or not incorrect_solutions:
         return {"id": problem_id, "skipped": True, "reason": "no description or incorrect_solution"}
@@ -82,116 +47,67 @@ def train_one_hacker(item: dict, llm: "UnifiedLLMClient", config: dict, trial_id
     if not buggy_code:
         return {"id": problem_id, "skipped": True, "reason": "empty buggy code"}
 
-    # 初始化 Memory Client
-    memory = MemoryClient(
-        namespace=MemoryNamespace.HACK,
-        config=config,
-        problem_desc=description,
-    )
+    # 1. 伪造初始 State
+    # 这里要模拟成：TestGen 已经成功跑完了，并且 CodeGen 写出了一个 buggy 的实现。
+    raw_problem = {
+        "description": description,
+        "time_limit": 2000,
+        "space_limit": 256,
+        "public_tests": [{"input": "some stdin", "output": "some stdout"}]
+    }
+    state = create_initial_state(raw_problem, config)
+    state["iteration"] = trial_idx
+    
+    # 强制注入有 bug 的代码作为当前系统的 Solution
+    state["solution"]["solution_cpp"] = buggy_code
+    
+    # 假设此时是 hack 阶段的第 1 轮
+    state["hack_round"] = 0
+    state["hack_failures"] = []
+    
+    try:
+        # 2. 直接调用真实的 Hacker 节点
+        # 这会自动获取 Memory 注入、生成对抗测试、尝试通过沙盒运行。
+        logger.info(f"[{problem_id}] Entering hack_test_node...")
+        new_state_delta = hack_test_node(state)
+        
+        # 合并产出回 State
+        state.update(new_state_delta)
+        
+        # 3. 提取结果
+        hack_passed = state.get("hack_passed", True)  # True =没找到Bug/过了测试; False =成功触发WA/RE
+        hacker_ids = state.get("hacker_memory_item_ids", [])
+        
+        if not hack_passed:
+            # 找到 BUG 了！Hack 成功，拿奖励！
+            reward = 1.0
+            logger.info(f"[{problem_id}] Hack SUCCEEDED (Found bug)! Reward: +1.0")
+        else:
+            # 没找到 Bug 
+            if state.get("hack_round", 0) >= state.get("max_hack_rounds", 3):
+                reward = -0.5
+                logger.info(f"[{problem_id}] Hack exhausted all rounds without finding bug. Reward: -0.5")
+            else:
+                reward = -1.0
+                logger.warning(f"[{problem_id}] Hack pipeline aborted or no valid test found. Reward: -1.0")
+        
+        # 强制设置 reward 到 state 里供 update 节点使用 
+        state["hacker_reward"] = reward
 
-    advice, item_ids = memory.get_injection(
-        fsm_state="HACK_GEN",
-        failure_type=None,
-        attempt_count=trial_idx,
-    )
+        # 4. 调用原生内存更新节点
+        logger.info(f"[{problem_id}] Settle via update_hacker_memory_node...")
+        update_hacker_memory_node(state)
+        
+        return {
+            "id": problem_id, 
+            "reward": reward, 
+            "hack_success": not hack_passed, 
+            "hacker_ids": hacker_ids
+        }
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-
-        # 1. 编译 buggy_solution
-        buggy_src = tmp / "buggy.cpp"
-        buggy_exe = tmp / "buggy"
-        buggy_src.write_text(buggy_code, encoding="utf-8")
-        ok, _ = compile_cpp(buggy_src, buggy_exe)
-
-        if not ok:
-            logger.warning(f"[{problem_id}] buggy_solution 编译失败，跳过")
-            return {"id": problem_id, "skipped": True, "reason": "buggy_compile_failed"}
-
-        # 2. 编译 correct_solution（用于差异对拍）
-        correct_exe = None
-        if correct_solutions:
-            correct_src = tmp / "correct.cpp"
-            correct_exe_path = tmp / "correct"
-            correct_src.write_text(correct_solutions[0].get("code", ""), encoding="utf-8")
-            c_ok, _ = compile_cpp(correct_src, correct_exe_path)
-            if c_ok:
-                correct_exe = correct_exe_path
-
-        # 3. 内循环：LLM → 生成 hack 输入 → 对跑 → 计算 reward
-        all_rejected = True
-        hack_success = False
-        validator_feedback = ""
-
-        for attempt in range(1, MAX_HACK_RETRIES + 1):
-            prompt = build_hacker_prompt(description, buggy_code, advice, validator_feedback)
-            response = llm.generate(prompt)
-
-            try:
-                data = parse_json_response(response)
-                hack_tests = data.get("hack_tests", [])
-                logger.debug(f"[{problem_id}] 第{attempt}次：生成 {len(hack_tests)} 个 hack 输入")
-            except Exception:
-                logger.warning(f"[{problem_id}] 第{attempt}次：LLM 解析失败")
-                continue
-
-            valid_inputs = []
-            rejection_reasons = []
-
-            for i, test in enumerate(hack_tests):
-                inp = test.get("input", "")
-                if not inp.strip():
-                    rejection_reasons.append(f"Input {i}: empty")
-                    continue
-                # 基础格式检查（无 validator exe 时）
-                valid_inputs.append(inp)
-
-            if not valid_inputs:
-                validator_feedback = "\n".join(rejection_reasons) or "All inputs were empty."
-                continue
-
-            all_rejected = False
-
-            # 4. 在 buggy_exe 上运行，看是否触发 Bug
-            for inp in valid_inputs:
-                b_code, b_out, b_err = run_program(buggy_exe, inp, ExecutionLimits.default_run())
-
-                if b_code != 0:
-                    # RE
-                    hack_success = True
-                    logger.info(f"[{problem_id}] 触发 RE！")
-                    break
-
-                # 如果有 correct_exe，做差异对拍
-                if correct_exe:
-                    c_code, c_out, _ = run_program(correct_exe, inp, ExecutionLimits.default_run())
-                    if c_code == 0 and b_out.strip() != c_out.strip():
-                        hack_success = True
-                        logger.info(f"[{problem_id}] 触发 WA！buggy≠correct")
-                        break
-
-            if hack_success:
-                break
-
-    # 5. 奖励计算
-    if hack_success:
-        reward = 1.0
-    elif all_rejected:
-        reward = -1.0
-    else:
-        reward = 0.0
-
-    logger.info(f"[{problem_id}] Hacker reward = {reward:+.2f}")
-
-    # 6. 写入 SQLite
-    obs = Observation(
-        fsm_state="HACK_SETTLE",
-        attempt_count=trial_idx,
-        raw_problem_desc=description,
-    )
-    memory.log_event(obs, item_ids, reward, iteration=trial_idx)
-
-    return {"id": problem_id, "reward": reward, "hack_success": hack_success}
+    except Exception as e:
+        logger.error(f"[{problem_id}] Pipeline exception: {e}")
+        return {"id": problem_id, "reward": -1.0, "error": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -199,12 +115,12 @@ def train_one_hacker(item: dict, llm: "UnifiedLLMClient", config: dict, trial_id
 # ─────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Hacker 离线训练")
+    parser = argparse.ArgumentParser(description="Hacker 对抗攻击离线训练 (Native Node Wrappers)")
     parser.add_argument("--dataset", default="<workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl")
     parser.add_argument("--limit", type=int, default=None, help="最多处理 N 道题")
     parser.add_argument("--data-dir", default="data/memory", help="SQLite 存储目录")
     parser.add_argument("--tags", nargs="*", help="只训练包含这些 tag 的题目")
-    parser.add_argument("--skip", type=int, default=0, help="跳过前 N 条（断点续训）")
+    parser.add_argument("--skip", type=int, default=0, help="跳过前 N 条")
     args = parser.parse_args()
 
     config = {
@@ -212,11 +128,13 @@ def main():
             "enabled": True,
             "data_dir": args.data_dir,
             "hack_top_k": 3,
-        },
-        "llm": {},
+        }
     }
 
+    # 提前初始化默认 LLM client 放全局
+    from src.llm.unified_client import UnifiedLLMClient, set_default_client
     llm = UnifiedLLMClient(config)
+    set_default_client(llm)
 
     dataset_path = Path(args.dataset)
     if not dataset_path.exists():
@@ -226,8 +144,7 @@ def main():
     results = []
     processed = 0
 
-    logger.info(f"开始 Hacker 离线训练: {dataset_path}")
-    logger.info(f"limit={args.limit}, skip={args.skip}, data-dir={args.data_dir}")
+    logger.info(f"开始 Hacker 离线训练 (Native Nodes Driver): {dataset_path}")
 
     with open(dataset_path, "r", encoding="utf-8") as f:
         for line_idx, line in enumerate(f):
@@ -243,21 +160,20 @@ def main():
             except json.JSONDecodeError:
                 continue
 
-            # Tag 过滤
             if args.tags:
                 item_tags = set(item.get("tags", []))
                 if not item_tags.intersection(set(args.tags)):
                     continue
 
-            result = train_one_hacker(item, llm, config, trial_idx=processed)
+            result = train_one_hacker(item, config, trial_idx=processed)
             results.append(result)
             processed += 1
 
-            if processed % 10 == 0:
+            if processed % 5 == 0:
                 rewards = [r["reward"] for r in results if "reward" in r]
                 successes = sum(1 for r in results if r.get("hack_success"))
                 avg = sum(rewards) / len(rewards) if rewards else 0
-                logger.info(f"进度: {processed} 道 | avg reward: {avg:+.3f} | hack 成功: {successes} 道")
+                logger.info(f"已处理 {processed} 道 | avg reward: {avg:+.3f} | hack 成功: {successes} 道")
 
     # 汇总
     rewards = [r["reward"] for r in results if "reward" in r]
