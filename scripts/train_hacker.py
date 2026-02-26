@@ -50,10 +50,11 @@ def train_one_hacker(item: dict, config: dict, trial_idx: int) -> dict:
     # 1. 伪造初始 State
     # 这里要模拟成：TestGen 已经成功跑完了，并且 CodeGen 写出了一个 buggy 的实现。
     raw_problem = {
+        "id": problem_id,
         "description": description,
         "time_limit": 2000,
         "space_limit": 256,
-        "public_tests": [{"input": "some stdin", "output": "some stdout"}]
+        "public_tests": [{"input": "some stdin\n", "output": "some stdout\n"}]
     }
     state = create_initial_state(raw_problem, config)
     state["iteration"] = trial_idx
