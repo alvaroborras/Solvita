@@ -33,35 +33,71 @@ from src.nodes.update_oracle_memory import update_oracle_memory_node
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 
 
+import ast
+
+
 # ─────────────────────────────────────────────────────────────
-# 对拍验证：生成的答案 vs 数据集里的 correct_solution
+# 正确解运行器解析：遍历所有 correct_solutions，取第一个能成功编译或运行的
 # ─────────────────────────────────────────────────────────────
 
-def verify_generated_tests(tests: list, correct_code: str, tmpdir: Path) -> float:
+def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
     """
-    编译正确解法，并用它校验节点生成的测试用例 output 是否绝对正确。
+    遍历 correct_solutions，返回第一个可用的运行器 (correct_run_cmd)。
+
+    策略：对每个 solution 依次：
+      1. 尝试 g++ 编译为 C++ 可执行文件
+      2. 如果编译失败→ 尝试 ast.parse() 检测是否合法 Python 3
+      3. 两者均失败 → 跳过该 solution
+
+    Returns:
+        correct_run_cmd (Path or List[str]) 或 None
+    """
+    for idx, sol in enumerate(correct_solutions):
+        code = sol.get("code", "") if isinstance(sol, dict) else str(sol)
+        if not code.strip():
+            continue
+
+        # Strategy 1: Try C++ compile
+        cpp_src = tmpdir / f"correct_{idx}.cpp"
+        cpp_exe = tmpdir / f"correct_{idx}"
+        cpp_src.write_text(code, encoding="utf-8")
+        ok, _ = compile_cpp(cpp_src, cpp_exe)
+        if ok:
+            logger.debug(f"[RUNNER] Solution {idx}: compiled as C++")
+            return cpp_exe  # 返回 Path，不转 str
+
+        # Strategy 2: Try Python 3 (AST parse check)
+        try:
+            ast.parse(code)
+            py_src = tmpdir / f"correct_{idx}.py"
+            py_src.write_text(code, encoding="utf-8")
+            logger.debug(f"[RUNNER] Solution {idx}: identified as Python 3")
+            return ["python3", str(py_src)]  # 返回 List[str]
+        except SyntaxError:
+            pass
+
+        logger.warning(f"[RUNNER] Solution {idx}: neither C++ nor Python 3, skipping")
+
+    return None  # 全部失败
+
+
+# ─────────────────────────────────────────────────────────────
+# 对拍验证：生成的测试用例 vs 数据集里的 correct_solution
+# ─────────────────────────────────────────────────────────────
+
+def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -> float:
+    """
+    用 correct_solutions 中第一个可用的解校验节点生成的测试用例 output。
     返回 reward 信号。
     """
     if not tests:
         return -0.5  # 节点没能生成任何测试用例
 
-    # 1. 编译/运行准备 correct_solution
-    is_python = "def " in correct_code or "import " in correct_code or "sys.stdin" in correct_code
-    if is_python:
-        correct_src = tmpdir / "correct.py"
-        correct_src.write_text(correct_code, encoding="utf-8")
-        correct_run_cmd = ["python3", str(correct_src)]
-    else:
-        correct_src = tmpdir / "correct.cpp"
-        correct_exe = tmpdir / "correct"
-        correct_src.write_text(correct_code, encoding="utf-8")
-        ok, _ = compile_cpp(correct_src, correct_exe)
-        if not ok:
-            logger.warning("correct_solution (C++) 编译失败，无法对拍校验")
-            return 0.0  # 数据集给的代码不行，不惩罚我们自己
-        correct_run_cmd = str(correct_exe)
+    correct_run_cmd = resolve_correct_runner(correct_solutions, tmpdir)
+    if correct_run_cmd is None:
+        logger.warning("All correct_solutions failed to compile/parse. Skipping cross-check.")
+        return 0.0  # 数据集质量问题，不惩罚训练
 
-    # 2. 对拍
     mismatches = 0
     passed = 0
     for test in tests:
@@ -75,11 +111,11 @@ def verify_generated_tests(tests: list, correct_code: str, tmpdir: Path) -> floa
             mismatches += 1
 
     if mismatches == 0 and passed > 0:
-        return 1.0  # 完全搞定了
+        return 1.0  # 完全正确
     elif passed > 0:
-        return -0.2 # 搞错了部分
+        return -0.2  # 部分错误
     else:
-        return -0.5 # 全错了
+        return -0.5  # 全错
 
 
 # ─────────────────────────────────────────────────────────────
@@ -89,7 +125,8 @@ def verify_generated_tests(tests: list, correct_code: str, tmpdir: Path) -> floa
 def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
     problem_id = item.get("id", f"item_{trial_idx}")
     description = item.get("description", "")
-    correct_solutions = item.get("correct_solution", [])
+    correct_solutions = item.get("correct_solution", []) or []
+    public_tests = item.get("test_case") or []  # Fix 1: 用真实样例替换假数据
 
     if not description or not correct_solutions:
         return {"id": problem_id, "skipped": True, "reason": "no description or correct_solution"}
@@ -101,11 +138,11 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
     # 1. 伪造初始 State
     raw_problem = {
         "id": problem_id,
-        "_metadata": {"problem_id": problem_id},  # generate_tests_node 实际读这里来确定目录名
+        "_metadata": {"problem_id": problem_id},
         "description": description,
         "time_limit": 2000,
         "space_limit": 256,
-        "public_tests": [{"input": "some stdin\n", "output": "some stdout\n"}]
+        "public_tests": public_tests,  # Fix 1: 真实外部样例（可以为空列表）
     }
     state = create_initial_state(raw_problem, config)
     state["iteration"] = trial_idx
@@ -129,7 +166,7 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
             
             if tests.get("ready", False) and generated_list:
                 # TestGen 管线成功完赛，开始交叉校验
-                reward = verify_generated_tests(generated_list, correct_code, tmp)
+                reward = verify_generated_tests(generated_list, correct_solutions, tmp)  # Fix 3: 传全部 solutions
                 logger.info(f"[{problem_id}] TestGen success. Cross-check reward: {reward:+.2f}")
             else:
                 # TestGen 管线中途崩溃（generator错/validator错/solver编译错等）

@@ -39,6 +39,7 @@ def train_one_hacker(item: dict, config: dict, trial_idx: int) -> dict:
     problem_id = item.get("id", f"item_{trial_idx}")
     description = item.get("description", "")
     incorrect_solutions = item.get("incorrect_solution", [])
+    public_tests = item.get("test_case") or []  # Fix 1: 用真实样例替换假数据
 
     if not description or not incorrect_solutions:
         return {"id": problem_id, "skipped": True, "reason": "no description or incorrect_solution"}
@@ -51,11 +52,11 @@ def train_one_hacker(item: dict, config: dict, trial_idx: int) -> dict:
     # 这里要模拟成：TestGen 已经成功跑完了，并且 CodeGen 写出了一个 buggy 的实现。
     raw_problem = {
         "id": problem_id,
-        "_metadata": {"problem_id": problem_id},  # hack_test_node 实际读这里来确定目录名
+        "_metadata": {"problem_id": problem_id},
         "description": description,
         "time_limit": 2000,
         "space_limit": 256,
-        "public_tests": [{"input": "some stdin\n", "output": "some stdout\n"}]
+        "public_tests": public_tests,  # Fix 1: 真实外部样例（可以为空列表）
     }
     state = create_initial_state(raw_problem, config)
     state["iteration"] = trial_idx
