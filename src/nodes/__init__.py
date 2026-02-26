@@ -56,6 +56,9 @@ def __getattr__(name: str):
     elif name == "hack_routing":
         from .routing import hack_routing
         return hack_routing
+    elif name == "hack_outcome_routing":
+        from .routing import hack_outcome_routing
+        return hack_outcome_routing
     elif name == "join_ready_node":
         from .join_ready import join_ready_node
         return join_ready_node
@@ -86,8 +89,8 @@ __all__ = [
     "compilation_routing",
     "hack_test_node",
     "hack_routing",
+    "hack_outcome_routing",
     "join_ready_node",
     "join_wait_node",
     "join_routing",
 ]
-

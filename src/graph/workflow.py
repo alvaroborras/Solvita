@@ -1,14 +1,18 @@
 """LangGraph Workflow Definition for Solvita Agent
 
-Workflow overview (三阶段子图架构)
-=====================================
+Workflow overview (三阶段子图架构 + Hack→CodeGen 回环)
+========================================================
 Phase 1: TestGen  — generate_tests
-          ↓ phase_transition (清空 messages)
-Phase 2: CodeGen  — plan_solution → generate_code/tests → run_tests
-                    → unified_check → memory settlement → status_routing
-          ↓ phase_transition (清空 messages)
-Phase 3: Hacker   — hack_test → hack_routing → update_hacker_memory
-                    → END | re-inject failures back to CodeGen (via top-level)
+          ↓ phase_transition_1 (清空 messages)
+Phase 2: CodeGen  — plan_solution → generate_code/compile → run_tests
+                    → memory settlement → status_routing
+          ↓ phase_transition_2 (清空 messages)
+Phase 3: Hacker   — hack_test (≤3 retry) → update_hacker_memory
+          ↓ hack_outcome_routing:
+              "loop_codegen" → phase_transition_3 → 回 Phase 2
+              "final_ac"     → END (解法绝对强健)
+
+回环保护:  iteration 每轮 CodeGen 自增，超过 max_iterations 终止整个流程。
 """
 
 from langgraph.graph import StateGraph, END
@@ -31,6 +35,7 @@ from src.nodes import (
     status_routing,
     compilation_routing,
     hack_routing,
+    hack_outcome_routing,
     join_routing,
     phase_transition_node,
     update_hacker_memory_node,
@@ -75,7 +80,6 @@ def create_codegen_subgraph():
 
     g.set_entry_point("plan_solution")
 
-    # plan -> parallel: generate_code (tests already generated in Phase 1)
     g.add_edge("plan_solution", "generate_code")
     g.add_edge("generate_code", "compile_code")
 
@@ -88,8 +92,6 @@ def create_codegen_subgraph():
         },
     )
 
-    # join_ready acts as a barrier waiting for both test + compile
-    # In Phase 2, tests are already ready from Phase 1, so join goes straight to run_tests
     g.add_conditional_edges(
         "join_ready",
         join_routing,
@@ -105,14 +107,13 @@ def create_codegen_subgraph():
     g.add_edge("update_solve_memory", "update_test_memory")
     g.add_edge("update_test_memory", "update_oracle_memory")
 
-    # status_routing: "continue" loops internally; "hack" / "end" exit the subgraph
     g.add_conditional_edges(
         "update_oracle_memory",
         status_routing,
         {
             "continue": "analyze_feedback",
-            "hack": END,   # signals top-level to proceed to Phase 3
-            "end": END,
+            "hack": END,   # 解法通过所有测试，出 Phase 2 → 进 Phase 3
+            "end": END,    # 超出迭代次数，放弃
         },
     )
 
@@ -138,9 +139,9 @@ def create_hacker_subgraph():
         "hack_test",
         hack_routing,
         {
-            "hack_again": "hack_test",
-            "hack_failed": "update_hacker_memory",
-            "end": "update_hacker_memory",
+            "hack_again": "hack_test",          # 本轮 hack 通过，继续 hack
+            "hack_failed": "update_hacker_memory",  # hack 发现 bug，结算
+            "end": "update_hacker_memory",       # 用光 hack 轮次，结算
         },
     )
 
@@ -150,20 +151,23 @@ def create_hacker_subgraph():
 
 
 # ============================================================
-# Top-level Orchestrator
+# Top-level Orchestrator（含 Hack→CodeGen 回环）
 # ============================================================
 
 def create_solvita_workflow():
     """
-    顶层 Orchestrator 图：串联三个 Phase 子图，Phase 间插入 phase_transition_node。
+    顶层 Orchestrator 图：三 Phase 子图 + Hack→CodeGen 回环。
 
-    拓扑：
-        testgen_phase
-          → phase_transition_1 (TESTGEN → CODEGEN, 清空 messages)
-          → codegen_phase
-          → phase_transition_2 (CODEGEN → HACKER, 清空 messages)
-          → hacker_phase
-          → END
+    正常路径（Hacker 无法找到 Bug）：
+        testgen_phase → phase_transition_1
+        → codegen_phase → phase_transition_2
+        → hacker_phase → END (Final AC)
+
+    回环路径（Hacker 发现 Bug）：
+        hacker_phase → phase_transition_3 → codegen_phase
+        （Hack 失败的测试用例已被 hack_test_node 追加进 tests.generated_tests）
+
+    熔断保护：iteration >= max_iterations 时，hack_outcome_routing 也返回 final_ac。
     """
     workflow = StateGraph(SolvitaState)
 
@@ -174,21 +178,34 @@ def create_solvita_workflow():
 
     # 注册节点
     workflow.add_node("testgen_phase", testgen_sg)
-    workflow.add_node("phase_transition_1", phase_transition_node)
+    workflow.add_node("phase_transition_1", phase_transition_node)  # TESTGEN→CODEGEN
     workflow.add_node("codegen_phase", codegen_sg)
-    workflow.add_node("phase_transition_2", phase_transition_node)
+    workflow.add_node("phase_transition_2", phase_transition_node)  # CODEGEN→HACKER
     workflow.add_node("hacker_phase", hacker_sg)
+    workflow.add_node("phase_transition_3", phase_transition_node)  # HACKER→CODEGEN（回环）
 
-    # 边
+    # 正向路径
     workflow.set_entry_point("testgen_phase")
     workflow.add_edge("testgen_phase", "phase_transition_1")
     workflow.add_edge("phase_transition_1", "codegen_phase")
     workflow.add_edge("codegen_phase", "phase_transition_2")
     workflow.add_edge("phase_transition_2", "hacker_phase")
-    workflow.add_edge("hacker_phase", END)
+
+    # Hack 结果路由（顶层）：找到 Bug → 回环 CodeGen；无法攻破 → Final AC
+    workflow.add_conditional_edges(
+        "hacker_phase",
+        hack_outcome_routing,
+        {
+            "loop_codegen": "phase_transition_3",
+            "final_ac": END,
+        },
+    )
+
+    # 回环：HACKER → CODEGEN（清空 messages，重置 hack_round，带 hack 失败用例重新答题）
+    workflow.add_edge("phase_transition_3", "codegen_phase")
 
     compiled = workflow.compile()
-    logger.info("Solvita Orchestrator workflow compiled successfully (3-phase subgraph architecture)")
+    logger.info("Solvita Orchestrator workflow compiled (3-phase + Hack→CodeGen loop)")
     return compiled
 
 
@@ -214,7 +231,7 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
         }
 
     logger.info("=" * 60)
-    logger.info("Starting Solvita Workflow (3-Phase Orchestrator)")
+    logger.info("Starting Solvita Workflow (3-Phase + Hack→CodeGen Loop)")
     logger.info("=" * 60)
 
     initial_state = create_initial_state(raw_problem, config)
@@ -222,7 +239,7 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
 
     final_state = workflow.invoke(
         initial_state,
-        {"recursion_limit": 150},
+        {"recursion_limit": 200},
     )
 
     logger.info("=" * 60)

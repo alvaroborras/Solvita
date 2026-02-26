@@ -53,6 +53,24 @@ def hack_routing(state: Dict[str, Any]) -> str:
     return "hack_failed"
 
 
+def hack_outcome_routing(state: Dict[str, Any]) -> str:
+    """
+    Top-level routing AFTER the entire hacker_phase subgraph exits.
+
+    - "loop_codegen": hack found bugs (hack_passed=False) -> send solution
+                      back to CodeGen with hack failures as additional tests
+    - "final_ac":     hack exhausted all rounds without finding bugs ->
+                      solution is robust, declare Final AC
+    """
+    hack_passed = state.get("hack_passed", True)
+    iteration = state.get("iteration", 0)
+    max_iterations = state.get("max_iterations", 5)
+
+    if not hack_passed and iteration < max_iterations:
+        return "loop_codegen"
+    return "final_ac"
+
+
 def join_routing(state: Dict[str, Any]) -> str:
         """
         Routing for the compile/tests join.
