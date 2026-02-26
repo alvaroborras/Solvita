@@ -126,15 +126,10 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
     problem_id = item.get("id", f"item_{trial_idx}")
     description = item.get("description", "")
     correct_solutions = item.get("correct_solution", []) or []
-    public_tests = item.get("test_case") or []  # Fix 1: 用真实样例替换假数据
+    public_tests = item.get("test_case") or []
 
     if not description or not correct_solutions:
         return {"id": problem_id, "skipped": True, "reason": "no description or correct_solution"}
-
-    correct_code = correct_solutions[0].get("code", "")
-    if not correct_code:
-        return {"id": problem_id, "skipped": True, "reason": "empty correct_code"}
-
     # 1. 伪造初始 State
     raw_problem = {
         "id": problem_id,
