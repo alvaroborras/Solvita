@@ -3,7 +3,7 @@
 
 llm:
   # Required: OpenAI-compatible endpoint and key
-  base_url: "http://14.103.68.46/v1"
+  base_url: "http://14.103.68.46"
   api_key: "sk-<redacted>"
 
   # Default model for all nodes (can be overridden by roles below)
