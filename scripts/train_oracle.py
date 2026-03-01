@@ -34,6 +34,7 @@ from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 
 
 import ast
+import subprocess as _subprocess
 
 
 # ─────────────────────────────────────────────────────────────
@@ -42,7 +43,9 @@ import ast
 
 def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
     """
-    遍历 correct_solutions，返回第一个可用的运行器 (correct_run_cmd)。
+    遍历 correct_solutions，返回第一个可用的运行器描述:
+      - ("cpp", Path)       — C++ 可执行文件
+      - ("python", Path)    — Python3 脚本
 
     策略：对每个 solution 依次：
       1. 尝试 g++ 编译为 C++ 可执行文件
@@ -50,7 +53,7 @@ def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
       3. 两者均失败 → 跳过该 solution
 
     Returns:
-        correct_run_cmd (Path or List[str]) 或 None
+        ("cpp", Path) | ("python", Path) 或 None
     """
     for idx, sol in enumerate(correct_solutions):
         code = sol.get("code", "") if isinstance(sol, dict) else str(sol)
@@ -64,7 +67,7 @@ def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
         ok, _ = compile_cpp(cpp_src, cpp_exe)
         if ok:
             logger.debug(f"[RUNNER] Solution {idx}: compiled as C++")
-            return cpp_exe  # 返回 Path，不转 str
+            return ("cpp", cpp_exe)
 
         # Strategy 2: Try Python 3 (AST parse check)
         try:
@@ -72,13 +75,40 @@ def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
             py_src = tmpdir / f"correct_{idx}.py"
             py_src.write_text(code, encoding="utf-8")
             logger.debug(f"[RUNNER] Solution {idx}: identified as Python 3")
-            return ["python3", str(py_src)]  # 返回 List[str]
+            return ("python", py_src)
         except SyntaxError:
             pass
 
         logger.warning(f"[RUNNER] Solution {idx}: neither C++ nor Python 3, skipping")
 
     return None  # 全部失败
+
+
+def _run_correct(runner, inp: str):
+    """
+    统一调用接口：根据 runner 类型执行正确解并返回 (returncode, stdout)。
+    """
+    kind, path = runner
+    limits = ExecutionLimits.default_run()
+    if kind == "cpp":
+        # run_program 签名: (exe_path: Path, input_text, args=None, limits=None)
+        rc, stdout, _ = run_program(path, inp, limits=limits)
+        return rc, stdout
+    else:
+        # Python3: 用 subprocess 直接调
+        try:
+            result = _subprocess.run(
+                ["python3", str(path)],
+                input=inp,
+                capture_output=True,
+                text=True,
+                timeout=limits.wall_seconds or 10,
+            )
+            return result.returncode, result.stdout
+        except _subprocess.TimeoutExpired:
+            return 124, ""
+        except Exception as e:
+            return -1, ""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -93,8 +123,8 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
     if not tests:
         return -0.5  # 节点没能生成任何测试用例
 
-    correct_run_cmd = resolve_correct_runner(correct_solutions, tmpdir)
-    if correct_run_cmd is None:
+    runner = resolve_correct_runner(correct_solutions, tmpdir)
+    if runner is None:
         logger.warning("All correct_solutions failed to compile/parse. Skipping cross-check.")
         return 0.0  # 数据集质量问题，不惩罚训练
 
@@ -104,8 +134,8 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
         inp = test.get("input", "")
         expected_out = test.get("output", "")
 
-        c_code, c_out, _ = run_program(correct_run_cmd, inp, ExecutionLimits.default_run())
-        if c_code == 0 and expected_out.strip() == c_out.strip():
+        rc, c_out = _run_correct(runner, inp)
+        if rc == 0 and expected_out.strip() == c_out.strip():
             passed += 1
         else:
             mismatches += 1
@@ -116,6 +146,7 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
         return -0.2  # 部分错误
     else:
         return -0.5  # 全错
+
 
 
 # ─────────────────────────────────────────────────────────────
