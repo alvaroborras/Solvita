@@ -337,6 +337,28 @@ def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int
 
 
 
+def _run_training_runner(runner, inp: str):
+    """Run a correct_solution runner and return (returncode, stdout)."""
+    import subprocess as _sp
+    kind, path = runner
+    limits = ExecutionLimits.default_run()
+    if kind == "cpp":
+        rc, stdout, _ = run_program(path, inp, limits=limits)
+        return rc, stdout
+    else:
+        try:
+            r = _sp.run(
+                ["python3", str(path)],
+                input=inp, capture_output=True, text=True,
+                timeout=limits.wall_seconds or 10,
+            )
+            return r.returncode, r.stdout
+        except _sp.TimeoutExpired:
+            return 124, ""
+        except Exception:
+            return -1, ""
+
+
 def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     logger.info("[Node] Generating test cases")
 
@@ -519,6 +541,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     generated_outputs: List[str] = []
     checker_exe: Optional[Path] = None
     ac_exe: Optional[Path] = None
+    training_mode: bool = bool(state.get("training_mode", False))
+    training_runner = state.get("training_runner", None)  # (kind, path) tuple from train_oracle.py
 
     if ac_path and ac_path.exists():
         ac_exe = code_dir / "ac_solution.exe"
@@ -617,7 +641,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 (code_dir / f"solver_bf_{attempt}.log").write_text(solver_log, encoding="utf-8")
                 continue
 
-            # ===== CRITICAL: Cross-validate solver on public tests first =====
+            # ===== CRITICAL: Self-check solver on public tests first =====
             solver_public_ok = True
             solver_limits = ExecutionLimits.default_run()
             if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
@@ -635,9 +659,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     solver_public_ok = False
                     output_feedback = f"Solver crashed on public test {pi}: {s_err}"
                     break
-                
                 if checker_exe:
-                    # Use checker with proper separate files
                     pub_in = tests_dir / f"solver_pub_{pi}.in"
                     pub_out = tests_dir / f"solver_pub_{pi}.out"
                     pub_ans = tests_dir / f"solver_pub_{pi}.ans"
@@ -650,77 +672,88 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                         output_feedback = f"Solver wrong on public test {pi}: {chk_msg}"
                         break
                 else:
-                    # Fallback to exact string matching
+                    # Exact string matching (also works in training mode)
                     if s_out.strip() != pt_expected.strip():
                         solver_public_ok = False
                         output_feedback = f"Solver wrong on public test {pi}:\nExpected:\n{pt_expected.strip()}\nGot:\n{s_out.strip()}"
                         break
 
-                if not solver_public_ok:
-                    logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED public test cross-validation: {output_feedback}")
-                    continue
+            # ── Public self-check result (now OUTSIDE for-pi loop) ──────────
+            if not solver_public_ok:
+                logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED public self-check: {output_feedback}")
+                continue  # continues 'for attempt in range(...)' loop
 
-                failed = []
-                timeout_or_runtime = False
-                total_run = 0
-                logger.info(f"[SOLVER] Verifying solver_bf_{attempt} on {len(generated_inputs)} micro-tests...")
-                for i, inp in enumerate(generated_inputs):
-                    total_run += 1
-                    input_path = tests_dir / f"gen_{i}.in"
-                    output_path = tests_dir / f"gen_{i}.out"
-                    cleaned_input = inp.rstrip("\n") + "\n"
-                    input_path.write_text(cleaned_input, encoding="utf-8")
-                    
-                    solver_limits = ExecutionLimits.default_run()
-                    if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
-                        solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
-                        
-                    try:
-                        code, out, err = run_program(solver_exe, input_text=inp, limits=solver_limits)
-                    except Exception as ex:
-                        code, out, err = 1, "", str(ex)
+            # ===== Micro-test verification — runs ONCE per attempt ==========
+            failed = []
+            timeout_or_runtime = False
+            total_run = 0
+            logger.info(f"[SOLVER] Verifying solver_bf_{attempt} on {len(generated_inputs)} micro-tests...")
+            for i, inp in enumerate(generated_inputs):
+                total_run += 1
+                input_path = tests_dir / f"gen_{i}.in"
+                output_path = tests_dir / f"gen_{i}.out"
+                cleaned_input = inp.rstrip("\n") + "\n"
+                input_path.write_text(cleaned_input, encoding="utf-8")
 
-                    if code != 0 or not out.strip():
-                        timeout_or_runtime = True
-                        failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp})
-                        break
+                solver_limits = ExecutionLimits.default_run()
+                if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
+                    solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
 
-                    output_path.write_text(out.strip() + "\n", encoding="utf-8")
-                    
-                    # T2.3 Micro-bound Certification matching against dataset ground-truth
-                    if ac_exe and generated_outputs:
-                        if out.strip() != generated_outputs[i].strip():
-                            failed.append({"type": "wrong_answer", "id": i, "error": "Mismatch with dataset ac_solution (Certification Failed)", "input": inp, "output": out})
-                            if len(failed) >= 5: break
-                    else:
-                        if checker_exe:
-                            ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
-                            if not ok:
-                                failed.append({"type": "wrong_answer", "id": i, "error": chk_err, "input": inp, "output": out})
-                                if len(failed) >= 5: break
-                        else:
-                            # Fallback mode: no checker available, and no ac_solution outputs
-                            # We must trust the solver since it passed public tests cross-validation
-                            pass
+                try:
+                    code, out, err = run_program(solver_exe, input_text=inp, limits=solver_limits)
+                except Exception as ex:
+                    code, out, err = 1, "", str(ex)
 
-                if not failed:
-                    generated_outputs = [
-                        (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
-                        for i in range(len(generated_inputs))
-                    ]
-                    solver_ok = True
-                    logger.info(f"[SOLVER] solver_bf_{attempt} PASSED all {len(generated_inputs)} tests (Certified!)")
+                if code != 0 or not out.strip():
+                    timeout_or_runtime = True
+                    failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp})
                     break
 
-                logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED: {len(failed)}/{total_run} micro-tests failed")
-                output_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
-                (tests_dir / f"solver_bf_{attempt}_failed.txt").write_text(output_feedback, encoding="utf-8")
+                output_path.write_text(out.strip() + "\n", encoding="utf-8")
 
-                if timeout_or_runtime:
-                    break
+                # Certification priority:
+                # 1. ac_exe  — offline AC file (most authoritative)
+                # 2. training_runner — correct_solution from dataset (training mode)
+                # 3. checker_exe  — production workflow
+                # 4. fallback  — trust solver (passed public self-check)
+                if ac_exe and generated_outputs:
+                    if out.strip() != generated_outputs[i].strip():
+                        failed.append({"type": "wrong_answer", "id": i,
+                                       "error": "Mismatch with ac_solution", "input": inp, "output": out})
+                        if len(failed) >= 5:
+                            break
+                elif training_runner is not None:
+                    ref_rc, ref_out = _run_training_runner(training_runner, inp)
+                    if ref_rc == 0 and out.strip() != ref_out.strip():
+                        failed.append({"type": "wrong_answer", "id": i,
+                                       "error": f"Training cross-check failed\nExpected: {ref_out.strip()[:200]}\nGot: {out.strip()[:200]}",
+                                       "input": inp, "output": out})
+                        if len(failed) >= 5:
+                            break
+                elif checker_exe:
+                    ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
+                    if not ok:
+                        failed.append({"type": "wrong_answer", "id": i,
+                                       "error": chk_err, "input": inp, "output": out})
+                        if len(failed) >= 5:
+                            break
+                # else: no verifier — trust solver passed public self-check
 
-                if solver_ok:
-                    break
+            if not failed:
+                generated_outputs = [
+                    (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
+                    for i in range(len(generated_inputs))
+                ]
+                solver_ok = True
+                logger.info(f"[SOLVER] solver_bf_{attempt} PASSED all {len(generated_inputs)} tests (Certified!)")
+                break
+
+            logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED: {len(failed)}/{total_run} micro-tests failed")
+            output_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
+            (tests_dir / f"solver_bf_{attempt}_failed.txt").write_text(output_feedback, encoding="utf-8")
+
+            if timeout_or_runtime:
+                break
 
             if not solver_ok:
                 logger.warning("[OUTPUT] Solver-based output generation failed, using public tests only")

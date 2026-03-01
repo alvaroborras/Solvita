@@ -132,7 +132,7 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
     passed = 0
     for test in tests:
         inp = test.get("input", "")
-        expected_out = test.get("output", "")
+        expected_out = test.get("expected_output") or test.get("output", "")
 
         rc, c_out = _run_correct(runner, inp)
         if rc == 0 and expected_out.strip() == c_out.strip():
@@ -178,7 +178,15 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
             tmp = Path(tmpdir)
             
             # 2. 直接调用真实的 TestGen 节点
-            # 这会自动涉及 generator-validator-solver-checker 全管线
+            # 注入 training_runner，让节点内部用 correct_solution 做微测试对拍
+            runner = resolve_correct_runner(correct_solutions, tmp)
+            if runner is not None:
+                state["training_mode"] = True
+                state["training_runner"] = runner
+                logger.info(f"[{problem_id}] Training mode: correct_solution runner ready ({runner[0]})")
+            else:
+                logger.warning(f"[{problem_id}] No usable correct_solution — training mode disabled")
+
             logger.info(f"[{problem_id}] Entering generate_tests_node...")
             new_state_delta = generate_tests_node(state)
             
