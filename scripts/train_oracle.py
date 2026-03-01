@@ -199,9 +199,17 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
             oracle_ids = state.get("oracle_memory_item_ids", [])
             
             if tests.get("ready", False) and generated_list:
-                # TestGen 管线成功完赛，开始交叉校验
-                reward = verify_generated_tests(generated_list, correct_solutions, tmp)  # Fix 3: 传全部 solutions
-                logger.info(f"[{problem_id}] TestGen success. Cross-check reward: {reward:+.2f}")
+                # 检查是否有经过 Solver 认证的用例（type="generated"）
+                # 如果没有，说明所有 Solver attempt 都失败了，只剩 public tests
+                # 此时不能用 cross-check（public tests 永远对，会给出虚假 +1.00）
+                certified_count = sum(1 for t in generated_list if t.get("type") == "generated")
+                if certified_count == 0:
+                    logger.warning(f"[{problem_id}] All solvers failed self-check — only public tests remain, assigning penalty reward")
+                    reward = -0.7
+                else:
+                    # 只对认证过的 generated 用例做 cross-check
+                    reward = verify_generated_tests(generated_list, correct_solutions, tmp)
+                    logger.info(f"[{problem_id}] TestGen success ({certified_count} certified). Cross-check reward: {reward:+.2f}")
             else:
                 # TestGen 管线中途崩溃（generator错/validator错/solver编译错等）
                 logger.warning(f"[{problem_id}] TestGen pipeline failed (tests.ready=False)")
