@@ -577,65 +577,66 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 break
 
         if checker_exe is None:
-            logger.warning("[CHECKER] Failed to build checker, using public tests only")
-        else:
-            oracle_memory = MemoryClient(
-                namespace=MemoryNamespace.ORACLE,
-                config=config,
-                problem_desc=problem_desc,
-                canonical=canonical,
-            )
-            oracle_advice, oracle_item_ids = oracle_memory.get_injection(
-                fsm_state="SOLVER",
-                failure_type=None,
-                attempt_count=0
-            )
+            logger.warning("[CHECKER] Failed to build checker, using exact string matching fallback")
 
-            output_feedback = ""
-            solver_ok = False
-            for attempt in range(1, output_max_iter + 1):
-                solver_prompt = build_solver_prompt(problem_desc, constraints, public_tests, oracle_advice, output_feedback)
-                solver_response = out_llm.generate(solver_prompt)
-                llm_calls += 1
-                (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
+        oracle_memory = MemoryClient(
+            namespace=MemoryNamespace.ORACLE,
+            config=config,
+            problem_desc=problem_desc,
+            canonical=canonical,
+        )
+        oracle_advice, oracle_item_ids = oracle_memory.get_injection(
+            fsm_state="SOLVER",
+            failure_type=None,
+            attempt_count=0
+        )
+
+        output_feedback = ""
+        solver_ok = False
+        for attempt in range(1, output_max_iter + 1):
+            solver_prompt = build_solver_prompt(problem_desc, constraints, public_tests, oracle_advice, output_feedback)
+            solver_response = out_llm.generate(solver_prompt)
+            llm_calls += 1
+            (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
+            try:
+                solver_data = parse_json_response(solver_response)
+                solver_cpp = solver_data.get("solver_cpp", "")
+                tmpl_name = solver_data.get("template_name", "UNKNOWN")
+                logger.info(f"[SOLVER] LLM chose template: {tmpl_name}")
+            except Exception:
+                output_feedback = "Invalid JSON (must return pure JSON with template_name and solver_cpp)"
+                continue
+
+            solver_cpp = sanitize_cpp(solver_cpp)
+            solver_path = code_dir / f"solver_bf_{attempt}.cpp"
+            solver_path.write_text(solver_cpp, encoding="utf-8")
+            solver_exe = code_dir / f"solver_bf_{attempt}.exe"
+            solver_compile_ok, solver_log = compile_cpp(solver_path, solver_exe, include_testlib=False)
+            if not solver_compile_ok:
+                output_feedback = f"Solver compile failed:\n{solver_log}"
+                (code_dir / f"solver_bf_{attempt}.log").write_text(solver_log, encoding="utf-8")
+                continue
+
+            # ===== CRITICAL: Cross-validate solver on public tests first =====
+            solver_public_ok = True
+            solver_limits = ExecutionLimits.default_run()
+            if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
+                solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
+            for pi, pt in enumerate(public_tests):
+                pt_input = pt.get("input", "")
+                pt_expected = pt.get("output", "")
+                if not pt_input.strip() or not pt_expected.strip():
+                    continue
                 try:
-                    solver_data = parse_json_response(solver_response)
-                    solver_cpp = solver_data.get("solver_cpp", "")
-                    tmpl_name = solver_data.get("template_name", "UNKNOWN")
-                    logger.info(f"[SOLVER] LLM chose template: {tmpl_name}")
+                    s_code, s_out, s_err = run_program(solver_exe, input_text=pt_input, limits=solver_limits)
                 except Exception:
-                    output_feedback = "Invalid JSON (must return pure JSON with template_name and solver_cpp)"
-                    continue
-
-                solver_cpp = sanitize_cpp(solver_cpp)
-                solver_path = code_dir / f"solver_bf_{attempt}.cpp"
-                solver_path.write_text(solver_cpp, encoding="utf-8")
-                solver_exe = code_dir / f"solver_bf_{attempt}.exe"
-                solver_compile_ok, solver_log = compile_cpp(solver_path, solver_exe, include_testlib=False)
-                if not solver_compile_ok:
-                    output_feedback = f"Solver compile failed: {solver_log}"
-                    (code_dir / f"solver_bf_{attempt}.log").write_text(solver_log, encoding="utf-8")
-                    continue
-
-                # ===== CRITICAL: Cross-validate solver on public tests first =====
-                solver_public_ok = True
-                solver_limits = ExecutionLimits.default_run()
-                if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
-                    solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
-                for pi, pt in enumerate(public_tests):
-                    pt_input = pt.get("input", "")
-                    pt_expected = pt.get("output", "")
-                    if not pt_input.strip() or not pt_expected.strip():
-                        continue
-                    try:
-                        s_code, s_out, s_err = run_program(solver_exe, input_text=pt_input, limits=solver_limits)
-                    except Exception:
-                        s_code, s_out, s_err = 1, "", "exception"
-                    if s_code != 0 or not s_out.strip():
-                        solver_public_ok = False
-                        output_feedback = f"Solver crashed on public test {pi}: {s_err}"
-                        break
-                    
+                    s_code, s_out, s_err = 1, "", "exception"
+                if s_code != 0 or not s_out.strip():
+                    solver_public_ok = False
+                    output_feedback = f"Solver crashed on public test {pi}: {s_err}"
+                    break
+                
+                if checker_exe:
                     # Use checker with proper separate files
                     pub_in = tests_dir / f"solver_pub_{pi}.in"
                     pub_out = tests_dir / f"solver_pub_{pi}.out"
@@ -647,6 +648,12 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     if not chk_ok:
                         solver_public_ok = False
                         output_feedback = f"Solver wrong on public test {pi}: {chk_msg}"
+                        break
+                else:
+                    # Fallback to exact string matching
+                    if s_out.strip() != pt_expected.strip():
+                        solver_public_ok = False
+                        output_feedback = f"Solver wrong on public test {pi}:\nExpected:\n{pt_expected.strip()}\nGot:\n{s_out.strip()}"
                         break
 
                 if not solver_public_ok:
