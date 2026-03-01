@@ -550,7 +550,6 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             if not checker_ok:
                 checker_feedback = f"Checker compile failed: {checker_log}"
                 continue
-            checker_exe = candidate_checker_exe  # 编译成功后才正式赋值
 
             public_ok = True
             for i, pt in enumerate(public_tests):
@@ -560,13 +559,14 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 input_path.write_text(pt.get("input", ""), encoding="utf-8")
                 candidate_path.write_text(pt.get("output", ""), encoding="utf-8")
                 answer_path.write_text(pt.get("output", ""), encoding="utf-8")
-                ok, err = run_checker(checker_exe, input_path, candidate_path, answer_path)
+                ok, err = run_checker(candidate_checker_exe, input_path, candidate_path, answer_path)
                 if not ok:
                     public_ok = False
                     checker_feedback = f"Public test {i} failed: {err}"
                     break
 
             if public_ok:
+                checker_exe = candidate_checker_exe  # 自检也通过后才正式赋值
                 break
 
         if checker_exe is None:
