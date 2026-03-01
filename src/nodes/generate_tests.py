@@ -545,11 +545,12 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
             checker_path = code_dir / f"checker_{attempt}.cpp"
             checker_path.write_text(checker_cpp, encoding="utf-8")
-            checker_exe = code_dir / f"checker_{attempt}.exe"
-            checker_ok, checker_log = compile_cpp(checker_path, checker_exe, include_testlib=True)
+            candidate_checker_exe = code_dir / f"checker_{attempt}.exe"  # 先用临时变量
+            checker_ok, checker_log = compile_cpp(checker_path, candidate_checker_exe, include_testlib=True)
             if not checker_ok:
                 checker_feedback = f"Checker compile failed: {checker_log}"
                 continue
+            checker_exe = candidate_checker_exe  # 编译成功后才正式赋值
 
             public_ok = True
             for i, pt in enumerate(public_tests):
