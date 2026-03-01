@@ -244,13 +244,19 @@ Schema:
 
 def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    return f"""You are a Brute-Force Oracle agent. Write a C++17 Oracle that guarantees 100% correctness by using exhaustive search. Ignore Performance.
+    
+    # Format public tests clearly
+    pt_block = ""
+    for i, pt in enumerate(public_tests[:5]):  # Limit to 5 to save prompt space
+        pt_block += f"\n--- Test {i} ---\nInput:\n{pt.get('input', '').strip()}\nExpected Output:\n{pt.get('output', '').strip()}\n"
+    
+    return f"""You are a Brute-Force Oracle. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem using exhaustive / brute-force search.
 
-Core instruction:
-- You must SELECT ONE of the provided C++ Brute-Force templates.
-- Fill in the logic where it says `// [LLM FILL HERE]`.
-- Do NOT alter the main algorithmic structure of the template.
-- Output ONLY a JSON object containing the template name and completed code.
+CRITICAL REQUIREMENTS:
+1. Your code MUST be a complete standalone program with #include, main(), cin/cout.
+2. Read input from stdin, write output to stdout, matching the exact I/O format shown in the public tests.
+3. Use a brute-force / exhaustive approach. Correctness is the ONLY goal — ignore performance.
+4. The program MUST compile with: g++ -std=c++17 -O2
 
 Problem Description:
 {problem_desc}
@@ -258,20 +264,21 @@ Problem Description:
 Constraints:
 {json.dumps(constraints, indent=2)}
 
-Public Tests:
-{json.dumps(public_tests, indent=2)}
+Public Tests (your program MUST produce the exact expected output for these):
+{pt_block}
 
-Available Templates (JSON format):
+Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
 {templates_json}
 
 {feedback_block}
-Return ONLY a JSON object. No other text, no markdown.
+Return ONLY a JSON object. No markdown, no explanation.
 Schema:
 {{
-  "template_name": "<name of chosen template>",
-  "solver_cpp": "<complete filled C++17 source>"
+  "template_name": "<name of the strategy you are using>",
+  "solver_cpp": "<complete C++17 source code>"
 }}
 """
+
 
 
 def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int) -> str:

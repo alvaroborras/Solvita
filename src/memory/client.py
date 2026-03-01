@@ -261,10 +261,17 @@ class MemoryClient:
                     
             elif self.namespace == MemoryNamespace.ORACLE:
                 payload = item.payload
-                if payload.get("brute_force_strategies"):
-                    lines.append(f"  Strategy: {', '.join(payload['brute_force_strategies'])}")
-                if payload.get("code_template"):
-                    lines.append(f"  Template Hint:\n```cpp\n{payload['code_template']}\n```")
+                # Build structured JSON for ORACLE templates (consumed by build_solver_prompt)
+                oracle_entries = []
+                for item in items:
+                    payload = item.payload
+                    oracle_entries.append({
+                        "name": item.text,
+                        "strategy": ", ".join(payload.get("brute_force_strategies", [])),
+                        "code_snippet": payload.get("code_template", "").strip(),
+                    })
+                import json as _json
+                return _json.dumps(oracle_entries, indent=2)
         
         lines.append("")  # Trailing newline
         return "\n".join(lines)
