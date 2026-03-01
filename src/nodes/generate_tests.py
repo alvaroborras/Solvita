@@ -672,10 +672,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                         output_feedback = f"Solver wrong on public test {pi}: {chk_msg}"
                         break
                 else:
-                    # Exact string matching (also works in training mode)
-                    if s_out.strip() != pt_expected.strip():
+                    # Exact string matching, ignoring trailing whitespace per line (CP judge standard)
+                    def _norm(s): return "\n".join(l.rstrip() for l in s.strip().splitlines())
+                    if _norm(s_out) != _norm(pt_expected):
                         solver_public_ok = False
-                        output_feedback = f"Solver wrong on public test {pi}:\nExpected:\n{pt_expected.strip()}\nGot:\n{s_out.strip()}"
+                        output_feedback = f"Solver wrong on public test {pi}:\nExpected:\n{pt_expected.strip()}\nGot:\n{s_out.strip()}"  
                         break
 
             # ── Public self-check result (now OUTSIDE for-pi loop) ──────────
@@ -724,12 +725,14 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                             break
                 elif training_runner is not None:
                     ref_rc, ref_out = _run_training_runner(training_runner, inp)
-                    if ref_rc == 0 and out.strip() != ref_out.strip():
-                        failed.append({"type": "wrong_answer", "id": i,
-                                       "error": f"Training cross-check failed\nExpected: {ref_out.strip()[:200]}\nGot: {out.strip()[:200]}",
-                                       "input": inp, "output": out})
-                        if len(failed) >= 5:
-                            break
+                    if ref_rc == 0:
+                        def _norm(s): return "\n".join(l.rstrip() for l in s.strip().splitlines())
+                        if _norm(out) != _norm(ref_out):
+                            failed.append({"type": "wrong_answer", "id": i,
+                                           "error": f"Training cross-check failed\nExpected: {ref_out.strip()[:200]}\nGot: {out.strip()[:200]}",
+                                           "input": inp, "output": out})
+                            if len(failed) >= 5:
+                                break
                 elif checker_exe:
                     ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
                     if not ok:
