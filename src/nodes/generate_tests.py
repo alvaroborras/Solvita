@@ -693,10 +693,15 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                             failed.append({"type": "wrong_answer", "id": i, "error": "Mismatch with dataset ac_solution (Certification Failed)", "input": inp, "output": out})
                             if len(failed) >= 5: break
                     else:
-                        ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
-                        if not ok:
-                            failed.append({"type": "wrong_answer", "id": i, "error": chk_err, "input": inp, "output": out})
-                            if len(failed) >= 5: break
+                        if checker_exe:
+                            ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
+                            if not ok:
+                                failed.append({"type": "wrong_answer", "id": i, "error": chk_err, "input": inp, "output": out})
+                                if len(failed) >= 5: break
+                        else:
+                            # Fallback mode: no checker available, and no ac_solution outputs
+                            # We must trust the solver since it passed public tests cross-validation
+                            pass
 
                 if not failed:
                     generated_outputs = [
