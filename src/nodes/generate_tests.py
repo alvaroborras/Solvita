@@ -254,8 +254,9 @@ def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_t
     if attempt >= 3:
         trace_instruction = """
 NOTE: You have failed multiple times. Please add strategic debug prints to stderr using:
-std::cerr << "TRACE: [your message] " << var << std::endl;
-to help diagnose the logic flow.
+std::cerr << "TRACE: [message] " << vars... << std::endl;
+WARNING: DO NOT print inside tight loops. If tracing a loop with many iterations, 
+only print every 10000th iteration (e.g., if(count % 10000 == 0)) or just at the start/end.
 """
 
     return f"""You are a Brute-Force Oracle. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem using exhaustive / brute-force search.
@@ -320,7 +321,15 @@ def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int
         stderr = f.get("stderr", "")
         traces = []
         if stderr:
-             traces = [line for line in stderr.splitlines() if line.startswith("TRACE:")]
+             all_traces = [line for line in stderr.splitlines() if line.startswith("TRACE:")]
+             if len(all_traces) > 15:
+                 head = all_traces[:5]
+                 tail = all_traces[-5:]
+                 mid_idx = len(all_traces) // 2
+                 mid = all_traces[mid_idx-2 : mid_idx+3]
+                 traces = head + ["... [TRACED BUT SAMPLED/SKIPPED] ..."] + mid + ["... [TRACED BUT SAMPLED/SKIPPED] ..."] + tail
+             else:
+                 traces = all_traces[:15]
         
         if ftype == "runtime_error":
             lines.append(f"  Runtime error on test {f.get('id', '?')}:")
@@ -337,7 +346,7 @@ def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int
         
         if traces:
             lines.append("    Execution Traces (from stderr):")
-            lines.extend([f"      {t}" for t in traces[:10]])
+            lines.extend([f"      {t}" for t in traces])
 
     lines.append("")
     lines.append("Please fix these issues and regenerate the code.")

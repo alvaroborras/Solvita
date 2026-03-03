@@ -278,6 +278,14 @@ def compile_cpp(
     return result.returncode == 0, output
 
 
+def _truncate_output(text: str, max_chars: int = 100000) -> str:
+    """Truncate text to max_chars, keeping head and tail if exceeded."""
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    return text[:half] + f"\n... [TRUNCATED {len(text) - max_chars} CHARS] ...\n" + text[-half:]
+
+
 def run_program(
     exe_path: Path, 
     input_text: Optional[str] = None, 
@@ -320,7 +328,12 @@ def run_program(
             env=_minimal_env(),
         )
         result = subprocess.run(cmd, **run_kwargs)
-        return result.returncode, result.stdout, result.stderr
+        
+        # Physical truncation to prevent log bloat
+        stdout = _truncate_output(result.stdout)
+        stderr = _truncate_output(result.stderr)
+        
+        return result.returncode, stdout, stderr
     except subprocess.TimeoutExpired:
         return 124, "", "Time Limit Exceeded"
     except Exception as e:

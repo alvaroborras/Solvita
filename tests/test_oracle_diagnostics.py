@@ -40,3 +40,33 @@ def test_build_solver_prompt_with_traces():
     prompt3 = build_solver_prompt("desc", {}, [], "{}", "fail", attempt=3)
     assert "TRACE:" in prompt3
     assert "std::cerr" in prompt3
+
+
+def test_truncate_output():
+    from src.utils.cpp_execution import _truncate_output
+    # Under limit
+    assert _truncate_output("abc", 10) == "abc"
+    # Over limit
+    long_str = "A" * 100
+    truncated = _truncate_output(long_str, 20)
+    assert "[TRUNCATED 80 CHARS]" in truncated
+    assert truncated.startswith("A" * 10)
+    assert truncated.endswith("A" * 10)
+
+
+def test_format_solver_feedback_with_many_traces():
+    # Simulate 100 trace lines
+    trace_lines = [f"TRACE: step {i}" for i in range(100)]
+    stderr = "\n".join(trace_lines)
+    # total_run=1, total_verify=1
+    failed = [{"type": "wrong_answer", "id": 1, "stderr": stderr}]
+    
+    feedback = format_solver_feedback(failed, 1, 1)
+    
+    # Check for sampling tags
+    assert "[TRACED BUT SAMPLED/SKIPPED]" in feedback
+    # Should see first and last parts
+    assert "TRACE: step 0" in feedback
+    assert "TRACE: step 99" in feedback
+    # Should see middle part (around step 50)
+    assert "TRACE: step 50" in feedback
