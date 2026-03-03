@@ -199,19 +199,29 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
             oracle_ids = state.get("oracle_memory_item_ids", [])
             
             if tests.get("ready", False) and generated_list:
-                # 检查是否有经过 Solver 认证的用例（type="generated"）
-                # 如果没有，说明所有 Solver attempt 都失败了，只剩 public tests
-                # 此时不能用 cross-check（public tests 永远对，会给出虚假 +1.00）
                 certified_count = sum(1 for t in generated_list if t.get("type") == "generated")
+                cert_ratio = tests.get("cert_ratio", 1.0 if certified_count > 0 else 0.0)
+
                 if certified_count == 0:
-                    logger.warning(f"[{problem_id}] All solvers failed self-check — only public tests remain, assigning penalty reward")
-                    reward = -0.7
-                else:
-                    # 只对认证过的 generated 用例做 cross-check
+                    # All solvers failed: distinguish crash from pure WA via timeout_or_runtime
+                    # (timeout detected when output_feedback contains "crashed")
+                    has_crash = "crashed" in tests.get("cert_ratio_note", "")
+                    if has_crash:
+                        logger.warning(f"[{problem_id}] All solvers CRASHED — penalty reward -1.00")
+                        reward = -1.0
+                    else:
+                        logger.warning(f"[{problem_id}] All solvers failed self-check — penalty reward -0.70")
+                        reward = -0.7
+                elif cert_ratio >= 1.0:
+                    # Fully certified: verify against correct_solution as final sanity check
                     reward = verify_generated_tests(generated_list, correct_solutions, tmp)
-                    logger.info(f"[{problem_id}] TestGen success ({certified_count} certified). Cross-check reward: {reward:+.2f}")
+                    logger.info(f"[{problem_id}] Fully certified ({certified_count} tests). Reward: {reward:+.2f}")
+                else:
+                    # Partially certified: scale reward proportionally
+                    # partial reward is always < +1.0 to distinguish from full certification
+                    reward = round(cert_ratio * 0.9, 2)  # max 0.9 for partial
+                    logger.info(f"[{problem_id}] Partially certified ({certified_count}/200, {cert_ratio:.1%}). Reward: {reward:+.2f}")
             else:
-                # TestGen 管线中途崩溃（generator错/validator错/solver编译错等）
                 logger.warning(f"[{problem_id}] TestGen pipeline failed (tests.ready=False)")
                 reward = -0.6
                 
@@ -220,13 +230,11 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
             # 我们在这里利用对拍结果，强制设置该分数为我们的奖励信号映射值。
             if "tests" not in state:
                 state["tests"] = {}
-                
-            if reward > 0:
-                state["tests"]["pass_rate"] = 1.0     # 满分
-            elif reward == 0:
-                state["tests"]["pass_rate"] = 0.5     # 中立
-            else:
-                state["tests"]["pass_rate"] = 0.0     # 惩罚
+
+            # Map reward [-1, +1] → pass_rate [0, 1] proportionally
+            # update_oracle_memory_node computes: reward_to_memory = pass_rate * 2.0 - 1.0
+            # So pass_rate = (reward + 1) / 2
+            state["tests"]["pass_rate"] = max(0.0, min(1.0, (reward + 1.0) / 2.0))
 
             # 5. 调用原生的内存更新节点进行结算
             logger.info(f"[{problem_id}] Settle via update_oracle_memory_node...")

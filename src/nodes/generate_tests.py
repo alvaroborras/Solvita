@@ -242,7 +242,7 @@ Schema:
 
 
 
-def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str) -> str:
+def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     
     # Format public tests clearly
@@ -250,6 +250,14 @@ def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_t
     for i, pt in enumerate(public_tests[:5]):  # Limit to 5 to save prompt space
         pt_block += f"\n--- Test {i} ---\nInput:\n{pt.get('input', '').strip()}\nExpected Output:\n{pt.get('output', '').strip()}\n"
     
+    trace_instruction = ""
+    if attempt >= 3:
+        trace_instruction = """
+NOTE: You have failed multiple times. Please add strategic debug prints to stderr using:
+std::cerr << "TRACE: [your message] " << var << std::endl;
+to help diagnose the logic flow.
+"""
+
     return f"""You are a Brute-Force Oracle. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem using exhaustive / brute-force search.
 
 CRITICAL REQUIREMENTS:
@@ -257,7 +265,7 @@ CRITICAL REQUIREMENTS:
 2. Read input from stdin, write output to stdout, matching the exact I/O format shown in the public tests.
 3. Use a brute-force / exhaustive approach. Correctness is the ONLY goal — ignore performance.
 4. The program MUST compile with: g++ -std=c++17 -O2
-
+{trace_instruction}
 Problem Description:
 {problem_desc}
 
@@ -281,55 +289,55 @@ Schema:
 
 
 
-def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int) -> str:
+def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int, diagnostic_info: str = "") -> str:
     """
     Format solver feedback for LLM iteration.
-
-    Only include representative failures (up to 3) to keep prompt concise,
-    plus actionable debugging guidance.
     """
-    lines = [f"Your code failed {len(failed)} out of {total_run} cases tested ({total_verify} total):"]
+    lines = []
+    
+    if diagnostic_info:
+        lines.append("CRITICAL: Diagnostic scan (AddressSanitizer) detected a crash:")
+        lines.append("```")
+        lines.append(diagnostic_info)
+        lines.append("```")
+        lines.append("Focus on fixing the memory/undefined behavior reported above first.")
+        lines.append("")
 
-    # Categorize failures
+    lines.append(f"Your code failed {len(failed)} out of {total_run} cases tested ({total_verify} total):")
+
+    # Pick representative failures
+    picked = []
     runtime_errors = [f for f in failed if f.get("type") == "runtime_error"]
     wrong_answers = [f for f in failed if f.get("type") == "wrong_answer"]
-
-    # Pick representative failures (up to 3 total)
-    picked = []
-    if runtime_errors:
-        picked.append(runtime_errors[0])
-    if wrong_answers:
-        picked.extend(wrong_answers[:2])
-
-    # If no typed entries, fall back to raw entries (legacy compatibility)
-    if not picked:
-        picked = failed[:3]
+    
+    if runtime_errors: picked.append(runtime_errors[0])
+    if wrong_answers: picked.extend(wrong_answers[:2])
+    if not picked: picked = failed[:3]
 
     for f in picked[:3]:
         ftype = f.get("type", "unknown")
+        # Extract traces if available from stderr
+        stderr = f.get("stderr", "")
+        traces = []
+        if stderr:
+             traces = [line for line in stderr.splitlines() if line.startswith("TRACE:")]
+        
         if ftype == "runtime_error":
             lines.append(f"  Runtime error on test {f.get('id', '?')}:")
             lines.append(f"    Error: {f.get('error', f.get('message', '?'))}")
-            inp = str(f.get('input', ''))[:200]
-            if inp:
-                lines.append(f"    Input (truncated): {inp}")
         elif ftype == "wrong_answer":
             lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
-            inp = str(f.get('input', '?'))[:200]
             actual = str(f.get('output', f.get('actual', '?')))[:200]
-            checker_msg = str(f.get('error', ''))[:300]
-            lines.append(f"    Input (truncated):  {inp}")
             lines.append(f"    Output (truncated): {actual}")
-            if checker_msg:
-                lines.append(f"    Checker message:    {checker_msg}")
-        else:
-            # Unknown/untyped failure - show whatever info is available
-            lines.append(f"  Failure on test {f.get('id', '?')}:")
-            error_msg = str(f.get('error', f.get('message', 'unknown error')))[:300]
-            lines.append(f"    Error: {error_msg}")
-            inp = str(f.get('input', ''))[:200]
-            if inp:
-                lines.append(f"    Input (truncated): {inp}")
+            if f.get("error"):
+                lines.append(f"    Checker message:    {f.get('error')}")
+        
+        inp = str(f.get('input', ''))[:200]
+        if inp: lines.append(f"    Input (truncated): {inp}")
+        
+        if traces:
+            lines.append("    Execution Traces (from stderr):")
+            lines.extend([f"      {t}" for t in traces[:10]])
 
     lines.append("")
     lines.append("Please fix these issues and regenerate the code.")
@@ -616,9 +624,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         )
 
         output_feedback = ""
+        diagnostic_info = ""
         solver_ok = False
         for attempt in range(1, output_max_iter + 1):
-            solver_prompt = build_solver_prompt(problem_desc, constraints, public_tests, oracle_advice, output_feedback)
+            solver_prompt = build_solver_prompt(
+                problem_desc, constraints, public_tests, oracle_advice, 
+                output_feedback, attempt=attempt
+            )
             solver_response = out_llm.generate(solver_prompt)
             llm_calls += 1
             (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
@@ -646,6 +658,9 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             solver_limits = ExecutionLimits.default_run()
             if hasattr(solver_limits, "wall_seconds") and solver_limits.wall_seconds is not None:
                 solver_limits.wall_seconds = max(solver_limits.wall_seconds, 10.0)
+            
+            diagnostic_info = "" # Reset diagnostic info for this attempt
+            
             for pi, pt in enumerate(public_tests):
                 pt_input = pt.get("input", "")
                 pt_expected = pt.get("output", "")
@@ -655,10 +670,23 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     s_code, s_out, s_err = run_program(solver_exe, input_text=pt_input, limits=solver_limits)
                 except Exception:
                     s_code, s_out, s_err = 1, "", "exception"
+                
                 if s_code != 0 or not s_out.strip():
                     solver_public_ok = False
+                    # TLE (code 124) usually isn't a memory bug, don't trigger ASan for it
+                    if s_code != 0 and s_code != 124:
+                        logger.info(f"[DIAGNOSTIC] Solver crashed on public test {pi} (code {s_code}). Triggering ASan...")
+                        diag_exe = code_dir / f"solver_bf_{attempt}_diag.exe"
+                        diag_ok, diag_log = compile_cpp(solver_path, diag_exe, diagnostic=True)
+                        if diag_ok:
+                            _, _, diag_err = run_program(diag_exe, input_text=pt_input, limits=ExecutionLimits.diagnostic_compile())
+                            diagnostic_info = diag_err
+                        else:
+                            diagnostic_info = f"Diagnostic compile failed:\n{diag_log}"
+                    
                     output_feedback = f"Solver crashed on public test {pi}: {s_err}"
                     break
+                
                 if checker_exe:
                     pub_in = tests_dir / f"solver_pub_{pi}.in"
                     pub_out = tests_dir / f"solver_pub_{pi}.out"
@@ -682,13 +710,18 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             # ── Public self-check result (now OUTSIDE for-pi loop) ──────────
             if not solver_public_ok:
                 logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED public self-check: {output_feedback}")
+                output_feedback = format_solver_feedback([], 0, 0, diagnostic_info=diagnostic_info) + "\n" + output_feedback
                 continue  # continues 'for attempt in range(...)' loop
 
             # ===== Micro-test verification — runs ONCE per attempt ==========
             failed = []
             timeout_or_runtime = False
             total_run = 0
-            logger.info(f"[SOLVER] Verifying solver_bf_{attempt} on {len(generated_inputs)} micro-tests...")
+            # Training mode: accumulate correct tests instead of tracking failures
+            partial_certified_inputs: list = []
+            partial_certified_outputs: list = []
+            _original_input_count = len(generated_inputs)
+            logger.info(f"[SOLVER] Verifying solver_bf_{attempt} on {_original_input_count} micro-tests...")
             for i, inp in enumerate(generated_inputs):
                 total_run += 1
                 input_path = tests_dir / f"gen_{i}.in"
@@ -707,7 +740,16 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
                 if code != 0 or not out.strip():
                     timeout_or_runtime = True
-                    failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp})
+                    # Again, check if we should trigger ASan
+                    if code != 0 and code != 124:
+                        logger.info(f"[DIAGNOSTIC] Solver crashed on micro-test {i} (code {code}). Triggering ASan...")
+                        diag_exe = code_dir / f"solver_bf_{attempt}_diag.exe"
+                        diag_ok, _ = compile_cpp(solver_path, diag_exe, diagnostic=True)
+                        if diag_ok:
+                            _, _, diag_err = run_program(diag_exe, input_text=inp, limits=ExecutionLimits.diagnostic_compile())
+                            diagnostic_info = diag_err
+
+                    failed.append({"type": "runtime_error", "id": i, "error": err or "runtime error", "input": inp, "stderr": err})
                     break
 
                 output_path.write_text(out.strip() + "\n", encoding="utf-8")
@@ -720,43 +762,68 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 if ac_exe and generated_outputs:
                     if out.strip() != generated_outputs[i].strip():
                         failed.append({"type": "wrong_answer", "id": i,
-                                       "error": "Mismatch with ac_solution", "input": inp, "output": out})
+                                       "error": "Mismatch with ac_solution", "input": inp, "output": out, "stderr": err})
                         if len(failed) >= 5:
                             break
                 elif training_runner is not None:
+                    # Training mode: accumulate correct tests (partial certification)
+                    # We do NOT populate `failed` here — wrong tests are silently skipped
                     ref_rc, ref_out = _run_training_runner(training_runner, inp)
                     if ref_rc == 0:
                         def _norm(s): return "\n".join(l.rstrip() for l in s.strip().splitlines())
-                        if _norm(out) != _norm(ref_out):
-                            failed.append({"type": "wrong_answer", "id": i,
-                                           "error": f"Training cross-check failed\nExpected: {ref_out.strip()[:200]}\nGot: {out.strip()[:200]}",
-                                           "input": inp, "output": out})
-                            if len(failed) >= 5:
-                                break
+                        if _norm(out) == _norm(ref_out):
+                            partial_certified_inputs.append(inp)
+                            partial_certified_outputs.append(out.strip() + "\n")
+                        # Wrong answer: silently skip — we keep only certified outputs
+                    # ref_rc != 0: correct_solution itself failed on this input — skip
                 elif checker_exe:
                     ok, chk_err = run_checker(checker_exe, input_path, output_path, output_path)
                     if not ok:
                         failed.append({"type": "wrong_answer", "id": i,
-                                       "error": chk_err, "input": inp, "output": out})
+                                       "error": chk_err, "input": inp, "output": out, "stderr": err})
                         if len(failed) >= 5:
                             break
                 # else: no verifier — trust solver passed public self-check
 
-            if not failed:
-                generated_outputs = [
-                    (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
-                    for i in range(len(generated_inputs))
-                ]
-                solver_ok = True
-                logger.info(f"[SOLVER] solver_bf_{attempt} PASSED all {len(generated_inputs)} tests (Certified!)")
-                break
+            # ── Post-loop: determine success / failure ──────────────────────
+            if training_runner is not None:
+                # Training mode: partial certification
+                n_cert = len(partial_certified_inputs)
+                if n_cert > 0:
+                    generated_inputs = partial_certified_inputs
+                    generated_outputs = partial_certified_outputs
+                    solver_ok = True
+                    if n_cert == _original_input_count:
+                        logger.info(f"[SOLVER] solver_bf_{attempt} FULLY CERTIFIED: {n_cert}/{_original_input_count}")
+                    else:
+                        logger.info(f"[SOLVER] solver_bf_{attempt} PARTIALLY CERTIFIED: {n_cert}/{_original_input_count}")
+                    break
+                else:
+                    logger.warning(f"[SOLVER] solver_bf_{attempt} CERTIFIED 0/{_original_input_count}")
+                    output_feedback = format_solver_feedback(failed, total_run, _original_input_count, diagnostic_info=diagnostic_info)
+                    if timeout_or_runtime:
+                        # If it was a runtime error, the feedback is already set, and we should break
+                        break
+                    else:
+                        # Otherwise, it was wrong answers, and we provide specific feedback
+                        output_feedback = f"All {total_run} outputs differed from correct_solution. Re-think the algorithm."
+            else:
+                # Production mode: binary pass/fail (unchanged)
+                if not failed:
+                    generated_outputs = [
+                        (tests_dir / f"gen_{i}.out").read_text(encoding="utf-8").strip() + "\n"
+                        for i in range(len(generated_inputs))
+                    ]
+                    solver_ok = True
+                    logger.info(f"[SOLVER] solver_bf_{attempt} PASSED all {len(generated_inputs)} tests (Certified!)")
+                    break
 
-            logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED: {len(failed)}/{total_run} micro-tests failed")
-            output_feedback = format_solver_feedback(failed, total_run, len(generated_inputs))
-            (tests_dir / f"solver_bf_{attempt}_failed.txt").write_text(output_feedback, encoding="utf-8")
+                logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED: {len(failed)}/{total_run} micro-tests failed")
+                output_feedback = format_solver_feedback(failed, total_run, len(generated_inputs), diagnostic_info=diagnostic_info)
+                (tests_dir / f"solver_bf_{attempt}_failed.txt").write_text(output_feedback, encoding="utf-8")
 
-            if timeout_or_runtime:
-                break
+                if timeout_or_runtime:
+                    break
 
             if not solver_ok:
                 logger.warning("[OUTPUT] Solver-based output generation failed, using public tests only")
@@ -822,12 +889,17 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "generated": sum(1 for t in generated_tests if t["type"] == "generated"),
     }
 
+    # Compute solver cert_ratio for graduated reward in training mode
+    _cert_count = sum(1 for t in generated_tests if t["type"] == "generated")
+    _cert_ratio = (_cert_count / 200.0) if _cert_count > 0 else 0.0  # 200 is the target input count
+
     tests = {
         "generated_tests": generated_tests,
         "total_tests": len(generated_tests),
         "test_results": [],
         "passed_tests": 0,
         "pass_rate": 0.0,
+        "cert_ratio": _cert_ratio,   # fraction of the 200 target micro-tests that were certified
         "pending_execution": False,
         "ready": True,
         "checker_exe": str(checker_exe) if checker_exe else None,
