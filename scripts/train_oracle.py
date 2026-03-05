@@ -153,7 +153,7 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
 # Phase 1: Worker — 重计算（LLM + C++ 编译/对拍），可并行
 # ─────────────────────────────────────────────────────────────
 
-def _worker_generate(item: dict, config: dict, trial_idx: int) -> dict:
+def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = None) -> dict:
     """
     Worker function: runs generate_tests_node + verify.
     Returns a result dict with reward and state snapshot for settlement.
@@ -184,7 +184,7 @@ def _worker_generate(item: dict, config: dict, trial_idx: int) -> dict:
     state["iteration"] = trial_idx
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=tmp_dir) as tmpdir:
             tmp = Path(tmpdir)
 
             runner = resolve_correct_runner(correct_solutions, tmp)
@@ -271,9 +271,9 @@ def _settle_memory(result: dict):
 # 向后兼容：单线程模式 (workers=1)
 # ─────────────────────────────────────────────────────────────
 
-def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
+def train_one_oracle(item: dict, config: dict, trial_idx: int, tmp_dir: str = None) -> dict:
     """Legacy single-threaded entry: generate + settle in one call."""
-    result = _worker_generate(item, config, trial_idx)
+    result = _worker_generate(item, config, trial_idx, tmp_dir=tmp_dir)
     _settle_memory(result)
     return result
 
@@ -293,6 +293,7 @@ def main():
     parser.add_argument("--tags", nargs="*", help="只训练包含这些 tag 的题目")
     parser.add_argument("--skip", type=int, default=0, help="跳过前 N 条")
     parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认 1 = 单线程)")
+    parser.add_argument("--tmp-dir", default=None, help="临时文件存放目录 (建议设在大盘路径，防止 /tmp 爆满)")
     args = parser.parse_args()
 
     config = {
@@ -343,7 +344,7 @@ def main():
     if args.workers <= 1:
         # ── 单线程模式（向后兼容）──────────────────────────
         for idx, item in enumerate(items_to_process):
-            result = train_one_oracle(item, config, trial_idx=idx)
+            result = train_one_oracle(item, config, trial_idx=idx, tmp_dir=args.tmp_dir)
             results.append(result)
             if (idx + 1) % 5 == 0:
                 rewards = [r["reward"] for r in results if "reward" in r]
@@ -356,7 +357,7 @@ def main():
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             future_to_idx = {}
             for idx, item in enumerate(items_to_process):
-                future = executor.submit(_worker_generate, item, config, idx)
+                future = executor.submit(_worker_generate, item, config, idx, tmp_dir=args.tmp_dir)
                 future_to_idx[future] = idx
 
             for future in as_completed(future_to_idx):
