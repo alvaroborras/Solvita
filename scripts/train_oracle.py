@@ -150,10 +150,20 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
 
 
 # ─────────────────────────────────────────────────────────────
-# 单道题训练 (Driver Wrap)
+# Phase 1: Worker — 重计算（LLM + C++ 编译/对拍），可并行
 # ─────────────────────────────────────────────────────────────
 
-def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
+def _worker_generate(item: dict, config: dict, trial_idx: int) -> dict:
+    """
+    Worker function: runs generate_tests_node + verify.
+    Returns a result dict with reward and state snapshot for settlement.
+    This function does NOT write to the SQLite memory database.
+    """
+    # Re-init LLM client in child process (not inherited across fork)
+    from src.llm.unified_client import UnifiedLLMClient, set_default_client
+    llm = UnifiedLLMClient(config)
+    set_default_client(llm)
+
     problem_id = item.get("id", f"item_{trial_idx}")
     description = item.get("description", "")
     correct_solutions = item.get("correct_solution", []) or []
@@ -161,14 +171,14 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
 
     if not description or not correct_solutions:
         return {"id": problem_id, "skipped": True, "reason": "no description or correct_solution"}
-    # 1. 伪造初始 State
+
     raw_problem = {
         "id": problem_id,
         "_metadata": {"problem_id": problem_id},
         "description": description,
         "time_limit": 2000,
         "space_limit": 256,
-        "public_tests": public_tests,  # Fix 1: 真实外部样例（可以为空列表）
+        "public_tests": public_tests,
     }
     state = create_initial_state(raw_problem, config)
     state["iteration"] = trial_idx
@@ -176,9 +186,7 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            
-            # 2. 直接调用真实的 TestGen 节点
-            # 注入 training_runner，让节点内部用 correct_solution 做微测试对拍
+
             runner = resolve_correct_runner(correct_solutions, tmp)
             if runner is not None:
                 state["training_mode"] = True
@@ -189,22 +197,17 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
 
             logger.info(f"[{problem_id}] Entering generate_tests_node...")
             new_state_delta = generate_tests_node(state)
-            
-            # 合并产出回 State
             state.update(new_state_delta)
-            
-            # 3. 提取结果
+
             tests = state.get("tests", {})
             generated_list = tests.get("generated_tests", [])
             oracle_ids = state.get("oracle_memory_item_ids", [])
-            
+
             if tests.get("ready", False) and generated_list:
                 certified_count = sum(1 for t in generated_list if t.get("type") == "generated")
                 cert_ratio = tests.get("cert_ratio", 1.0 if certified_count > 0 else 0.0)
 
                 if certified_count == 0:
-                    # All solvers failed: distinguish crash from pure WA via timeout_or_runtime
-                    # (timeout detected when output_feedback contains "crashed")
                     has_crash = "crashed" in tests.get("cert_ratio_note", "")
                     if has_crash:
                         logger.warning(f"[{problem_id}] All solvers CRASHED — penalty reward -1.00")
@@ -213,34 +216,33 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
                         logger.warning(f"[{problem_id}] All solvers failed self-check — penalty reward -0.70")
                         reward = -0.7
                 elif cert_ratio >= 1.0:
-                    # Fully certified: verify against correct_solution as final sanity check
                     reward = verify_generated_tests(generated_list, correct_solutions, tmp)
                     logger.info(f"[{problem_id}] Fully certified ({certified_count} tests). Reward: {reward:+.2f}")
                 else:
-                    # Partially certified: scale reward proportionally
-                    # partial reward is always < +1.0 to distinguish from full certification
-                    reward = round(cert_ratio * 0.9, 2)  # max 0.9 for partial
+                    reward = round(cert_ratio * 0.9, 2)
                     logger.info(f"[{problem_id}] Partially certified ({certified_count}/200, {cert_ratio:.1%}). Reward: {reward:+.2f}")
             else:
                 logger.warning(f"[{problem_id}] TestGen pipeline failed (tests.ready=False)")
                 reward = -0.6
-                
-            # 4. 手动覆盖 state 里的 tests.pass_rate 供 update_oracle_memory_node 使用
-            # 因为原生的 update_oracle 节点是看 tests.pass_rate 来打分的，
-            # 我们在这里利用对拍结果，强制设置该分数为我们的奖励信号映射值。
-            if "tests" not in state:
-                state["tests"] = {}
 
-            # Map reward [-1, +1] → pass_rate [0, 1] proportionally
-            # update_oracle_memory_node computes: reward_to_memory = pass_rate * 2.0 - 1.0
-            # So pass_rate = (reward + 1) / 2
-            state["tests"]["pass_rate"] = max(0.0, min(1.0, (reward + 1.0) / 2.0))
+            # Prepare state snapshot for settlement (Phase 2)
+            pass_rate = max(0.0, min(1.0, (reward + 1.0) / 2.0))
 
-            # 5. 调用原生的内存更新节点进行结算
-            logger.info(f"[{problem_id}] Settle via update_oracle_memory_node...")
-            update_oracle_memory_node(state)
-            
-            return {"id": problem_id, "reward": reward, "oracle_ids": oracle_ids}
+            return {
+                "id": problem_id,
+                "reward": reward,
+                "oracle_ids": oracle_ids,
+                "pass_rate": pass_rate,
+                # Minimal state snapshot for update_oracle_memory_node
+                "state_snapshot": {
+                    "config": config,
+                    "iteration": trial_idx,
+                    "problem": state.get("problem", {}),
+                    "oracle_memory_item_ids": oracle_ids,
+                    "tests": {"pass_rate": pass_rate},
+                    "status": state.get("status", "pending"),
+                },
+            }
 
     except Exception as e:
         logger.error(f"[{problem_id}] Pipeline exception: {e}")
@@ -248,19 +250,51 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
+# Phase 2: Settlement — 串行写入 SQLite（主进程执行）
+# ─────────────────────────────────────────────────────────────
+
+def _settle_memory(result: dict):
+    """Settle memory rewards in main process (serial, no SQLite lock risk)."""
+    if result.get("skipped") or result.get("error"):
+        return
+    state_snapshot = result.get("state_snapshot")
+    if not state_snapshot:
+        return
+    try:
+        logger.info(f"[{result['id']}] Settle via update_oracle_memory_node...")
+        update_oracle_memory_node(state_snapshot)
+    except Exception as e:
+        logger.error(f"[{result['id']}] Settlement exception: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 向后兼容：单线程模式 (workers=1)
+# ─────────────────────────────────────────────────────────────
+
+def train_one_oracle(item: dict, config: dict, trial_idx: int) -> dict:
+    """Legacy single-threaded entry: generate + settle in one call."""
+    result = _worker_generate(item, config, trial_idx)
+    _settle_memory(result)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
 # 主流程
 # ─────────────────────────────────────────────────────────────
 
 def main():
+    import os
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     parser = argparse.ArgumentParser(description="Oracle TestGen 离线训练 (Native Node Wrappers)")
     parser.add_argument("--dataset", default="<workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl")
     parser.add_argument("--limit", type=int, default=None, help="最多处理 N 道题")
     parser.add_argument("--data-dir", default="data/memory", help="SQLite 内存存储目录")
     parser.add_argument("--tags", nargs="*", help="只训练包含这些 tag 的题目")
     parser.add_argument("--skip", type=int, default=0, help="跳过前 N 条")
+    parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认 1 = 单线程)")
     args = parser.parse_args()
 
-    # 传递给 create_initial_state 的 config
     config = {
         "trainable_memory": {
             "enabled": True,
@@ -269,7 +303,7 @@ def main():
         }
     }
     
-    # 提前初始化默认 LLM client 放到全局 (确保节点内可以 get_default_client())
+    # 主进程初始化 LLM client（单线程模式用；多进程模式下 worker 会自行初始化）
     from src.llm.unified_client import UnifiedLLMClient, set_default_client
     llm = UnifiedLLMClient(config)
     set_default_client(llm)
@@ -279,43 +313,77 @@ def main():
         logger.error(f"数据集不存在: {dataset_path}")
         sys.exit(1)
 
-    results = []
-    processed = 0
-
-    logger.info(f"开始 Oracle 离线训练 (Native Nodes Driver): {dataset_path}")
-
+    # ── 预加载符合条件的题目到内存 ──────────────────────────
+    items_to_process = []
     with open(dataset_path, "r", encoding="utf-8") as f:
         for line_idx, line in enumerate(f):
             if line_idx < args.skip:
                 continue
             if not line.strip():
                 continue
-            if args.limit and processed >= args.limit:
+            if args.limit and len(items_to_process) >= args.limit:
                 break
-
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
-
             if args.tags:
                 item_tags = set(item.get("tags", []))
                 if not item_tags.intersection(set(args.tags)):
                     continue
+            items_to_process.append(item)
 
-            result = train_one_oracle(item, config, trial_idx=processed)
+    total = len(items_to_process)
+    logger.info(f"开始 Oracle 离线训练: {dataset_path}")
+    logger.info(f"  范围: skip={args.skip}, limit={args.limit or 'ALL'}, 实际加载={total} 道")
+    logger.info(f"  并行: workers={args.workers}")
+
+    results = []
+
+    if args.workers <= 1:
+        # ── 单线程模式（向后兼容）──────────────────────────
+        for idx, item in enumerate(items_to_process):
+            result = train_one_oracle(item, config, trial_idx=idx)
             results.append(result)
-            processed += 1
-
-            if processed % 5 == 0:
+            if (idx + 1) % 5 == 0:
                 rewards = [r["reward"] for r in results if "reward" in r]
                 avg = sum(rewards) / len(rewards) if rewards else 0
-                logger.info(f"已处理 {processed} 道 | 平均 reward: {avg:+.3f}")
+                logger.info(f"已处理 {idx + 1}/{total} 道 | 平均 reward: {avg:+.3f}")
+    else:
+        # ── 多进程模式 ─────────────────────────────────────
+        logger.info(f"启动 {args.workers} 个 worker 进程...")
+        settled = 0
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            future_to_idx = {}
+            for idx, item in enumerate(items_to_process):
+                future = executor.submit(_worker_generate, item, config, idx)
+                future_to_idx[future] = idx
 
-    # 汇总
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    problem_id = items_to_process[idx].get("id", f"item_{idx}")
+                    logger.error(f"[{problem_id}] Worker exception: {e}")
+                    result = {"id": problem_id, "reward": -1.0, "error": str(e)}
+
+                # Phase 2: 串行结算（主进程，安全写入 SQLite）
+                _settle_memory(result)
+                results.append(result)
+                settled += 1
+
+                if settled % 5 == 0:
+                    rewards = [r["reward"] for r in results if "reward" in r]
+                    avg = sum(rewards) / len(rewards) if rewards else 0
+                    logger.info(f"已完成 {settled}/{total} 道 | 平均 reward: {avg:+.3f}")
+
+    # ── 汇总 ─────────────────────────────────────────────
     rewards = [r["reward"] for r in results if "reward" in r]
+    skipped = sum(1 for r in results if r.get("skipped"))
+    errors = sum(1 for r in results if r.get("error"))
     logger.info("=" * 50)
-    logger.info(f"训练完成: {processed} 道题")
+    logger.info(f"训练完成: {total} 道题 (跳过={skipped}, 异常={errors})")
     logger.info(f"平均 reward: {sum(rewards)/len(rewards):+.3f}" if rewards else "无有效结果")
     logger.info("=" * 50)
 
