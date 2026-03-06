@@ -423,14 +423,16 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
     problem_code = extract_problem_code(raw_problem)
     problem_dir = safe_problem_dir_name(raw_problem)
-    generated_root = Path("data") / "generated" / (problem_code or problem_dir)
+    # NOTE: Use absolute SSD path to avoid filling root partition.
+    _DATA_ROOT = Path("<workspace>/duture/solvita/data")
+    generated_root = _DATA_ROOT / "generated" / (problem_code or problem_dir)
     code_dir = generated_root / "code"
     tests_dir = generated_root / "tests"
     code_dir.mkdir(parents=True, exist_ok=True)
     tests_dir.mkdir(parents=True, exist_ok=True)
     (code_dir / "_probe.txt").write_text("probe", encoding="utf-8")
 
-    ac_path = Path("data") / "problems" / "ac" / f"{problem_code}.cpp" if problem_code else None
+    ac_path = _DATA_ROOT / "problems" / "ac" / f"{problem_code}.cpp" if problem_code else None
     if ac_path and ac_path.exists():
         logger.info(f"[AC] Lookup: {ac_path} -> FOUND")
     else:
