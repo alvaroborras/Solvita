@@ -347,6 +347,12 @@ def main():
     parser.add_argument("--max-consecutive-errors", type=int, default=5, help="连续多少道题发生普通错误时触发快停")
     args = parser.parse_args()
 
+    if args.tmp_dir:
+        Path(args.tmp_dir).mkdir(parents=True, exist_ok=True)
+    if args.checkpoint_dir:
+        Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    Path(args.data_dir).mkdir(parents=True, exist_ok=True)
+
     config = {
         "trainable_memory": {
             "enabled": True,
