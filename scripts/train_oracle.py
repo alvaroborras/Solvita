@@ -153,18 +153,28 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
 # Phase 1: Worker — 重计算（LLM + C++ 编译/对拍），可并行
 # ─────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────
+# Phase 1: Worker — 重计算（LLM + C++ 编译/对拍），可并行
+# ─────────────────────────────────────────────────────────────
+
 def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = None) -> dict:
     """
     Worker function: runs generate_tests_node + verify.
     Returns a result dict with reward and state snapshot for settlement.
     This function does NOT write to the SQLite memory database.
     """
-    # Re-init LLM client in child process (not inherited across fork)
-    from src.llm.unified_client import UnifiedLLMClient, set_default_client
-    llm = UnifiedLLMClient(config)
-    set_default_client(llm)
-
     problem_id = item.get("id", f"item_{trial_idx}")
+    
+    # Re-init LLM client in child process (not inherited across fork)
+    from src.llm.unified_client import UnifiedLLMClient, set_default_client, FatalLLMError
+    try:
+        llm = UnifiedLLMClient(config)
+        set_default_client(llm)
+    except Exception as e:
+        if type(e).__name__ == "ConfigurationError":
+            return {"id": problem_id, "fatal": True, "fatal_kind": "ConfigurationError", "error": str(e)}
+        raise
+
     description = item.get("description", "")
     correct_solutions = item.get("correct_solution", []) or []
     public_tests = item.get("test_case") or []
@@ -191,11 +201,11 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
             if runner is not None:
                 state["training_mode"] = True
                 state["training_runner"] = runner
-                logger.info(f"[{problem_id}] Training mode: correct_solution runner ready ({runner[0]})")
+                logger.debug(f"[{problem_id}] Training mode: correct_solution runner ready ({runner[0]})")
             else:
                 logger.warning(f"[{problem_id}] No usable correct_solution — training mode disabled")
 
-            logger.info(f"[{problem_id}] Entering generate_tests_node...")
+            # 这一步可能会抛出 FatalLLMError (例如 429 quota exhausted)
             new_state_delta = generate_tests_node(state)
             state.update(new_state_delta)
 
@@ -217,12 +227,9 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
                         reward = -0.7
                 elif cert_ratio >= 1.0:
                     reward = verify_generated_tests(generated_list, correct_solutions, tmp)
-                    logger.info(f"[{problem_id}] Fully certified ({certified_count} tests). Reward: {reward:+.2f}")
                 else:
                     reward = round(cert_ratio * 0.9, 2)
-                    logger.info(f"[{problem_id}] Partially certified ({certified_count}/200, {cert_ratio:.1%}). Reward: {reward:+.2f}")
             else:
-                logger.warning(f"[{problem_id}] TestGen pipeline failed (tests.ready=False)")
                 reward = -0.6
 
             # Prepare state snapshot for settlement (Phase 2)
@@ -233,7 +240,6 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
                 "reward": reward,
                 "oracle_ids": oracle_ids,
                 "pass_rate": pass_rate,
-                # Minimal state snapshot for update_oracle_memory_node
                 "state_snapshot": {
                     "config": config,
                     "iteration": trial_idx,
@@ -244,6 +250,9 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
                 },
             }
 
+    except FatalLLMError as e:
+        logger.error(f"[{problem_id}] Fatal LLM error: {e}")
+        return {"id": problem_id, "fatal": True, "fatal_kind": type(e).__name__, "error": str(e)}
     except Exception as e:
         logger.error(f"[{problem_id}] Pipeline exception: {e}")
         return {"id": problem_id, "reward": -1.0, "error": str(e)}
@@ -255,13 +264,12 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
 
 def _settle_memory(result: dict):
     """Settle memory rewards in main process (serial, no SQLite lock risk)."""
-    if result.get("skipped") or result.get("error"):
+    if result.get("fatal") or result.get("skipped") or result.get("error"):
         return
     state_snapshot = result.get("state_snapshot")
     if not state_snapshot:
         return
     try:
-        logger.info(f"[{result['id']}] Settle via update_oracle_memory_node...")
         update_oracle_memory_node(state_snapshot)
     except Exception as e:
         logger.error(f"[{result['id']}] Settlement exception: {e}")
@@ -274,8 +282,48 @@ def _settle_memory(result: dict):
 def train_one_oracle(item: dict, config: dict, trial_idx: int, tmp_dir: str = None) -> dict:
     """Legacy single-threaded entry: generate + settle in one call."""
     result = _worker_generate(item, config, trial_idx, tmp_dir=tmp_dir)
-    _settle_memory(result)
+    if not result.get("fatal"):
+        _settle_memory(result)
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# Checkpoint 机制
+# ─────────────────────────────────────────────────────────────
+
+def _load_checkpoint(checkpoint_path: Path, signature: dict) -> dict:
+    """Load checkpoint if signature matches, else create new."""
+    if checkpoint_path.exists():
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as f:
+                chk = json.load(f)
+            if chk.get("signature") == signature:
+                return chk
+            else:
+                logger.warning("Checkpoint signature mismatch. Starting fresh.")
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint: {e}. Starting fresh.")
+            
+    return {
+        "signature": signature,
+        "settled_ids": [],
+        "error_ids": [],
+        "last_updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "stopped_reason": None
+    }
+
+
+def _save_checkpoint(checkpoint_path: Path, checkpoint: dict):
+    """Atomically save checkpoint to disk."""
+    checkpoint["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    tmp_path = checkpoint_path.with_suffix(".json.tmp")
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(checkpoint, f, indent=2, ensure_ascii=False)
+        tmp_path.replace(checkpoint_path)
+    except Exception as e:
+        logger.error(f"Failed to save checkpoint: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -285,15 +333,18 @@ def train_one_oracle(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
 def main():
     import os
     from concurrent.futures import ProcessPoolExecutor, as_completed
+    from tqdm import tqdm
 
-    parser = argparse.ArgumentParser(description="Oracle TestGen 离线训练 (Native Node Wrappers)")
+    parser = argparse.ArgumentParser(description="Oracle TestGen 离线训练 (Resilience 加固版)")
     parser.add_argument("--dataset", default="<workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl")
     parser.add_argument("--limit", type=int, default=None, help="最多处理 N 道题")
     parser.add_argument("--data-dir", default="data/memory", help="SQLite 内存存储目录")
     parser.add_argument("--tags", nargs="*", help="只训练包含这些 tag 的题目")
     parser.add_argument("--skip", type=int, default=0, help="跳过前 N 条")
     parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认 1 = 单线程)")
-    parser.add_argument("--tmp-dir", default=None, help="临时文件存放目录 (建议设在大盘路径，防止 /tmp 爆满)")
+    parser.add_argument("--tmp-dir", default=None, help="临时文件存放目录 (建议设在大盘路径)")
+    parser.add_argument("--checkpoint-dir", default=None, help="断点文件目录 (默认同 data-dir)")
+    parser.add_argument("--max-consecutive-errors", type=int, default=5, help="连续多少道题发生普通错误时触发快停")
     args = parser.parse_args()
 
     config = {
@@ -304,56 +355,117 @@ def main():
         }
     }
     
-    # 主进程初始化 LLM client（单线程模式用；多进程模式下 worker 会自行初始化）
-    from src.llm.unified_client import UnifiedLLMClient, set_default_client
-    llm = UnifiedLLMClient(config)
-    set_default_client(llm)
+    # Checkpoint Signature
+    signature = {
+        "dataset": str(Path(args.dataset).resolve()),
+        "skip": args.skip,
+        "limit": args.limit,
+        "tags": sorted(args.tags) if args.tags else None
+    }
+    
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else Path(args.data_dir)
+    checkpoint_path = checkpoint_dir / "oracle_checkpoint.json"
+    
+    chk = _load_checkpoint(checkpoint_path, signature)
+    settled_ids = set(chk["settled_ids"])
+    error_ids = set(chk["error_ids"])
+    already_done_ids = settled_ids | error_ids
 
+    # ── 预加载并过滤符合条件的题目 ──────────────────────────
+    items_to_process = []
     dataset_path = Path(args.dataset)
     if not dataset_path.exists():
         logger.error(f"数据集不存在: {dataset_path}")
         sys.exit(1)
 
-    # ── 预加载符合条件的题目到内存 ──────────────────────────
-    items_to_process = []
     with open(dataset_path, "r", encoding="utf-8") as f:
         for line_idx, line in enumerate(f):
             if line_idx < args.skip:
                 continue
             if not line.strip():
                 continue
-            if args.limit and len(items_to_process) >= args.limit:
-                break
+            
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
+                
             if args.tags:
                 item_tags = set(item.get("tags", []))
                 if not item_tags.intersection(set(args.tags)):
                     continue
-            items_to_process.append(item)
+            
+            problem_id = item.get("id")
+            if problem_id not in already_done_ids:
+                items_to_process.append(item)
+                
+            if args.limit and (len(items_to_process) + len(already_done_ids)) >= args.limit:
+                break
 
-    total = len(items_to_process)
+    total_in_scope = len(items_to_process) + len(already_done_ids)
     logger.info(f"开始 Oracle 离线训练: {dataset_path}")
-    logger.info(f"  范围: skip={args.skip}, limit={args.limit or 'ALL'}, 实际加载={total} 道")
+    logger.info(f"  范围: skip={args.skip}, limit={args.limit or 'ALL'}, 本次需运行={len(items_to_process)} 道 (已跳过={len(already_done_ids)})")
     logger.info(f"  并行: workers={args.workers}")
 
+    # 主进程初始化 LLM client
+    from src.llm.unified_client import UnifiedLLMClient, set_default_client
+    try:
+        llm = UnifiedLLMClient(config)
+        set_default_client(llm)
+    except UnifiedLLMClient.ConfigurationError as e:
+        logger.error(f"Failed to initialize LLM client: {e}")
+        sys.exit(1)
+
+    pbar = tqdm(total=total_in_scope, initial=len(already_done_ids), desc="Oracle Training", ncols=100)
+
+    fatal_occurred = False
+    consecutive_errors = 0
     results = []
 
+    def handle_result(result):
+        nonlocal chk, consecutive_errors, fatal_occurred
+        problem_id = result.get("id")
+        
+        if result.get("fatal"):
+            # 【致命错误快停】
+            fatal_occurred = True
+            logger.error(f"[FATAL] 检测到全局致命错误 [{result.get('fatal_kind')}]: {result.get('error')}")
+            chk["stopped_reason"] = result.get("error")
+            _save_checkpoint(checkpoint_path, chk)
+            return
+        elif result.get("error"):
+            # 【普通题目级失败】
+            consecutive_errors += 1
+            if problem_id and problem_id not in chk["error_ids"]:
+                chk["error_ids"].append(problem_id)
+            if consecutive_errors >= args.max_consecutive_errors:
+                fatal_occurred = True
+                logger.error(f"[FATAL] 连续 {args.max_consecutive_errors} 道题失败，疑似网络闪断或其他系统性故障，停止训练。")
+                chk["stopped_reason"] = f"consecutive errors >= {args.max_consecutive_errors}"
+                _save_checkpoint(checkpoint_path, chk)
+                return
+        else:
+            # 【正常通过并结算】
+            consecutive_errors = 0
+            if "reward" in result:
+                _settle_memory(result)
+                if problem_id and problem_id not in chk["settled_ids"]:
+                    chk["settled_ids"].append(problem_id)
+
+        _save_checkpoint(checkpoint_path, chk)
+        results.append(result)
+        pbar.update(1)
+
     if args.workers <= 1:
-        # ── 单线程模式（向后兼容）──────────────────────────
+        # ── 单线程模式 ──────────────────────────
         for idx, item in enumerate(items_to_process):
+            if fatal_occurred:
+                break
             result = train_one_oracle(item, config, trial_idx=idx, tmp_dir=args.tmp_dir)
-            results.append(result)
-            if (idx + 1) % 5 == 0:
-                rewards = [r["reward"] for r in results if "reward" in r]
-                avg = sum(rewards) / len(rewards) if rewards else 0
-                logger.info(f"已处理 {idx + 1}/{total} 道 | 平均 reward: {avg:+.3f}")
+            handle_result(result)
     else:
         # ── 多进程模式 ─────────────────────────────────────
         logger.info(f"启动 {args.workers} 个 worker 进程...")
-        settled = 0
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             future_to_idx = {}
             for idx, item in enumerate(items_to_process):
@@ -361,6 +473,9 @@ def main():
                 future_to_idx[future] = idx
 
             for future in as_completed(future_to_idx):
+                if fatal_occurred:
+                    continue  # 已触发快停，无视后续任务
+                
                 idx = future_to_idx[future]
                 try:
                     result = future.result()
@@ -369,24 +484,26 @@ def main():
                     logger.error(f"[{problem_id}] Worker exception: {e}")
                     result = {"id": problem_id, "reward": -1.0, "error": str(e)}
 
-                # Phase 2: 串行结算（主进程，安全写入 SQLite）
-                _settle_memory(result)
-                results.append(result)
-                settled += 1
+                handle_result(result)
+                
+                # 在回调中如果设置了 fatal_occurred，那么立刻终止尚未调度的 future
+                if fatal_occurred:
+                    executor.shutdown(wait=False, cancel_futures=True)
 
-                if settled % 5 == 0:
-                    rewards = [r["reward"] for r in results if "reward" in r]
-                    avg = sum(rewards) / len(rewards) if rewards else 0
-                    logger.info(f"已完成 {settled}/{total} 道 | 平均 reward: {avg:+.3f}")
+    pbar.close()
 
-    # ── 汇总 ─────────────────────────────────────────────
-    rewards = [r["reward"] for r in results if "reward" in r]
-    skipped = sum(1 for r in results if r.get("skipped"))
-    errors = sum(1 for r in results if r.get("error"))
-    logger.info("=" * 50)
-    logger.info(f"训练完成: {total} 道题 (跳过={skipped}, 异常={errors})")
-    logger.info(f"平均 reward: {sum(rewards)/len(rewards):+.3f}" if rewards else "无有效结果")
-    logger.info("=" * 50)
+    if fatal_occurred:
+        logger.info("训练被中止。已保留的进度将会在下次安全恢复。")
+    else:
+        chk["stopped_reason"] = None
+        _save_checkpoint(checkpoint_path, chk)
+        
+        rewards = [r["reward"] for r in results if "reward" in r]
+        logger.info("=" * 50)
+        logger.info(f"训练完毕!")
+        if rewards:
+            logger.info(f"本次新跑平均 reward: {sum(rewards)/len(rewards):+.3f}")
+        logger.info("=" * 50)
 
 
 if __name__ == "__main__":

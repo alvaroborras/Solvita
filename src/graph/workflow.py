@@ -27,7 +27,6 @@ from src.nodes import (
     analyze_feedback_node,
     update_plan_memory_node,
     update_solve_memory_node,
-    update_test_memory_node,
     update_oracle_memory_node,
     hack_test_node,
     join_ready_node,
@@ -74,7 +73,6 @@ def create_codegen_subgraph():
     g.add_node("unified_check", unified_check_node)
     g.add_node("update_plan_memory", update_plan_memory_node)
     g.add_node("update_solve_memory", update_solve_memory_node)
-    g.add_node("update_test_memory", update_test_memory_node)
     g.add_node("update_oracle_memory", update_oracle_memory_node)
     g.add_node("analyze_feedback", analyze_feedback_node)
 
@@ -104,8 +102,7 @@ def create_codegen_subgraph():
     g.add_edge("run_tests", "unified_check")
     g.add_edge("unified_check", "update_plan_memory")
     g.add_edge("update_plan_memory", "update_solve_memory")
-    g.add_edge("update_solve_memory", "update_test_memory")
-    g.add_edge("update_test_memory", "update_oracle_memory")
+    g.add_edge("update_solve_memory", "update_oracle_memory")
 
     g.add_conditional_edges(
         "update_oracle_memory",

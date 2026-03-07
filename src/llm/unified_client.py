@@ -7,6 +7,28 @@ from typing import Dict, List, Optional, Any
 from loguru import logger
 
 
+class FatalLLMError(Exception):
+    """全局性致命 LLM 错误（如令牌额度耗尽、鉴权失败、限流），表示训练不可继续。"""
+
+
+# 关键字集合：命中任一则视为 fatal (中英文均覆盖)
+_FATAL_KEYWORDS = (
+    # English
+    "quota", "rate limit", "rate_limit", "429", "401", "403",
+    "unauthorized", "forbidden", "auth", "billing",
+    "insufficient_quota", "exceeded",
+    # 中文（来自真实 API 响应）
+    "额度已用尽", "额度", "令牌",
+)
+
+
+def _check_and_raise_fatal(exc: Exception) -> None:
+    """如果 exc 的字符串描述含有致命关键字，则抛出 FatalLLMError；否则静默返回。"""
+    err_str = str(exc).lower()
+    if any(k in err_str for k in _FATAL_KEYWORDS):
+        raise FatalLLMError(str(exc)) from exc
+
+
 class UnifiedLLMClient:
     """
     Unified LLM Client using standard chat completion API.
@@ -216,6 +238,7 @@ class UnifiedLLMClient:
             content = response.choices[0].message.content
             return content if content is not None else ""
         except Exception as e:
+            _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
     
@@ -238,6 +261,7 @@ class UnifiedLLMClient:
                 return response
             return response.choices[0].message.content
         except Exception as e:
+            _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
     
@@ -257,6 +281,7 @@ class UnifiedLLMClient:
                 return response
             return response.choices[0].message.content
         except Exception as e:
+            _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
     

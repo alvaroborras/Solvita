@@ -42,3 +42,14 @@ C++17 暴力算法模板库构建.md
 docs/research_topic_oracle_tle.md
 implementation_plan.md.resolved
 train.log
+docs/oracle_resilience_review.md
+docs/oracle_resilience_acceptance_plan.md
+docs/oracle_resilience_review_round2.md
+tests/conftest.py
+tests/llm/test_unified_client_fatal.py
+tests/nodes/test_update_oracle_memory_regression.py
+tests/scripts/test_train_oracle_checkpoint.py
+tests/scripts/test_train_oracle_multiprocess_failfast.py
+tests/scripts/test_train_oracle_resilience.py
+out.txt
+pytest_output.txt

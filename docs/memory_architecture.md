@@ -67,7 +67,6 @@ solvita/
 │   └── seeds/
 │       ├── plan_items.py
 │       ├── solve_items.py
-│       └── test_items.py
 ├── skills/
 │   ├── README.md
 │   └── quick_sort.md     # Example skill
@@ -131,7 +130,7 @@ solvita/
 ### Test Node
 
 - **Injection**: `generate_tests_node` uses `MemoryClient(namespace="test")` to inject test strategies
-- **Settlement**: `update_test_memory_node` logs events after `unified_check`
+- **Settlement**: test-memory settlement has been retired; active settlement paths are plan / solve / oracle / hacker.
 - **Payload**: `{constraints_patterns, generation_strategies, validator_pitfalls}`
 
 ## Reward Shaping
