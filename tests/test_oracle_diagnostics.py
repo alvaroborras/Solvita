@@ -70,3 +70,38 @@ def test_format_solver_feedback_with_many_traces():
     assert "TRACE: step 99" in feedback
     # Should see middle part (around step 50)
     assert "TRACE: step 50" in feedback
+
+
+def test_format_solver_feedback_compresses_large_asan_block():
+    failed = [
+        {"type": "runtime_error", "id": 0, "error": "Segmentation fault", "input": "1\n"}
+    ]
+    asan_lines = [f"asan line {i}" for i in range(80)]
+    asan_lines[3] = "==1234==ERROR: AddressSanitizer: heap-buffer-overflow"
+    diagnostic_info = "\n".join(asan_lines)
+
+    feedback = format_solver_feedback(failed, 1, 1, diagnostic_info=diagnostic_info)
+
+    assert "AddressSanitizer" in feedback
+    assert "asan line 0" in feedback
+    assert "asan line 79" in feedback
+    assert "[ASAN TRUNCATED]" in feedback
+    assert len(feedback) < len(diagnostic_info) + 250
+
+
+def test_format_solver_feedback_truncates_long_checker_message():
+    failed = [
+        {
+            "type": "wrong_answer",
+            "id": 1,
+            "input": "3\n1 2 3\n",
+            "output": "999",
+            "error": "X" * 1200,
+        }
+    ]
+
+    feedback = format_solver_feedback(failed, 1, 1)
+
+    assert "Checker message:" in feedback
+    assert "[TRUNCATED" in feedback
+    assert len(feedback) < 1200

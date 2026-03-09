@@ -294,12 +294,30 @@ def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int
     """
     Format solver feedback for LLM iteration.
     """
+    def _compress_block(text: str, head: int = 8, tail: int = 8, marker: str = "[TRUNCATED]") -> str:
+        if not text:
+            return ""
+        lines = text.splitlines()
+        if len(lines) <= head + tail + 1:
+            return text
+        kept = lines[:head] + [f"... {marker} {len(lines) - head - tail} LINES ..."] + lines[-tail:]
+        return "\n".join(kept)
+
+    def _truncate_inline(text: str, max_chars: int = 240) -> str:
+        text = str(text or "")
+        if len(text) <= max_chars:
+            return text
+        head = max_chars // 2
+        tail = max_chars - head
+        omitted = len(text) - max_chars
+        return text[:head] + f" ... [TRUNCATED {omitted} CHARS] ... " + text[-tail:]
+
     lines = []
     
     if diagnostic_info:
         lines.append("CRITICAL: Diagnostic scan (AddressSanitizer) detected a crash:")
         lines.append("```")
-        lines.append(diagnostic_info)
+        lines.append(_compress_block(diagnostic_info, head=10, tail=10, marker="[ASAN TRUNCATED]"))
         lines.append("```")
         lines.append("Focus on fixing the memory/undefined behavior reported above first.")
         lines.append("")
@@ -336,12 +354,12 @@ def format_solver_feedback(failed: List[Dict], total_run: int, total_verify: int
             lines.append(f"    Error: {f.get('error', f.get('message', '?'))}")
         elif ftype == "wrong_answer":
             lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
-            actual = str(f.get('output', f.get('actual', '?')))[:200]
+            actual = _truncate_inline(str(f.get('output', f.get('actual', '?'))), max_chars=200)
             lines.append(f"    Output (truncated): {actual}")
             if f.get("error"):
-                lines.append(f"    Checker message:    {f.get('error')}")
+                lines.append(f"    Checker message:    {_truncate_inline(f.get('error'), max_chars=240)}")
         
-        inp = str(f.get('input', ''))[:200]
+        inp = _truncate_inline(str(f.get('input', '')), max_chars=200)
         if inp: lines.append(f"    Input (truncated): {inp}")
         
         if traces:

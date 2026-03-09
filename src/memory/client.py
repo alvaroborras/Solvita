@@ -260,16 +260,18 @@ class MemoryClient:
                     lines.append(f"  Edge Cases: {', '.join(payload['edge_cases'][:3])}")
                     
             elif self.namespace == MemoryNamespace.ORACLE:
-                payload = item.payload
                 # Build structured JSON for ORACLE templates (consumed by build_solver_prompt)
                 oracle_entries = []
-                for item in items:
+                for index, item in enumerate(items):
                     payload = item.payload
-                    oracle_entries.append({
+                    entry = {
                         "name": item.text,
                         "strategy": ", ".join(payload.get("brute_force_strategies", [])),
-                        "code_snippet": payload.get("code_template", "").strip(),
-                    })
+                        "complexity_notes": payload.get("complexity_notes", []),
+                    }
+                    if index == 0:
+                        entry["code_snippet"] = payload.get("code_template", "").strip()
+                    oracle_entries.append(entry)
                 import json as _json
                 return _json.dumps(oracle_entries, indent=2)
         

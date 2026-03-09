@@ -258,6 +258,40 @@ def test_client_disabled(temp_memory_dir):
     client.log_event_simple("GEN_DRAFT", None, 1.0)
 
 
+def test_oracle_injection_keeps_topk_but_only_first_has_full_code(temp_memory_dir):
+    """Oracle injection should keep top-k retrieval while only the first entry carries full code."""
+    config = {
+        "trainable_memory": {
+            "enabled": True,
+            "data_dir": str(temp_memory_dir),
+            "oracle_top_k": 3,
+        }
+    }
+
+    client = MemoryClient(
+        namespace=MemoryNamespace.ORACLE,
+        config=config,
+        problem_desc="brute force training problem",
+        canonical={"problem_type": ["dp"]},
+    )
+
+    injection_text, item_ids = client.get_injection(
+        fsm_state="SOLVER",
+        failure_type=None,
+        attempt_count=0,
+    )
+
+    oracle_entries = json.loads(injection_text)
+
+    assert len(item_ids) == 3
+    assert len(oracle_entries) == 3
+    assert oracle_entries[0].get("code_snippet")
+    assert all("strategy" in entry for entry in oracle_entries)
+    assert all("complexity_notes" in entry for entry in oracle_entries)
+    assert "code_snippet" not in oracle_entries[1]
+    assert "code_snippet" not in oracle_entries[2]
+
+
 def test_featurizer_checker_and_graph_features():
     """Verify new featurizer features: CHECKER:*, GRAPH:*, CONSTR:overflow_risk."""
     featurizer = Featurizer()
