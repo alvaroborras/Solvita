@@ -16,6 +16,38 @@ if TYPE_CHECKING:
     from src.graph.state import SolvitaState, TestData
 
 
+def _truncate_for_prompt(text: str, max_chars: int, label: str) -> str:
+    text = str(text or "")
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    tail = max_chars - head
+    omitted = len(text) - max_chars
+    return text[:head] + f"\n... [TRUNCATED {label} {omitted} CHARS] ...\n" + text[-tail:]
+
+
+def _compact_json_for_prompt(value: Any, max_chars: int, label: str) -> str:
+    rendered = json.dumps(value, indent=2, ensure_ascii=False)
+    return _truncate_for_prompt(rendered, max_chars=max_chars, label=label)
+
+
+def _compact_public_tests_for_prompt(public_tests: List[Dict[str, Any]], max_tests: int = 3, field_chars: int = 400) -> str:
+    compact = []
+    for pt in public_tests[:max_tests]:
+        compact.append(
+            {
+                "input": _truncate_for_prompt(pt.get("input", ""), field_chars, "PUBLIC_INPUT"),
+                "output": _truncate_for_prompt(pt.get("output", ""), field_chars, "PUBLIC_OUTPUT"),
+            }
+        )
+    return json.dumps(compact, indent=2, ensure_ascii=False)
+
+
+def _log_prompt_size(stage: str, prompt: str, **sections: str) -> None:
+    stats = ", ".join(f"{name}={len(value)}" for name, value in sections.items())
+    logger.debug(f"[PROMPT:{stage}] total_chars={len(prompt)} | {stats}")
+
+
 def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
     '''
     生成安全目录名 data/generated/{problem_id}
@@ -56,7 +88,10 @@ from src.utils.cpp_execution import compile_cpp, run_program, run_checker, sanit
 def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, memory_advice: str = "") -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     advice_block = f"\n{memory_advice}\n" if memory_advice else ""
-    return f"""You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
+    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
+    prompt = f"""You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
 
 Hard requirements:
 - Use testlib: #include "testlib.h"
@@ -99,25 +134,30 @@ int main(int argc, char* argv[]) {{
 The program must produce ONE valid input instance that satisfies all constraints.
 
 Problem Description:
-{problem_desc}
+{compact_problem_desc}
 
 Constraints:
-{json.dumps(constraints, indent=2)}
+{compact_constraints}
 
 Public Tests:
-{json.dumps(public_tests, indent=2)}
+{compact_public_tests}
 {feedback_block}
 {advice_block}
 Return ONLY a JSON object. No other text, no markdown.
 Schema:
 {{"generator_cpp": "<complete C++17 source>"}}
 """
+    _log_prompt_size("generator", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block, advice=advice_block)
+    return prompt
 
 
 
 def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    return f"""You are a validator agent. Write a C++17 program that reads one test case from stdin and validates it.
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
+    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
+    prompt = f"""You are a validator agent. Write a C++17 program that reads one test case from stdin and validates it.
 
 Hard requirements:
 - Use testlib: #include "testlib.h"
@@ -146,24 +186,29 @@ int main(int argc, char* argv[]) {{
 }}
 
 Problem Description:
-{problem_desc}
+{compact_problem_desc}
 
 Constraints:
-{json.dumps(constraints, indent=2)}
+{compact_constraints}
 
 Public Tests:
-{json.dumps(public_tests, indent=2)}
+{compact_public_tests}
 {feedback_block}
 Return ONLY a JSON object. No other text, no markdown.
 Schema:
 {{"validator_cpp": "<complete C++17 source>"}}
 """
+    _log_prompt_size("validator", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block)
+    return prompt
 
 
 
 def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    return f"""You are a checker/verifier agent. Write a C++17 program that **independently verifies**
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
+    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
+    prompt = f"""You are a checker/verifier agent. Write a C++17 program that **independently verifies**
 whether a candidate output is correct for a given input — WITHOUT needing any reference answer.
 
 CRITICAL DESIGN PRINCIPLE:
@@ -225,13 +270,13 @@ int main(int argc, char* argv[]) {{
 }}
 
 Problem Description:
-{problem_desc}
+{compact_problem_desc}
 
 Constraints:
-{json.dumps(constraints, indent=2)}
+{compact_constraints}
 
 Public Tests:
-{json.dumps(public_tests, indent=2)}
+{compact_public_tests}
 {feedback_block}
 Return ONLY a JSON object. No other text, no markdown.
 Schema:
@@ -239,16 +284,24 @@ Schema:
   "checker_cpp": "<complete C++17 source>"
 }}
 """
+    _log_prompt_size("checker", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block)
+    return prompt
 
 
 
 def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1) -> str:
-    feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
+    compact_templates = _truncate_for_prompt(templates_json, 6000, "ORACLE_ADVICE")
+    compact_feedback = _truncate_for_prompt(feedback, 4000, "SOLVER_FEEDBACK") if feedback else ""
+    feedback_block = f"\nPrevious attempt issues:\n{compact_feedback}\n" if compact_feedback else ""
     
     # Format public tests clearly
     pt_block = ""
-    for i, pt in enumerate(public_tests[:5]):  # Limit to 5 to save prompt space
-        pt_block += f"\n--- Test {i} ---\nInput:\n{pt.get('input', '').strip()}\nExpected Output:\n{pt.get('output', '').strip()}\n"
+    for i, pt in enumerate(public_tests[:3]):  # Limit further to save prompt space
+        inp = _truncate_for_prompt(pt.get('input', '').strip(), 400, 'PUBLIC_INPUT')
+        out = _truncate_for_prompt(pt.get('output', '').strip(), 400, 'PUBLIC_OUTPUT')
+        pt_block += f"\n--- Test {i} ---\nInput:\n{inp}\nExpected Output:\n{out}\n"
     
     trace_instruction = ""
     if attempt >= 3:
@@ -259,7 +312,7 @@ WARNING: DO NOT print inside tight loops. If tracing a loop with many iterations
 only print every 10000th iteration (e.g., if(count % 10000 == 0)) or just at the start/end.
 """
 
-    return f"""You are a Brute-Force Oracle. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem using exhaustive / brute-force search.
+    prompt = f"""You are a Brute-Force Oracle. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem using exhaustive / brute-force search.
 
 CRITICAL REQUIREMENTS:
 1. Your code MUST be a complete standalone program with #include, main(), cin/cout.
@@ -268,16 +321,16 @@ CRITICAL REQUIREMENTS:
 4. The program MUST compile with: g++ -std=c++17 -O2
 {trace_instruction}
 Problem Description:
-{problem_desc}
+{compact_problem_desc}
 
 Constraints:
-{json.dumps(constraints, indent=2)}
+{compact_constraints}
 
 Public Tests (your program MUST produce the exact expected output for these):
 {pt_block}
 
 Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
-{templates_json}
+{compact_templates}
 
 {feedback_block}
 Return ONLY a JSON object. No markdown, no explanation.
@@ -287,6 +340,8 @@ Schema:
   "solver_cpp": "<complete C++17 source code>"
 }}
 """
+    _log_prompt_size("solver", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=pt_block, templates=compact_templates, feedback=feedback_block)
+    return prompt
 
 
 

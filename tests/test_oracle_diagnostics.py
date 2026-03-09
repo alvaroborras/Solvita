@@ -1,6 +1,12 @@
 import pytest
 from pathlib import Path
-from src.nodes.generate_tests import format_solver_feedback, build_solver_prompt
+from src.nodes.generate_tests import (
+    format_solver_feedback,
+    build_solver_prompt,
+    build_generator_prompt,
+    build_validator_prompt,
+    build_checker_prompt,
+)
 
 def test_format_solver_feedback_with_asan():
     failed = [
@@ -105,3 +111,27 @@ def test_format_solver_feedback_truncates_long_checker_message():
     assert "Checker message:" in feedback
     assert "[TRUNCATED" in feedback
     assert len(feedback) < 1200
+
+
+def test_build_generator_prompt_truncates_large_context():
+    huge_desc = "D" * 20000
+    public_tests = [{"input": "I" * 5000, "output": "O" * 5000} for _ in range(8)]
+
+    prompt = build_generator_prompt(huge_desc, {"n": "1e5", "blob": "X" * 6000}, public_tests, "")
+
+    assert "[TRUNCATED" in prompt
+    assert len(prompt) < 25000
+
+
+def test_other_prompt_builders_truncate_large_context():
+    huge_desc = "P" * 20000
+    huge_constraints = {"payload": "C" * 8000}
+    public_tests = [{"input": "IN" * 3000, "output": "OUT" * 3000} for _ in range(6)]
+
+    validator_prompt = build_validator_prompt(huge_desc, huge_constraints, public_tests, "")
+    checker_prompt = build_checker_prompt(huge_desc, huge_constraints, public_tests, "")
+    solver_prompt = build_solver_prompt(huge_desc, huge_constraints, public_tests, "T" * 12000, "F" * 6000, attempt=2)
+
+    assert "[TRUNCATED" in validator_prompt
+    assert "[TRUNCATED" in checker_prompt
+    assert "[TRUNCATED" in solver_prompt

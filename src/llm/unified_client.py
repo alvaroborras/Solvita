@@ -11,6 +11,10 @@ class FatalLLMError(Exception):
     """全局性致命 LLM 错误（如令牌额度耗尽、鉴权失败、限流），表示训练不可继续。"""
 
 
+class PromptTooLongError(ValueError):
+    """Raised when the upstream API rejects a request because the prompt exceeded max context."""
+
+
 # 关键字集合：命中任一则视为 fatal (中英文均覆盖)
 _FATAL_KEYWORDS = (
     # English
@@ -27,6 +31,19 @@ def _check_and_raise_fatal(exc: Exception) -> None:
     err_str = str(exc).lower()
     if any(k in err_str for k in _FATAL_KEYWORDS):
         raise FatalLLMError(str(exc)) from exc
+
+
+def _check_and_raise_prompt_too_long(exc: Exception) -> None:
+    err_str = str(exc).lower()
+    markers = (
+        "prompt is too long",
+        "maximum context length",
+        "too many tokens",
+        "tokens >",
+        "maximum",
+    )
+    if "prompt" in err_str and any(marker in err_str for marker in markers):
+        raise PromptTooLongError(str(exc)) from exc
 
 
 class UnifiedLLMClient:
@@ -238,6 +255,7 @@ class UnifiedLLMClient:
             content = response.choices[0].message.content
             return content if content is not None else ""
         except Exception as e:
+            _check_and_raise_prompt_too_long(e)
             _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
@@ -261,6 +279,7 @@ class UnifiedLLMClient:
                 return response
             return response.choices[0].message.content
         except Exception as e:
+            _check_and_raise_prompt_too_long(e)
             _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
@@ -281,6 +300,7 @@ class UnifiedLLMClient:
                 return response
             return response.choices[0].message.content
         except Exception as e:
+            _check_and_raise_prompt_too_long(e)
             _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
