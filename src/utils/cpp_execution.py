@@ -66,6 +66,30 @@ class ExecutionLimits:
             nofile=100,
         )
 
+    @staticmethod
+    def hacker_compile() -> "ExecutionLimits":
+        """Strict limits for compiling hacker-generated C++ code."""
+        return ExecutionLimits(
+            cpu_seconds=10,
+            wall_seconds=12,
+            memory_bytes=2 * 1024 * 1024 * 1024,  # 2GB
+            fsize_bytes=50 * 1024 * 1024,  # 50MB
+            nproc=None,
+            nofile=100,
+        )
+
+    @staticmethod
+    def hacker_run() -> "ExecutionLimits":
+        """Strict limits for running hacker-generated C++ code (Fuzzer/Generator)."""
+        return ExecutionLimits(
+            cpu_seconds=5,
+            wall_seconds=6,
+            memory_bytes=512 * 1024 * 1024,  # 512MB
+            fsize_bytes=10 * 1024 * 1024,    # 10MB
+            nproc=1,
+            nofile=50,
+        )
+
 
 def _make_run_kwargs(limits: ExecutionLimits, work_dir: Optional[Path] = None, **base_kwargs) -> dict:
     """

@@ -28,7 +28,8 @@ from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.graph.state import SolvitaState, create_initial_state
 from src.nodes.hack_test import hack_test_node
-from src.nodes.update_hacker_memory import update_hacker_memory_node
+from src.nodes.settle_hacker_memory import settle_hacker_memory
+from src.utils.cpp_execution import compile_cpp, ExecutionLimits
 
 
 # ─────────────────────────────────────────────────────────────
@@ -68,49 +69,48 @@ def train_one_hacker(item: dict, config: dict, trial_idx: int) -> dict:
     state["hack_round"] = 0
     state["hack_failures"] = []
     
-    try:
-        # 2. 直接调用真实的 Hacker 节点
-        # 这会自动获取 Memory 注入、生成对抗测试、尝试通过沙盒运行。
-        logger.info(f"[{problem_id}] Entering hack_test_node...")
-        new_state_delta = hack_test_node(state)
+    # T5: Ensure dummy executable_path is populated via compile step
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = Path(tmpdir) / "buggy.cpp"
+        exe_path = Path(tmpdir) / "buggy.exe"
+        src_path.write_text(buggy_code, encoding="utf-8")
         
-        # 合并产出回 State
-        state.update(new_state_delta)
-        
-        # 3. 提取结果
-        hack_passed = state.get("hack_passed", True)  # True =没找到Bug/过了测试; False =成功触发WA/RE
-        hacker_ids = state.get("hacker_memory_item_ids", [])
-        
-        if not hack_passed:
-            # 找到 BUG 了！Hack 成功，拿奖励！
-            reward = 1.0
-            logger.info(f"[{problem_id}] Hack SUCCEEDED (Found bug)! Reward: +1.0")
-        else:
-            # 没找到 Bug 
-            if state.get("hack_round", 0) >= state.get("max_hack_rounds", 3):
-                reward = -0.5
-                logger.info(f"[{problem_id}] Hack exhausted all rounds without finding bug. Reward: -0.5")
-            else:
-                reward = -1.0
-                logger.warning(f"[{problem_id}] Hack pipeline aborted or no valid test found. Reward: -1.0")
-        
-        # 强制设置 reward 到 state 里供 update 节点使用 
-        state["hacker_reward"] = reward
+        # 1.5 编译 buggy code
+        compiled, msg = compile_cpp(src_path, exe_path, limits=ExecutionLimits.default_compile())
+        if not compiled:
+            logger.warning(f"[{problem_id}] buggy code compile failed, skipping. Error: {msg[:100]}")
+            return {"id": problem_id, "skipped": True, "reason": "buggy code compile fail"}
+            
+        state["solution"]["executable_path"] = str(exe_path)
 
-        # 4. 调用原生内存更新节点
-        logger.info(f"[{problem_id}] Settle via update_hacker_memory_node...")
-        update_hacker_memory_node(state)
-        
-        return {
-            "id": problem_id, 
-            "reward": reward, 
-            "hack_success": not hack_passed, 
-            "hacker_ids": hacker_ids
-        }
+        try:
+            # 2. 调用 Hack 节点
+            logger.info(f"[{problem_id}] Entering hack_test_node...")
+            new_state_delta = hack_test_node(state)
+            state.update(new_state_delta)
+            
+            # 3. 提取运行后状态
+            hack_passed = state.get("hack_passed", True)
+            hacker_ids = state.get("hacker_memory_item_ids", [])
+            
+            # 4. 结算 Reward 并写 Memory (唯一结算出口)
+            logger.info(f"[{problem_id}] Settle via settle_hacker_memory...")
+            settle_delta = settle_hacker_memory(state)
+            state.update(settle_delta)
+            
+            # 真实 reward 由 settle 节点内部调用 compute_hacker_reward 生成
+            reward = state.get("hacker_reward", 0.0)
+            
+            return {
+                "id": problem_id, 
+                "reward": reward, 
+                "hack_success": not hack_passed, 
+                "hacker_ids": hacker_ids
+            }
 
-    except Exception as e:
-        logger.error(f"[{problem_id}] Pipeline exception: {e}")
-        return {"id": problem_id, "reward": -1.0, "error": str(e)}
+        except Exception as e:
+            logger.error(f"[{problem_id}] Pipeline exception: {e}")
+            return {"id": problem_id, "reward": -1.0, "error": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────

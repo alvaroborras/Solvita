@@ -114,6 +114,12 @@ class SolvitaState(TypedDict):
     hacker_reward: float
     hacker_memory_item_ids: List[str]
     oracle_memory_item_ids: List[str]
+    analyst_report: Dict[str, Any]
+    validator_rejection_reasons: List[str]
+    # T3.2 v2 Hacker state contract fields (hacker-system.md §4.1)
+    hack_result: str            # "BREAK" | "SAFE" | "GEN_FAILED"
+    generator_route_used: str   # "anti_hash" | "semantic" | "stress" | "failed"
+    hack_failure_type: str      # "WA" | "RE" | "TLE" | "MLE" | "NONE"
 
     # -- Phase routing (set by phase_transition_node) --
     current_phase: str  # "TESTGEN" | "CODEGEN" | "HACKER"
@@ -203,6 +209,11 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         hacker_reward=0.0,
         hacker_memory_item_ids=[],
         oracle_memory_item_ids=[],
+        analyst_report={},
+        validator_rejection_reasons=[],
+        hack_result="",
+        generator_route_used="",
+        hack_failure_type="",
         current_phase="TESTGEN",
 
         # Metadata

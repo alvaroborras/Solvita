@@ -1,0 +1,146 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.0, pytest-9.0.2, pluggy-1.6.0 -- C:\Program Files\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: D:\solvita-2
+plugins: anyio-4.12.0, langsmith-0.6.4, asyncio-1.3.0, cov-7.0.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/nodes/test_hack_test.py::test_hack_test_node_all_fail PASSED       [ 50%]
+tests/nodes/test_hack_test.py::test_hack_test_node_target_breaks FAILED  [100%]
+
+================================== FAILURES ===================================
+______________________ test_hack_test_node_target_breaks ______________________
+
+mock_state = {'config': {}, 'problem': {'constraints': {}, 'description': 'test'}, 'solution': {'code': 'int main(){}', 'executable_path': 'dummy.exe'}, 'tests': {'validator_exe': 'val.exe'}}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C7020A9E0>
+
+    def test_hack_test_node_target_breaks(mock_state, monkeypatch):
+        """Test what happens if target fails on generated input."""
+        monkeypatch.setattr("src.nodes.hack_test.Path.exists", lambda self: True)
+        monkeypatch.setattr("src.nodes.hack_test.UnifiedLLMClient", MagicMock())
+    
+        mock_mem = MagicMock()
+        mock_mem.get_injection.return_value = ("advice", ["id1"])
+        monkeypatch.setattr("src.nodes.hack_test.MemoryClient", lambda **kw: mock_mem)
+    
+        monkeypatch.setattr("src.nodes.hack_test.run_code_analyst", lambda *args, **kw: {"bug_class": "overflow"})
+        monkeypatch.setattr("src.nodes.hack_test.cascading_execution_router", lambda *args, **kw: ("semantic", "100\n", ["log"]))
+    
+        # Mock verdict evaluation to return a VALID_AND_BREAK
+        from src.utils.verdict import VerdictStatus, FailureType
+        mock_verdict = {"verdict": VerdictStatus.VALID_AND_BREAK.value, "failure_type": FailureType.WA.value, "details": ""}
+        monkeypatch.setattr("src.nodes.hack_test.evaluate_verdict", lambda *args, **kw: mock_verdict)
+    
+        # Mock subprocess to pretend the target ran
+        class MockRes:
+            returncode = 0
+            stdout = "99"
+            stderr = ""
+        monkeypatch.setattr("src.nodes.hack_test.subprocess.run", lambda *args, **kw: MockRes())
+    
+>       result = hack_test_node(mock_state)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\nodes\test_hack_test.py:64: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+state = {'config': {}, 'problem': {'constraints': {}, 'description': 'test'}, 'solution': {'code': 'int main(){}', 'executable_path': 'dummy.exe'}, 'tests': {'validator_exe': 'val.exe'}}
+
+    def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
+        """
+        Adversarial Hack Phase (v2 CodeHacker)
+    
+        1. Code Analyst analyzes source code and generates a Vulnerability Report (JSON).
+        2. Cascading Router acts on the report (Anti-Hash -> Semantic -> Stress).
+        3. Runs the finalized valid hack input against the target.
+        4. Evaluates Verification/Sandbox Signals.
+        5. Returns updated state dictionary conforming to T3.2 state contract.
+        """
+        def normalize_hack_input(inp: str) -> str:
+            lines = inp.split('\n')
+            normalized = [line.rstrip() for line in lines if line.strip() != ""]
+            if normalized:
+                return '\n'.join(normalized) + '\n'
+            return inp
+    
+        logger.info("[Node] Adversarial Hack (CodeHacker Phase II)")
+    
+        config = UnifiedLLMClient.build_role_config(state.get("config", {}), "hacker")
+        code = state.get("solution", {}).get("code", "")
+        exe_path = state.get("solution", {}).get("executable_path")
+        hack_round = state.get("hack_round", 0) + 1
+    
+        if not exe_path or not Path(exe_path).exists():
+            logger.error("No executable found for hack test")
+            return {
+                "hack_round": hack_round,
+                "hack_passed": False,
+                "hacker_reward": -1.0,
+                "hack_failures": [{"error": "No executable"}],
+            }
+    
+        # Initialize Memory Client
+        canonical = state.get("problem", {}).get("canonical", {})
+        memory = MemoryClient(
+            namespace=MemoryNamespace.HACK,
+            config=state.get("config", {}),
+            problem_desc=state.get("problem", {}).get("description", ""),
+            canonical=canonical,
+        )
+    
+        advice, item_ids = memory.get_injection(
+            fsm_state="HACK_GEN",
+            failure_type=None,
+            attempt_count=hack_round,
+        )
+    
+        llm = UnifiedLLMClient(config)
+    
+        # ---- Phase 1: Code Analyst ----
+        analyst_report = run_code_analyst(state, llm, max_rounds=5)
+    
+        # ---- Phase 2: Cascading Router ----
+        logger.info("[Hack Node] Handing over to Cascading Router...")
+        route_used, generated_input, routing_log = cascading_execution_router(
+            state,
+            llm,
+            analyst_report,
+            max_retries=MAX_ROUTER_RETRIES
+        )
+    
+        # Combine execution logs from components
+        full_execution_log = ["--- Router Execution Log ---"] + routing_log
+    
+        if route_used == "failed" or not generated_input:
+            full_execution_log.append("Hacker Node: All generation sequences failed.")
+            return {
+                "hack_round": hack_round,
+                "hack_passed": True,  # Technically passed because we didn't break it
+                "hacker_reward": -1.0,
+                "hacker_memory_item_ids": item_ids,
+                "hack_failures": [],
+                "analyst_report": analyst_report,
+                "execution_log": full_execution_log,
+                "validator_rejection_reasons": ["All cascading generations failed validation."]
+            }
+    
+        generated_input = normalize_hack_input(generated_input)
+        validated_hacks = [{"input": generated_input, "expected_output": ""}]
+    
+        tests_data = state.get('tests', {})
+        checker_exe = tests_data.get('checker_exe')
+    
+        # ========== Run Valid Hack Tests ==========
+        failures = []
+>       validated_hacks = hack_tests  # Already filtered above
+                          ^^^^^^^^^^
+E       NameError: name 'hack_tests' is not defined
+
+src\nodes\hack_test.py:109: NameError
+---------------------------- Captured stderr call -----------------------------
+2026-03-08 20:32:58.359 | INFO     | src.nodes.hack_test:hack_test_node:40 - [Node] Adversarial Hack (CodeHacker Phase II)
+2026-03-08 20:32:58.360 | INFO     | src.nodes.hack_test:hack_test_node:77 - [Hack Node] Handing over to Cascading Router...
+=========================== short test summary info ===========================
+FAILED tests/nodes/test_hack_test.py::test_hack_test_node_target_breaks - Nam...
+========================= 1 failed, 1 passed in 0.46s =========================

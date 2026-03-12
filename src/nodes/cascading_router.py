@@ -1,0 +1,127 @@
+from enum import Enum
+from typing import Dict, Any, List, Optional, Tuple
+from loguru import logger
+import tempfile
+from pathlib import Path
+
+from src.llm import UnifiedLLMClient
+from src.nodes.generator_semantic import generate_semantic_test_program
+from src.nodes.generator_stress import generate_stress_test_program
+from src.nodes.generator_anti_hash import generate_anti_hash_test_program
+from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
+
+class GeneratorRoute(str, Enum):
+    ANTI_HASH = "anti_hash"
+    SEMANTIC = "semantic"
+    STRESS = "stress"
+
+
+def execute_generator_and_validate(
+    cpp_source: str,
+    validator_exe: Optional[Path],
+    problem_limits: Dict[str, Any]
+) -> Tuple[bool, str, str]:
+    """
+    Compiles the generator, runs it, and validates its single stdout output against the validator.
+    Returns:
+        (is_success, generated_input, error_reason)
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = Path(tmpdir) / "gen.cpp"
+        exe_path = Path(tmpdir) / "gen.exe"
+        src_path.write_text(cpp_source, encoding="utf-8")
+        
+        # 1. Compile Generator
+        compiled, comp_out = compile_cpp(src_path, exe_path, limits=ExecutionLimits.hacker_compile())
+        if not compiled:
+            return False, "", f"Compilation Failed: {comp_out[:200]}"
+            
+        # 2. Run Generator to produce the test case
+        ret, gen_out, gen_err = run_program(exe_path, limits=ExecutionLimits.hacker_run())
+        if ret != 0:
+            return False, "", f"Generator execution failed (Code {ret}): {gen_err[:200]}"
+            
+        generated_input = gen_out.strip() + "\n"
+        if not generated_input.strip():
+            return False, "", "Generator produced empty output."
+            
+        # 3. Validate against Problem Constraints if validator available
+        if validator_exe and validator_exe.exists():
+            v_ret, _, v_err = run_program(
+                validator_exe, 
+                input_text=generated_input, 
+                limits=ExecutionLimits.default_run()
+            )
+            if v_ret != 0:
+                reason = (v_err.strip() or f"Validator exit {v_ret}")[:200]
+                return False, generated_input, f"Validation Failed: {reason}"
+                
+        return True, generated_input, ""
+
+
+def cascading_execution_router(
+    state: Dict[str, Any],
+    llm: UnifiedLLMClient,
+    analyst_report: Dict[str, Any],
+    max_retries: int = 3
+) -> Tuple[str, str, List[str]]:
+    """
+    Implements the T3.1 Cascading Execution Logic.
+    Returns:
+        (route_used, validated_test_input, execution_log)
+    """
+    execution_log = []
+    tests_data = state.get("tests", {})
+    validator_path_str = tests_data.get("validator_exe")
+    validator_exe = Path(validator_path_str) if validator_path_str else None
+    
+    suggested_route = analyst_report.get("suggested_route", "semantic")
+    
+    # ---- 1. Primary Feature Routing (Anti-Hash Phase) ----
+    if suggested_route == "anti_hash":
+        logger.info("[Router] Executing Primary Anti-Hash Generator")
+        execution_log.append("Router: Attempting Anti-Hash generator.")
+        cpp_source = generate_anti_hash_test_program(state, llm, analyst_report)
+        ok, result, err = execute_generator_and_validate(cpp_source, validator_exe, state.get("problem", {}))
+        if ok:
+            execution_log.append("Router: Anti-Hash generation successful.")
+            return GeneratorRoute.ANTI_HASH.value, result, execution_log
+        else:
+            execution_log.append(f"Router: Anti-Hash failed ({err}). Downgrading to Semantic.")
+            logger.warning("[Router] Anti-Hash Failed. Downgrading to Semantic route.")
+
+    # ---- 2. Standard Semantic Phase ----
+    # Runs if suggested==semantic OR if anti-hash downgraded
+    logger.info("[Router] Entering Semantic Generator loop.")
+    semantic_log = []
+    
+    for attempt in range(1, max_retries + 1):
+        execution_log.append(f"Router: Semantic generation attempt {attempt}/{max_retries}.")
+        cpp_source = generate_semantic_test_program(state, llm, analyst_report)
+        ok, result, err = execute_generator_and_validate(cpp_source, validator_exe, state.get("problem", {}))
+        
+        if ok:
+            execution_log.append("Router: Semantic generation successful.")
+            return GeneratorRoute.SEMANTIC.value, result, execution_log
+            
+        semantic_log.append(f"Attempt {attempt} failed: {err}")
+        logger.debug(f"[Router] Semantic attempt {attempt} failed: {err}")
+        
+    execution_log.append("\n".join(semantic_log))
+    execution_log.append("Router: All Semantic attempts failed. Downgrading to Stress Fuzzer.")
+    logger.warning(f"[Router] Semantic failed {max_retries} times. Downgrading to Stress Test Fuzzer.")
+
+    # ---- 3. Fallback Stress Test Phase ----
+    execution_log.append("Router: Attempting fallback Stress generator.")
+    cpp_source = generate_stress_test_program(state, llm)
+    ok, result, err = execute_generator_and_validate(cpp_source, validator_exe, state.get("problem", {}))
+    
+    if ok:
+        execution_log.append("Router: Stress generation successful.")
+        return GeneratorRoute.STRESS.value, result, execution_log
+        
+    execution_log.append(f"Router: CRITICAL. Stress generator fallback also failed: {err}")
+    logger.error("[Router] Stress fuzzer fallback failed.")
+    
+    # Total failure
+    return "failed", "", execution_log

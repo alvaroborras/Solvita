@@ -38,9 +38,9 @@ def __getattr__(name: str):
     elif name == "phase_transition_node":
         from .phase_transition import phase_transition_node
         return phase_transition_node
-    elif name == "update_hacker_memory_node":
-        from .update_hacker_memory import update_hacker_memory_node
-        return update_hacker_memory_node
+    elif name == "settle_hacker_memory":
+        from .settle_hacker_memory import settle_hacker_memory
+        return settle_hacker_memory
     elif name == "status_routing":
         from .routing import status_routing
         return status_routing
@@ -80,7 +80,7 @@ __all__ = [
     "update_solve_memory_node",
     "update_oracle_memory_node",
     "phase_transition_node",
-    "update_hacker_memory_node",
+    "settle_hacker_memory",
     "status_routing",
     "compilation_routing",
     "hack_test_node",

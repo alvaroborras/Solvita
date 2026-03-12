@@ -1,0 +1,26 @@
+{
+"weights": {
+"GLOBAL_BIAS": {
+"850fd7915625f86c": 0.002,
+"965fd6fc4f1169af": 0.002,
+"ed12c3bc96ed9e42": 0.002
+},
+"FSM:HACK_SETTLE": {
+"850fd7915625f86c": 0.002,
+"965fd6fc4f1169af": 0.002,
+"ed12c3bc96ed9e42": 0.002
+},
+"ATTEMPT:1": {
+"850fd7915625f86c": 0.002,
+"965fd6fc4f1169af": 0.002,
+"ed12c3bc96ed9e42": 0.002
+}
+},
+"bias": {
+"850fd7915625f86c": 0.002,
+"965fd6fc4f1169af": 0.002,
+"ed12c3bc96ed9e42": 0.002
+},
+"learning_rate": 0.01,
+"epsilon": 0.1
+}

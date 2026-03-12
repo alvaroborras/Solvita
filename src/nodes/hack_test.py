@@ -1,113 +1,46 @@
-"""Hack Test Node - Adversarial testing for solutions"""
-
 import json
 from typing import Dict, Any, List, TYPE_CHECKING
 from loguru import logger
 from src.llm import UnifiedLLMClient
-from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
 
 import tempfile
-import subprocess
 from pathlib import Path
 from src.utils.cpp_execution import run_checker, run_program, ExecutionLimits
+from src.utils.verdict import evaluate_verdict, VerdictStatus, FailureType
 from src.memory import MemoryClient, MemoryNamespace
+from src.nodes.code_analyst import run_code_analyst
+from src.nodes.cascading_router import cascading_execution_router
 
-MAX_HACK_RETRIES = 3
-
-
-def build_hacker_prompt(problem_desc: str, constraints: Dict[str, Any], code: str, memory_advice: str = "", validator_feedback: str = "") -> str:
-    constraints_json = json.dumps(constraints, indent=2)
-    
-    advice_section = ""
-    if memory_advice:
-        advice_section = f"\n=== HACKER STRATEGY ADVICE ===\n{memory_advice}\n=============================\n"
-
-    feedback_section = ""
-    if validator_feedback:
-        feedback_section = f"\n=== PREVIOUS ATTEMPT REJECTED ===\n{validator_feedback}\nPlease generate DIFFERENT test inputs that strictly satisfy all constraints.\n=================================\n"
-        
-    return f"""You are a competitive programming hacker. Your goal is to find a test case that breaks the given solution.
-
-Problem Description:
-{problem_desc}
-{advice_section}
-{feedback_section}
-⚠️ CONSTRAINTS (EVERY test input MUST satisfy ALL of these):
-{constraints_json}
-
-CRITICAL: If any value in your test input violates these constraints, the validator will reject it.
-Focus on finding bugs WITHIN the constraint bounds, not by exceeding them.
-
-Solution Code:
-```cpp
-{code}
-```
-
-ANALYSIS TASK:
-1. Identify specific algorithmic bugs in the code (overflow, edge cases, boundary conditions, wrong logic paths).
-2. Generate 1-5 test inputs that trigger these bugs WHILE RESPECTING ALL CONSTRAINTS.
-3. For boundary cases, use values at or near the constraint limits if possible.
-4. Every single value must be within the specified ranges.
-
-INPUT FORMAT (MUST FOLLOW EXACTLY):
-Each line must end with exactly one newline character.
-Do not add extra blank lines.
-
-Return ONLY valid JSON with no other text.
-
-VALID JSON Schema:
-{{
-    "analysis": "<identification of bugs found in the code>",
-    "hack_tests": [
-        {{"input": "<complete input string including all newlines, respecting all constraints>"}}
-    ]
-}}
-
-Example response (if n <= 5, k <= 3):
-{{
-    "analysis": "Bug: when n=2 and values are similar, the algorithm fails to handle the case correctly",
-    "hack_tests": [
-        {{"input": "2 1\\n1000000000 0\\n-1000000000 0\\n"}}
-    ]
-}}
-"""
-
+# Hacker System Architectures dictates fallback up to max 3 times for Router. 
+# Analyst handles its own 5-round logic.
+MAX_ROUTER_RETRIES = 3
 
 def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     """
-    Adversarial Hack Phase
+    Adversarial Hack Phase (v2 CodeHacker)
     
-    1. LLM analyzes code and generates "hack" test cases.
-    2. Local syntax validator intercepts (retry loop ≤3 if all rejected).
-    3. Run valid tests against the executable.
-    4. Compute hacker_reward and update state.
+    1. Code Analyst analyzes source code and generates a Vulnerability Report (JSON).
+    2. Cascading Router acts on the report (Anti-Hash -> Semantic -> Stress).
+    3. Runs the finalized valid hack input against the target.
+    4. Evaluates Verification/Sandbox Signals.
+    5. Returns updated state dictionary conforming to T3.2 state contract.
     """
     def normalize_hack_input(inp: str) -> str:
-        """Normalize hack test input to ensure it matches validator requirements."""
         lines = inp.split('\n')
-        normalized_lines = []
-        
-        for line in lines:
-            if line.strip() == "":
-                continue
-            normalized_lines.append(line.rstrip())
-        
-        if normalized_lines:
-            return '\n'.join(normalized_lines) + '\n'
+        normalized = [line.rstrip() for line in lines if line.strip() != ""]
+        if normalized:
+            return '\n'.join(normalized) + '\n'
         return inp
     
-    logger.info("[Node] Adversarial Hack")
+    logger.info("[Node] Adversarial Hack (CodeHacker Phase II)")
     
     config = UnifiedLLMClient.build_role_config(state.get("config", {}), "hacker")
-    
-    code = state["solution"].get("code", "")
-    exe_path = state["solution"].get("executable_path")
-    problem_desc = state["problem"].get("description", "")
-    constraints = state["problem"].get("constraints", {})
+    code = state.get("solution", {}).get("code", "")
+    exe_path = state.get("solution", {}).get("executable_path")
     hack_round = state.get("hack_round", 0) + 1
     
     if not exe_path or not Path(exe_path).exists():
@@ -119,105 +52,74 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             "hack_failures": [{"error": "No executable"}],
         }
 
-    # T3.1: Initialize Memory Client with correct API
+    # Initialize Memory Client
     canonical = state.get("problem", {}).get("canonical", {})
     memory = MemoryClient(
         namespace=MemoryNamespace.HACK,
         config=state.get("config", {}),
-        problem_desc=problem_desc,
+        problem_desc=state.get("problem", {}).get("description", ""),
         canonical=canonical,
     )
 
-    # T3.1: Use keyword-only get_injection signature (no Observation object)
     advice, item_ids = memory.get_injection(
         fsm_state="HACK_GEN",
         failure_type=None,
         attempt_count=hack_round,
     )
 
-    # Initialize LLM
     llm = UnifiedLLMClient(config)
+    
+    # ---- Phase 1: Code Analyst ----
+    analyst_report = run_code_analyst(state, llm, max_rounds=5)
+    
+    # ---- Phase 2: Cascading Router ----
+    logger.info("[Hack Node] Handing over to Cascading Router...")
+    route_used, generated_input, routing_log = cascading_execution_router(
+        state, 
+        llm, 
+        analyst_report, 
+        max_retries=MAX_ROUTER_RETRIES
+    )
+    
+    # Combine execution logs from components
+    full_execution_log = ["--- Router Execution Log ---"] + routing_log
 
+    if route_used == "failed" or not generated_input:
+        # Extract per-stage structured rejection reasons from routing log
+        structured_rejections = [
+            {"stage": entry.split(":")[0].strip(), "reason": entry.split(":", 1)[-1].strip()}
+            for entry in routing_log if "failed" in entry.lower() or "fail" in entry.lower()
+        ] or [{"stage": "all", "reason": "All cascading generations failed validation."}]
+        full_execution_log.append("Hacker Node: All generation sequences failed.")
+        return {
+            "hack_round": hack_round,
+            "hack_passed": True,
+            "hacker_reward": -1.0,
+            "hacker_memory_item_ids": item_ids,
+            "hack_failures": [],
+            "hack_result": "GEN_FAILED",
+            "generator_route_used": route_used,
+            "hack_failure_type": "NONE",
+            "analyst_report": analyst_report,
+            "execution_log": full_execution_log,
+            "validator_rejection_reasons": structured_rejections,
+        }
+        
+    generated_input = normalize_hack_input(generated_input)
+    validated_hacks = [{"input": generated_input, "expected_output": ""}]
+    
     tests_data = state.get('tests', {})
     checker_exe = tests_data.get('checker_exe')
-    validator_exe = tests_data.get('validator_exe')
-
-    # T3.2: Inner retry loop — retry LLM if all inputs rejected by validator
-    hack_tests: List[Dict] = []
-    analysis = "No analysis"
-    validator_feedback = ""
-
-    for attempt in range(1, MAX_HACK_RETRIES + 1):
-        prompt = build_hacker_prompt(
-            problem_desc, constraints, code,
-            memory_advice=advice,
-            validator_feedback=validator_feedback,
-        )
-        response = llm.generate(prompt)
-
-        try:
-            data = parse_json_response(response)
-            raw_tests = data.get("hack_tests", [])
-            analysis = data.get("analysis", "No analysis")
-            logger.info(f"[HACK] Attempt {attempt}: Analysis: {analysis}")
-            logger.info(f"[HACK] Attempt {attempt}: Generated {len(raw_tests)} hack tests")
-        except Exception as e:
-            logger.warning(f"[HACK] Attempt {attempt}: Failed to parse hacker response: {e}")
-            # Skip this round — don't block workflow
-            return {
-                "hack_round": hack_round,
-                "hack_passed": True,
-                "hacker_reward": 0.0,
-                "hacker_memory_item_ids": item_ids,
-                "execution_log": [f"Hack round {hack_round} skipped (LLM parse error)"],
-            }
-
-        if not validator_exe or not Path(validator_exe).exists():
-            # No validator available — just accept all generated tests
-            hack_tests = raw_tests
-            break
-
-        # Validate each input; collect rejection reasons for feedback
-        valid_tests = []
-        rejection_reasons = []
-
-        for i, test in enumerate(raw_tests):
-            inp = normalize_hack_input(test.get("input", ""))
-            v_code, _, v_err = run_program(
-                Path(validator_exe),
-                input_text=inp,
-                limits=ExecutionLimits.default_run(),
-            )
-            if v_code != 0:
-                reason = v_err.strip() or f"validator exited {v_code}"
-                rejection_reasons.append(f"Input {i}: {reason[:120]}")
-                logger.debug(f"[HACK] Validator rejected input {i}: {reason}")
-            else:
-                valid_tests.append({"input": inp, "expected_output": test.get("expected_output", "")})
-
-        if valid_tests:
-            hack_tests = valid_tests
-            logger.info(f"[HACK] Attempt {attempt}: {len(valid_tests)}/{len(raw_tests)} inputs passed validator")
-            break
-        else:
-            # All rejected — feed validator reasons back to LLM for next attempt
-            logger.warning(
-                f"[HACK] Attempt {attempt}: All {len(raw_tests)} inputs rejected by validator — retrying"
-            )
-            validator_feedback = "\n".join(rejection_reasons)
 
     # ========== Run Valid Hack Tests ==========
     failures = []
-    validated_hacks = hack_tests  # Already filtered above
-    # (re-run normalization for the no-validator path)
-    if not validator_exe or not Path(validator_exe).exists():
-        validated_hacks = [
-            {**t, "input": normalize_hack_input(t.get("input", ""))}
-            for t in hack_tests
-        ]
-
+    # We only have one highly targeted test produced by Router
     all_rejected = len(validated_hacks) == 0
 
+    # ---- Phase 3: Run target and compute Verdicts ----
+    # Re-use existing sandbox execution flow but record standardized Verdicts
+    sandbox_verdicts = []
+    
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         
@@ -226,75 +128,64 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             exp = test.get("expected_output", "").strip()
 
             try:
-                res = subprocess.run(
-                    [exe_path],
-                    input=inp,
-                    capture_output=True,
-                    text=True,
-                    timeout=2
+                # Use unified sandbox run_program for consistent resource limiting
+                ret_code, stdout, stderr = run_program(
+                    Path(exe_path),
+                    input_text=inp,
+                    limits=ExecutionLimits.default_run(),
                 )
                 
-                actual = res.stdout.strip()
+                is_timeout = (ret_code == 124)
+                actual = stdout.strip()
+                chk_ok = None
+                output_match = None
+                chk_msg = ""
                 
-                if res.returncode != 0:
-                    failures.append({
-                        "type": "Runtime Error",
-                        "input": inp,
-                        "output": res.stderr,
-                        "expected": exp
-                    })
-                    continue
-                
-                if checker_exe and Path(checker_exe).exists():
-                    input_file = tmp_path / f"hack_{i}.in"
-                    output_file = tmp_path / f"hack_{i}.out"
-                    answer_file = tmp_path / f"hack_{i}.ans"
-                    
-                    input_file.write_text(inp, encoding="utf-8")
-                    output_file.write_text(res.stdout, encoding="utf-8")
-                    answer_file.write_text(exp if exp else "", encoding="utf-8")
-                    
-                    chk_ok, chk_msg = run_checker(Path(checker_exe), input_file, output_file, answer_file)
-                    if not chk_ok:
-                        failures.append({
-                            "type": "Wrong Answer (Checker)",
-                            "input": inp,
-                            "output": actual,
-                            "expected": exp,
-                            "details": chk_msg
-                        })
-                else:
-                    if exp and actual != exp:
-                        failures.append({
-                            "type": "Wrong Answer",
-                            "input": inp,
-                            "output": actual,
-                            "expected": exp
-                        })
-            
-            except subprocess.TimeoutExpired:
-                failures.append({
-                    "type": "Time Limit Exceeded",
-                    "input": inp,
-                    "expected": exp
-                })
-            except Exception as e:
-                failures.append({
-                    "type": "System Error",
-                    "input": inp,
-                    "details": str(e)
-                })
+                if not is_timeout and ret_code == 0:
+                    if checker_exe and Path(checker_exe).exists():
+                        input_file = tmp_path / f"hack_{i}.in"
+                        output_file = tmp_path / f"hack_{i}.out"
+                        answer_file = tmp_path / f"hack_{i}.ans"
+                        
+                        input_file.write_text(inp, encoding="utf-8")
+                        output_file.write_text(stdout, encoding="utf-8")
+                        answer_file.write_text(exp if exp else "", encoding="utf-8")
+                        
+                        chk_ok, chk_msg = run_checker(Path(checker_exe), input_file, output_file, answer_file)
+                    else:
+                        output_match = (actual == exp) if exp else None
 
-    # T3.3: Reward shaping (per research doc §2.3)
-    # +1.0 = found WA/RE/TLE bug (hack succeeded)
-    # -1.0 = all inputs rejected by validator across all retries
-    #  0.0 = valid inputs, but solution passed them all
-    if failures:
-        hacker_reward = 1.0
-    elif all_rejected:
-        hacker_reward = -1.0
-    else:
-        hacker_reward = 0.0
+                # Generate unified SandboxVerdict Contract
+                verdict = evaluate_verdict(
+                    validator_ok=True,  # Generated by router which already pre-validated
+                    exec_returncode=ret_code,
+                    exec_timeout=is_timeout,
+                    checker_ok=chk_ok,
+                    output_matches_expected=output_match,
+                    stderr=stderr,
+                )
+                
+                if verdict["verdict"] == VerdictStatus.VALID_AND_BREAK:
+                    failures.append({
+                        "type": verdict["failure_type"],
+                        "input": inp,
+                        "output": actual if ret_code == 0 else stderr,
+                        "expected": exp,
+                        "details": chk_msg or verdict["details"]
+                    })
+                    
+                sandbox_verdicts.append(verdict)
+            
+            except Exception as e:
+                logger.error(f"[Hack Node] Target execution crashed: {e}")
+                failures.append({"type": "System Error", "input": inp, "details": str(e)})
+                sandbox_verdicts.append(evaluate_verdict(True, -1, False, stderr=str(e)))
+
+    # compile_failures: count generator compile errors logged in routing_log
+    compile_failures = sum(1 for entry in routing_log if "Compilation Failed" in entry)
+    # hacker_reward is intentionally left as a sentinel 0.0 here.
+    # settle_hacker_memory (T4.2) is the sole reward computation and writeback entry point.
+    hacker_reward = 0.0
 
     # Append validator-approved hack tests to generated_tests for regression
     new_tests = []
@@ -333,6 +224,13 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             input_path.write_text(inp.rstrip("\n") + "\n", encoding="utf-8")
             output_path.write_text(exp.rstrip("\n") + ("\n" if exp else ""), encoding="utf-8")
 
+    # Derive the dominant failure type for state contract
+    primary_failure_type = "NONE"
+    hack_result = "SAFE"
+    if failures:
+        hack_result = "BREAK"
+        primary_failure_type = failures[0].get("type", "NONE")
+
     if failures:
         logger.warning(f"Hack successful! Found {len(failures)} failures.")
         return {
@@ -341,22 +239,31 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             "hack_failures": failures,
             "hacker_reward": hacker_reward,
             "hacker_memory_item_ids": item_ids,
+            "hack_result": hack_result,
+            "generator_route_used": route_used,
+            "hack_failure_type": primary_failure_type,
+            "analyst_report": analyst_report,
+            "validator_rejection_reasons": [],
+            "sandbox_verdicts": sandbox_verdicts,
+            "compile_failures": compile_failures,
             "tests": updated_tests,
-            "execution_log": [f"Hack round {hack_round} FAILED. Added {len(new_tests)} regression tests."],
+            "execution_log": full_execution_log + [f"Hack FAILED (Found {len(failures)} bugs). Pending reward settlement."],
         }
     
-    logger.info(f"Hack round {hack_round} passed. Reward={hacker_reward:.1f}")
-    if all_rejected:
-        logger.warning(f"All hack inputs were rejected by validator across {MAX_HACK_RETRIES} retries.")
+    logger.info(f"Hack round {hack_round} target passed.")
     return {
         "hack_round": hack_round,
         "hack_passed": True,
         "hack_failures": [],
         "hacker_reward": hacker_reward,
         "hacker_memory_item_ids": item_ids,
+        "hack_result": "SAFE",
+        "generator_route_used": route_used,
+        "hack_failure_type": "NONE",
+        "analyst_report": analyst_report,
+        "validator_rejection_reasons": [],
+        "sandbox_verdicts": sandbox_verdicts,
+        "compile_failures": compile_failures,
         "tests": updated_tests,
-        "execution_log": [
-            f"Hack round {hack_round} passed. Reward={hacker_reward:.1f}. "
-            f"Added {len(new_tests)} regression tests."
-        ],
+        "execution_log": full_execution_log + [f"Hack round {hack_round} target passed. Pending reward settlement."],
     }

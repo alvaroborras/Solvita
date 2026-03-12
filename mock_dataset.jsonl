@@ -1,0 +1,1 @@
+{"id": "mock_1", "description": "Given N, return N", "incorrect_solution": [{"code": "int main() { return 0; }"}], "test_case": [{"input": "1\n", "output": "1\n"}], "tags": ["math"]}

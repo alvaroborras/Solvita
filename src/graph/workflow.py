@@ -35,9 +35,8 @@ from src.nodes import (
     compilation_routing,
     hack_routing,
     hack_outcome_routing,
-    join_routing,
     phase_transition_node,
-    update_hacker_memory_node,
+    settle_hacker_memory,
 )
 from typing import Dict, Any
 from loguru import logger
@@ -128,7 +127,7 @@ def create_hacker_subgraph():
     g = StateGraph(SolvitaState)
 
     g.add_node("hack_test", hack_test_node)
-    g.add_node("update_hacker_memory", update_hacker_memory_node)
+    g.add_node("settle_hacker_memory", settle_hacker_memory)
 
     g.set_entry_point("hack_test")
 
@@ -137,12 +136,12 @@ def create_hacker_subgraph():
         hack_routing,
         {
             "hack_again": "hack_test",          # 本轮 hack 通过，继续 hack
-            "hack_failed": "update_hacker_memory",  # hack 发现 bug，结算
-            "end": "update_hacker_memory",       # 用光 hack 轮次，结算
+            "hack_failed": "settle_hacker_memory",  # hack 发现 bug，结算
+            "end": "settle_hacker_memory",       # 用光 hack 轮次，结算
         },
     )
 
-    g.add_edge("update_hacker_memory", END)
+    g.add_edge("settle_hacker_memory", END)
 
     return g.compile()
 
