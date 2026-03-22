@@ -1,7 +1,7 @@
 import json
 import pytest
 from unittest.mock import MagicMock
-from src.nodes.code_analyst import parse_code_analyst_response, execute_tool, run_code_analyst
+from src.nodes.code_analyst import parse_code_analyst_response, execute_tool, run_code_analyst, build_analyst_prompt
 
 def test_parse_analyst_tool_call():
     """Test parsing a valid tool call."""
@@ -159,8 +159,8 @@ def test_run_code_analyst_loop():
     
     report = run_code_analyst(state, mock_llm, max_rounds=5)
     
-    # Needs 5 calls for 5 failed rounds
-    assert mock_llm.generate.call_count == 5
+    # Each failed round now includes one repair attempt.
+    assert mock_llm.generate.call_count == 10
     # Should return fallback report
     assert report["bug_class"] == "unknown"
     assert report["suggested_route"] == "semantic"
@@ -190,3 +190,147 @@ def test_run_code_analyst_success():
     
     assert mock_llm.generate.call_count == 2
     assert report["bug_class"] == "logic_branch"
+
+
+def test_run_code_analyst_repairs_invalid_json_without_consuming_extra_round():
+    mock_llm = MagicMock()
+    mock_llm.generate.side_effect = [
+        "I think this is probably a logic bug.",
+        json.dumps({
+            "bug_class": "logic_branch",
+            "confidence": "medium",
+            "evidence": ["Repair pass preserved the original conclusion."],
+            "suggested_route": "semantic",
+            "input_hypothesis": ["edge_case_branch"],
+        }),
+    ]
+
+    state = {
+        "problem": {"description": "test", "constraints": {}},
+        "solution": {"code": "int main() {}"},
+    }
+
+    report = run_code_analyst(state, mock_llm, max_rounds=1)
+
+    assert report["bug_class"] == "logic_branch"
+    assert mock_llm.generate.call_count == 2
+    repair_prompt = mock_llm.generate.call_args_list[1].args[0]
+    assert "valid JSON" in repair_prompt
+    assert "do not add any explanation" in repair_prompt.lower()
+
+
+def test_run_code_analyst_repair_prompt_reuses_full_context():
+    mock_llm = MagicMock()
+    mock_llm.generate.side_effect = [
+        "I suspect an overflow but this is not json.",
+        json.dumps({
+            "bug_class": "overflow",
+            "confidence": "medium",
+            "evidence": ["large accumulation may overflow int"],
+            "suggested_route": "semantic",
+            "input_hypothesis": ["large_n"],
+        }),
+    ]
+
+    state = {
+        "problem": {
+            "description": "Given N numbers, compute the sum.",
+            "constraints": {"n": "1..1e5"},
+        },
+        "solution": {"code": "int main() { return 0; }"},
+    }
+
+    run_code_analyst(
+        state,
+        mock_llm,
+        max_rounds=1,
+        memory_advice="Prefer large accumulation edge cases.",
+    )
+
+    repair_prompt = mock_llm.generate.call_args_list[1].args[0]
+    assert "Given N numbers, compute the sum." in repair_prompt
+    assert '"n": "1..1e5"' in repair_prompt
+    assert "int main() { return 0; }" in repair_prompt
+    assert "Prefer large accumulation edge cases." in repair_prompt
+
+
+def test_run_code_analyst_forces_tool_call_for_low_quality_report(monkeypatch):
+    mock_llm = MagicMock()
+    weak_report = json.dumps({
+        "bug_class": "unknown",
+        "confidence": "low",
+        "evidence": ["Need more validation"],
+        "suggested_route": "semantic",
+        "input_hypothesis": ["large_n"],
+    })
+    tool_call = json.dumps({
+        "tool": "run_python",
+        "parameters": {"script_code": "print(42)"},
+    })
+    stronger_report = json.dumps({
+        "bug_class": "overflow",
+        "confidence": "medium",
+        "evidence": ["Validated with a probe calculation"],
+        "suggested_route": "semantic",
+        "input_hypothesis": ["large_n accumulation"],
+    })
+    mock_llm.generate.side_effect = [weak_report, tool_call, stronger_report]
+
+    monkeypatch.setattr("src.nodes.code_analyst.execute_tool", lambda tool_name, parameters: "Execution successful:\n42")
+
+    state = {
+        "problem": {
+            "description": "Sum many numbers.",
+            "constraints": {"n": "1..1e5"},
+        },
+        "solution": {"code": "int main() { return 0; }"},
+    }
+
+    report = run_code_analyst(state, mock_llm, max_rounds=1)
+
+    assert report["bug_class"] == "overflow"
+    assert mock_llm.generate.call_count == 3
+    forced_prompt = mock_llm.generate.call_args_list[1].args[0]
+    assert "must call exactly one tool" in forced_prompt.lower()
+    assert "do not submit a final report yet" in forced_prompt.lower()
+
+
+def test_run_code_analyst_allows_low_quality_report_after_tool_evidence(monkeypatch):
+    mock_llm = MagicMock()
+    tool_call = json.dumps({
+        "tool": "run_python",
+        "parameters": {"script_code": "print(42)"},
+    })
+    weak_report = json.dumps({
+        "bug_class": "unknown",
+        "confidence": "low",
+        "evidence": ["Still inconclusive after verification"],
+        "suggested_route": "semantic",
+        "input_hypothesis": ["large_n"],
+    })
+    mock_llm.generate.side_effect = [tool_call, weak_report]
+
+    monkeypatch.setattr("src.nodes.code_analyst.execute_tool", lambda tool_name, parameters: "Execution successful:\n42")
+
+    state = {
+        "problem": {"description": "test", "constraints": {}},
+        "solution": {"code": "int main() {}"},
+    }
+
+    report = run_code_analyst(state, mock_llm, max_rounds=2)
+
+    assert report["bug_class"] == "unknown"
+    assert mock_llm.generate.call_count == 2
+
+
+def test_build_analyst_prompt_includes_memory_advice():
+    prompt = build_analyst_prompt(
+        "problem",
+        {"n": "1..10"},
+        "int main() {}",
+        [],
+        memory_advice="Prefer edge cases with repeated prefixes.",
+    )
+
+    assert "HACKER STRATEGY ADVICE" in prompt
+    assert "repeated prefixes" in prompt

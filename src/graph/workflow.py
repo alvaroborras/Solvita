@@ -35,11 +35,22 @@ from src.nodes import (
     compilation_routing,
     hack_routing,
     hack_outcome_routing,
+    join_routing,
     phase_transition_node,
-    settle_hacker_memory,
 )
+from src.nodes.settle_hacker_memory import settle_hacker_memory
 from typing import Dict, Any
 from loguru import logger
+
+
+def terminal_hack_failure_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Mark a terminal hacker-discovered failure after the repair budget is exhausted."""
+    return {
+        "status": "max_iterations",
+        "execution_log": [
+            "Hack discovered a bug after the repair budget was exhausted"
+        ],
+    }
 
 
 # ============================================================
@@ -179,6 +190,7 @@ def create_solvita_workflow():
     workflow.add_node("phase_transition_2", phase_transition_node)  # CODEGEN→HACKER
     workflow.add_node("hacker_phase", hacker_sg)
     workflow.add_node("phase_transition_3", phase_transition_node)  # HACKER→CODEGEN（回环）
+    workflow.add_node("terminal_hack_failure", terminal_hack_failure_node)
 
     # 正向路径
     workflow.set_entry_point("testgen_phase")
@@ -193,12 +205,14 @@ def create_solvita_workflow():
         hack_outcome_routing,
         {
             "loop_codegen": "phase_transition_3",
+            "terminal_failure": "terminal_hack_failure",
             "final_ac": END,
         },
     )
 
     # 回环：HACKER → CODEGEN（清空 messages，重置 hack_round，带 hack 失败用例重新答题）
     workflow.add_edge("phase_transition_3", "codegen_phase")
+    workflow.add_edge("terminal_hack_failure", END)
 
     compiled = workflow.compile()
     logger.info("Solvita Orchestrator workflow compiled (3-phase + Hack→CodeGen loop)")

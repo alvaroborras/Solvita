@@ -87,7 +87,13 @@ def prepare_executable(code: str, lang: str, tmp_dir: Path, diagnostic: bool = F
         
         ok, output = compile_cpp(src_path, exe_path, limits=limits, diagnostic=diagnostic)
         if ok:
-            return exe_path, []
+            actual_exe_path = exe_path
+            # On Windows, g++ emits solution.exe even if "-o solution" is passed.
+            if not actual_exe_path.exists():
+                windows_exe_path = exe_path.with_suffix(".exe")
+                if windows_exe_path.exists():
+                    actual_exe_path = windows_exe_path
+            return actual_exe_path, []
         else:
             return None, _parse_compilation_errors(output)
             

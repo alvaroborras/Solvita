@@ -103,9 +103,12 @@ def execute_tool(tool_name: str, parameters: Dict[str, Any]) -> str:
     return f"Error: Executor for '{tool_name}' not implemented."
 
 
-def build_analyst_prompt(problem_desc: str, constraints: Dict[str, Any], target_code: str, history: List[str]) -> str:
+def build_analyst_prompt(problem_desc: str, constraints: Dict[str, Any], target_code: str, history: List[str], memory_advice: str = "") -> str:
     constraints_json = json.dumps(constraints, indent=2)
     history_text = "\n\n".join(history) if history else "No actions taken yet."
+    advice_section = ""
+    if memory_advice:
+        advice_section = f"\nHACKER STRATEGY ADVICE:\n{memory_advice}\n"
     
     return f"""You are the Code Analyst, the strategy planner for an adversarial Hacker System.
 Your goal is to find bugs, logic flaws, or vulnerabilities (WA, TLE, RE, MLE) in the provided C++ target code.
@@ -120,6 +123,7 @@ TARGET SOLUTION CODE (May contain bugs):
 ```cpp
 {target_code}
 ```
+{advice_section}
 
 AVAILABLE TOOLS:
 You can verify your hypothesis by writing short probe codes. Do not guess blindly if you can test it!
@@ -155,7 +159,114 @@ HISTORY OF YOUR ACTIONS & RESULTS:
 Analyze the code, call tools if needed to verify, and output valid JSON.
 """
 
-def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: int = 5) -> Dict[str, Any]:
+
+def build_json_repair_prompt(
+    previous_response: str,
+    problem_desc: str,
+    constraints: Dict[str, Any],
+    target_code: str,
+    memory_advice: str = "",
+) -> str:
+    constraints_json = json.dumps(constraints, indent=2)
+    advice_section = ""
+    if memory_advice:
+        advice_section = f"\nHACKER STRATEGY ADVICE:\n{memory_advice}\n"
+
+    return f"""Your previous reply was not valid JSON for the Code Analyst protocol.
+
+Rewrite the same intent as ONE valid JSON object.
+Allowed outputs:
+1. A tool call:
+{{
+  "tool": "run_python|run_cpp",
+  "parameters": {{...}}
+}}
+
+2. A final report:
+{{
+  "bug_class": "overflow|hash_collision|index_oob|tle|logic_branch|unknown",
+  "confidence": "high|medium|low",
+  "evidence": ["..."],
+  "suggested_route": "anti_hash|semantic|stress",
+  "input_hypothesis": ["..."]
+}}
+
+Previous reply:
+{previous_response}
+
+PROBLEM DESCRIPTION:
+{problem_desc}
+
+CONSTRAINTS:
+{constraints_json}
+
+TARGET SOLUTION CODE:
+```cpp
+{target_code}
+```
+{advice_section}
+
+Return valid JSON only. Do not add any explanation, markdown, or commentary.
+"""
+
+
+def build_force_tool_prompt(
+    problem_desc: str,
+    constraints: Dict[str, Any],
+    target_code: str,
+    history: List[str],
+    weak_report: Dict[str, Any],
+    memory_advice: str = "",
+) -> str:
+    constraints_json = json.dumps(constraints, indent=2)
+    history_text = "\n\n".join(history) if history else "No actions taken yet."
+    weak_report_json = json.dumps(weak_report, indent=2)
+    advice_section = ""
+    if memory_advice:
+        advice_section = f"\nHACKER STRATEGY ADVICE:\n{memory_advice}\n"
+
+    return f"""Your current vulnerability report is too weak to submit as a final answer.
+
+You must call exactly one tool before you can submit a final report.
+Do not submit a final report yet.
+Return ONLY a tool call JSON object in one of these forms:
+{{
+  "tool": "run_python",
+  "parameters": {{"script_code": "..."}}
+}}
+or
+{{
+  "tool": "run_cpp",
+  "parameters": {{"cpp_code": "..."}}
+}}
+
+PROBLEM DESCRIPTION:
+{problem_desc}
+
+CONSTRAINTS:
+{constraints_json}
+
+TARGET SOLUTION CODE:
+```cpp
+{target_code}
+```
+{advice_section}
+PREVIOUS WEAK REPORT:
+{weak_report_json}
+
+HISTORY OF ACTIONS:
+{history_text}
+
+Call one tool that will increase confidence in the bug class or input hypothesis.
+"""
+
+
+def should_force_tool_validation(report: Dict[str, Any], has_tool_evidence: bool) -> bool:
+    if has_tool_evidence:
+        return False
+    return report.get("bug_class") == "unknown" or report.get("confidence") == "low"
+
+def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: int = 5, memory_advice: str = "") -> Dict[str, Any]:
     """
     Executes the Code Analyst loop (up to `max_rounds` times).
     Returns the parsed Vulnerability Report.
@@ -167,29 +278,77 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
     target_code = state.get("solution", {}).get("code", "")
     
     history = []
-    
-    for round_num in range(1, max_rounds + 1):
-        prompt = build_analyst_prompt(problem_desc, constraints, target_code, history)
+    has_tool_evidence = False
+    round_num = 1
+
+    while round_num <= max_rounds:
+        prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice)
         response_text = llm.generate(prompt)
         
         logger.debug(f"[Code Analyst] Round {round_num} raw response:\n{response_text[:300]}...")
-        
-        res_type, parsed_data = parse_code_analyst_response(response_text)
-        
-        if res_type == "final_report":
-            logger.info(f"[Code Analyst] Investigation complete in {round_num} rounds.")
-            return parsed_data
-            
-        elif res_type == "tool_call":
-            tool_name = parsed_data["tool"]
-            logger.info(f"[Code Analyst] Invoking tool: {tool_name}")
-            tool_output = execute_tool(tool_name, parsed_data.get("parameters", {}))
-            
-            history.append(f"Action: Tool '{tool_name}' invoked.\nOutput:\n{tool_output}")
-            
-        elif res_type == "error":
-            logger.warning(f"[Code Analyst] Validation Error: {parsed_data.get('message')}")
-            history.append(f"Action: Attempted to submit response.\nError: {parsed_data.get('message')}")
+        while True:
+            res_type, parsed_data = parse_code_analyst_response(response_text)
+
+            if res_type == "final_report":
+                if should_force_tool_validation(parsed_data, has_tool_evidence):
+                    logger.info("[Code Analyst] Weak final report detected. Forcing one tool call before acceptance.")
+                    force_prompt = build_force_tool_prompt(
+                        problem_desc=problem_desc,
+                        constraints=constraints,
+                        target_code=target_code,
+                        history=history,
+                        weak_report=parsed_data,
+                        memory_advice=memory_advice,
+                    )
+                    forced_response = llm.generate(force_prompt, temperature=0.0)
+                    logger.debug(f"[Code Analyst] Round {round_num} forced-tool response:\n{forced_response[:300]}...")
+                    forced_type, forced_data = parse_code_analyst_response(forced_response)
+                    if forced_type == "tool_call":
+                        tool_name = forced_data["tool"]
+                        logger.info(f"[Code Analyst] Invoking forced tool call: {tool_name}")
+                        tool_output = execute_tool(tool_name, forced_data.get("parameters", {}))
+                        history.append(f"Action: Tool '{tool_name}' invoked.\nOutput:\n{tool_output}")
+                        has_tool_evidence = True
+                        response_text = llm.generate(prompt)
+                        logger.debug(f"[Code Analyst] Round {round_num} post-tool response:\n{response_text[:300]}...")
+                        continue
+                    history.append("Action: Forced tool validation failed.\nError: Analyst did not return a valid tool call.")
+                    break
+
+                logger.info(f"[Code Analyst] Investigation complete in {round_num} rounds.")
+                return parsed_data
+
+            elif res_type == "tool_call":
+                tool_name = parsed_data["tool"]
+                logger.info(f"[Code Analyst] Invoking tool: {tool_name}")
+                tool_output = execute_tool(tool_name, parsed_data.get("parameters", {}))
+                history.append(f"Action: Tool '{tool_name}' invoked.\nOutput:\n{tool_output}")
+                has_tool_evidence = True
+                break
+
+            elif res_type == "error":
+                logger.warning(f"[Code Analyst] Validation Error: {parsed_data.get('message')}")
+                repair_prompt = build_json_repair_prompt(
+                    response_text,
+                    problem_desc=problem_desc,
+                    constraints=constraints,
+                    target_code=target_code,
+                    memory_advice=memory_advice,
+                )
+                repaired_response = llm.generate(repair_prompt, temperature=0.0)
+                logger.debug(f"[Code Analyst] Round {round_num} repair response:\n{repaired_response[:300]}...")
+                repaired_type, repaired_data = parse_code_analyst_response(repaired_response)
+                if repaired_type == "final_report":
+                    response_text = repaired_response
+                    continue
+                elif repaired_type == "tool_call":
+                    response_text = repaired_response
+                    continue
+                history.append(f"Action: Attempted to submit response.\nError: {parsed_data.get('message')}")
+                history.append("Action: JSON repair failed.\nError: Analyst still did not return valid JSON.")
+                break
+
+        round_num += 1
 
     logger.warning("[Code Analyst] Max rounds reached. Returning fallback Vulnerability Report.")
     return {

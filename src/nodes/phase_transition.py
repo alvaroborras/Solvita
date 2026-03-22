@@ -16,11 +16,16 @@ from loguru import logger
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
 
-_PHASE_SEQUENCE = {
-    "TESTGEN": "CODEGEN",
-    "CODEGEN": "HACKER",
-    "HACKER": "DONE",
-}
+def _next_phase(state: "SolvitaState") -> str:
+    current = state.get("current_phase", "TESTGEN")
+    if current == "TESTGEN":
+        return "CODEGEN"
+    if current == "CODEGEN":
+        return "HACKER"
+    if current == "HACKER":
+        # This node is only reached from HACKER on the loop-back path.
+        return "CODEGEN"
+    return current
 
 
 def phase_transition_node(state: "SolvitaState") -> Dict[str, Any]:
@@ -31,15 +36,24 @@ def phase_transition_node(state: "SolvitaState") -> Dict[str, Any]:
     因此直接返回 ``"messages": []`` 即可实现硬性清空。
     """
     current = state.get("current_phase", "TESTGEN")
-    next_phase = _PHASE_SEQUENCE.get(current, "DONE")
+    next_phase = _next_phase(state)
+
+    update: Dict[str, Any] = {
+        "messages": [],
+        "current_phase": next_phase,
+        "execution_log": [f"Phase transition: {current} → {next_phase} (messages cleared)"],
+    }
+
+    if current == "HACKER":
+        update["hack_round"] = 0
+        if not state.get("hack_passed", True):
+            # A failed hack sends the workflow back to CodeGen for another repair round.
+            update["iteration"] = state.get("iteration", 0) + 1
+            update["status"] = "pending"
 
     logger.info(
         f"[Orchestrator] Phase transition: {current} → {next_phase} | "
         f"messages cleared ({len(state.get('messages', []))} items dropped)"
     )
 
-    return {
-        "messages": [],          # 硬性清空 LLM 对话历史
-        "current_phase": next_phase,
-        "execution_log": [f"Phase transition: {current} → {next_phase} (messages cleared)"],
-    }
+    return update

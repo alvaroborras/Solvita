@@ -55,3 +55,8 @@ out.txt
 pytest_output.txt
 test_quota.py
 docs/oracle_training_improvement_report.md
+CLAUDE.md
+.vscode/settings.json
+docs/testgen_hacker_presentation_reviewed.md
+.gitignore
+docs/plans/2026-03-22-hacker-generator-checklist-patch.md
