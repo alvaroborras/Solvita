@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Callable
@@ -310,11 +311,47 @@ def _truncate_output(text: str, max_chars: int = 100000) -> str:
     return text[:half] + f"\n... [TRUNCATED {len(text) - max_chars} CHARS] ...\n" + text[-half:]
 
 
+def cleanup_tempdir(
+    path: Path,
+    windows_retry_attempts: int = 5,
+    windows_retry_delay: float = 0.1,
+    windows_ignore_permission_errors: bool = False,
+) -> None:
+    """
+    Remove a temporary directory.
+
+    On Windows only, retry PermissionError a few times because freshly executed
+    .exe files may remain locked briefly by the OS or antivirus scanners.
+    """
+    if not path.exists():
+        return
+
+    if sys.platform != "win32":
+        shutil.rmtree(path)
+        return
+
+    attempts = max(1, windows_retry_attempts)
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt < attempts - 1:
+                time.sleep(windows_retry_delay)
+                continue
+            if windows_ignore_permission_errors:
+                return
+            raise
+
+
 def run_program(
     exe_path: Path, 
     input_text: Optional[str] = None, 
     args: Optional[List[str]] = None, 
     limits: Optional[ExecutionLimits] = None,
+    truncate_output: bool = True,
 ) -> Tuple[int, str, str]:
     """
     Run an executable with stdin input or arguments, with resource limits.
@@ -324,6 +361,7 @@ def run_program(
         input_text: Input to pass via stdin
         args: Command-line arguments
         limits: Resource limits (defaults to ExecutionLimits.default_run())
+        truncate_output: Whether to truncate stdout/stderr for logging safety
     
     Returns:
         (return_code, stdout, stderr)
@@ -353,9 +391,13 @@ def run_program(
         )
         result = subprocess.run(cmd, **run_kwargs)
         
-        # Physical truncation to prevent log bloat
-        stdout = _truncate_output(result.stdout)
-        stderr = _truncate_output(result.stderr)
+        if truncate_output:
+            # Physical truncation to prevent log bloat in human-facing logs.
+            stdout = _truncate_output(result.stdout)
+            stderr = _truncate_output(result.stderr)
+        else:
+            stdout = result.stdout
+            stderr = result.stderr
         
         return result.returncode, stdout, stderr
     except subprocess.TimeoutExpired:

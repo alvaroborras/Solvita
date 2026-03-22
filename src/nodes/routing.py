@@ -66,8 +66,10 @@ def hack_outcome_routing(state: Dict[str, Any]) -> str:
     iteration = state.get("iteration", 0)
     max_iterations = state.get("max_iterations", 5)
 
-    if not hack_passed and iteration < max_iterations:
-        return "loop_codegen"
+    if not hack_passed:
+        if iteration < max_iterations:
+            return "loop_codegen"
+        return "terminal_failure"
     return "final_ac"
 
 

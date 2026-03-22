@@ -19,6 +19,21 @@ from src.nodes.cascading_router import cascading_execution_router
 # Analyst handles its own 5-round logic.
 MAX_ROUTER_RETRIES = 3
 
+
+def extract_generation_failure_metadata(routing_log: List[str]) -> Dict[str, str]:
+    for entry in reversed(routing_log):
+        if entry.startswith("ROUTER_META:"):
+            payload = entry.split(":", 1)[1].strip()
+            try:
+                data = json.loads(payload)
+            except Exception:
+                break
+            return {
+                "failure_kind": str(data.get("failure_kind", "")),
+                "failure_reason": str(data.get("failure_reason", "")),
+            }
+    return {"failure_kind": "", "failure_reason": ""}
+
 def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Adversarial Hack Phase (v2 CodeHacker)
@@ -70,7 +85,7 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     llm = UnifiedLLMClient(config)
     
     # ---- Phase 1: Code Analyst ----
-    analyst_report = run_code_analyst(state, llm, max_rounds=5)
+    analyst_report = run_code_analyst(state, llm, max_rounds=5, memory_advice=advice)
     
     # ---- Phase 2: Cascading Router ----
     logger.info("[Hack Node] Handing over to Cascading Router...")
@@ -78,13 +93,15 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
         state, 
         llm, 
         analyst_report, 
-        max_retries=MAX_ROUTER_RETRIES
+        max_retries=MAX_ROUTER_RETRIES,
+        memory_advice=advice,
     )
     
     # Combine execution logs from components
     full_execution_log = ["--- Router Execution Log ---"] + routing_log
 
     if route_used == "failed" or not generated_input:
+        failure_meta = extract_generation_failure_metadata(routing_log)
         # Extract per-stage structured rejection reasons from routing log
         structured_rejections = [
             {"stage": entry.split(":")[0].strip(), "reason": entry.split(":", 1)[-1].strip()}
@@ -100,6 +117,8 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             "hack_result": "GEN_FAILED",
             "generator_route_used": route_used,
             "hack_failure_type": "NONE",
+            "generator_failure_kind": failure_meta["failure_kind"],
+            "generator_failure_reason": failure_meta["failure_reason"],
             "analyst_report": analyst_report,
             "execution_log": full_execution_log,
             "validator_rejection_reasons": structured_rejections,
@@ -187,20 +206,22 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     # settle_hacker_memory (T4.2) is the sole reward computation and writeback entry point.
     hacker_reward = 0.0
 
-    # Append validator-approved hack tests to generated_tests for regression
+    # Only broken hack inputs become regression tests for the next repair round.
     new_tests = []
-    for t in validated_hacks:
-        if t.get("input"):
-            new_tests.append({
-                "input": t.get("input"),
-                "expected_output": t.get("expected_output", ""),
-                "type": "hack"
-            })
+    if failures:
+        for t in validated_hacks:
+            if t.get("input"):
+                new_tests.append({
+                    "input": t.get("input"),
+                    "expected_output": t.get("expected_output", ""),
+                    "type": "hack"
+                })
 
     generated_tests = tests_data.get('generated_tests', [])
     updated_tests = dict(tests_data)
-    updated_tests['generated_tests'] = generated_tests + new_tests
-    updated_tests['total_tests'] = len(updated_tests['generated_tests'])
+    if new_tests:
+        updated_tests['generated_tests'] = generated_tests + new_tests
+        updated_tests['total_tests'] = len(updated_tests['generated_tests'])
 
     # Persist hack tests to disk
     problem_code = extract_problem_code(state.get("raw_problem", {}))
@@ -242,6 +263,8 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             "hack_result": hack_result,
             "generator_route_used": route_used,
             "hack_failure_type": primary_failure_type,
+            "generator_failure_kind": "",
+            "generator_failure_reason": "",
             "analyst_report": analyst_report,
             "validator_rejection_reasons": [],
             "sandbox_verdicts": sandbox_verdicts,
@@ -260,6 +283,8 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
         "hack_result": "SAFE",
         "generator_route_used": route_used,
         "hack_failure_type": "NONE",
+        "generator_failure_kind": "",
+        "generator_failure_reason": "",
         "analyst_report": analyst_report,
         "validator_rejection_reasons": [],
         "sandbox_verdicts": sandbox_verdicts,

@@ -120,6 +120,8 @@ class SolvitaState(TypedDict):
     hack_result: str            # "BREAK" | "SAFE" | "GEN_FAILED"
     generator_route_used: str   # "anti_hash" | "semantic" | "stress" | "failed"
     hack_failure_type: str      # "WA" | "RE" | "TLE" | "MLE" | "NONE"
+    generator_failure_kind: str
+    generator_failure_reason: str
 
     # -- Phase routing (set by phase_transition_node) --
     current_phase: str  # "TESTGEN" | "CODEGEN" | "HACKER"
@@ -214,6 +216,8 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         hack_result="",
         generator_route_used="",
         hack_failure_type="",
+        generator_failure_kind="",
+        generator_failure_reason="",
         current_phase="TESTGEN",
 
         # Metadata

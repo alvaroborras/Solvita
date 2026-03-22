@@ -115,6 +115,48 @@ class TestScenario1Break:
         assert "compile_failures" in result
         assert result["compile_failures"] == 0
 
+    def test_hack_pipeline_forwards_memory_advice_to_analyst_and_router(self, base_state, monkeypatch):
+        monkeypatch.setattr("src.nodes.hack_test.Path.exists", lambda self: True)
+        monkeypatch.setattr("src.nodes.hack_test.UnifiedLLMClient", MagicMock())
+
+        mock_mem = MagicMock()
+        mock_mem.get_injection.return_value = ("use repeated-prefix edge cases", ["mem_id_1"])
+        monkeypatch.setattr("src.nodes.hack_test.MemoryClient", lambda **kw: mock_mem)
+
+        captured = {}
+
+        def fake_analyst(state, llm, max_rounds=5, memory_advice=""):
+            captured["analyst_advice"] = memory_advice
+            return {
+                "bug_class": "logic_branch",
+                "confidence": "medium",
+                "evidence": ["x"],
+                "suggested_route": "semantic",
+                "input_hypothesis": ["y"],
+            }
+
+        def fake_router(state, llm, analyst_report, max_retries=3, memory_advice=""):
+            captured["router_advice"] = memory_advice
+            return "semantic", "1\n42\n", ["Router: Semantic OK."]
+
+        monkeypatch.setattr("src.nodes.hack_test.run_code_analyst", fake_analyst)
+        monkeypatch.setattr("src.nodes.hack_test.cascading_execution_router", fake_router)
+        monkeypatch.setattr(
+            "src.nodes.hack_test.evaluate_verdict",
+            lambda *a, **k: {
+                "verdict": VerdictStatus.VALID_BUT_SAFE.value,
+                "failure_type": FailureType.NONE.value,
+                "details": "",
+            },
+        )
+        monkeypatch.setattr("src.nodes.hack_test.run_program", lambda *a, **k: (0, "42\n", ""))
+
+        result = hack_test_node(base_state)
+
+        assert result["hack_result"] == "SAFE"
+        assert captured["analyst_advice"] == "use repeated-prefix edge cases"
+        assert captured["router_advice"] == "use repeated-prefix edge cases"
+
     def test_settlement_computes_real_reward_on_break(self, base_state, monkeypatch):
         """T4.2: settle_hacker_memory reads sandbox_verdicts and rewrites hacker_reward."""
         state = dict(base_state)
@@ -154,6 +196,11 @@ class TestScenario2Safe:
     """Full pipeline where target withstands all generated inputs."""
 
     def test_hack_test_returns_safe_state(self, base_state, common_mocks, monkeypatch):
+        base_state["tests"] = {
+            "validator_exe": "/tmp/val.exe",
+            "generated_tests": [{"input": "1\n", "expected_output": "1\n", "type": "public"}],
+            "total_tests": 1,
+        }
         monkeypatch.setattr(
             "src.nodes.hack_test.cascading_execution_router",
             lambda *a, **k: ("stress", "3\n1 2 3\n", ["Router: Stress OK."]),
@@ -174,6 +221,8 @@ class TestScenario2Safe:
         assert result["hack_failure_type"] == "NONE"
         assert result["hack_failures"] == []
         assert result["hacker_reward"] == 0.0  # sentinel; settlement will compute ~0.2
+        assert result["tests"]["total_tests"] == 1
+        assert len(result["tests"]["generated_tests"]) == 1
 
     def test_settlement_computes_reward_on_safe(self, base_state, monkeypatch):
         state = dict(base_state)
@@ -261,6 +310,10 @@ class TestScenario4CascadingFallback:
             "src.nodes.cascading_router.generate_semantic_test_program",
             lambda *a, **k: "NOT VALID C++",
         )
+        monkeypatch.setattr(
+            "src.nodes.cascading_router.repair_semantic_test_program",
+            lambda *a, **k: "NOT VALID C++",
+        )
         # Stress generator: produces valid code 
         monkeypatch.setattr(
             "src.nodes.cascading_router.generate_stress_test_program",
@@ -291,6 +344,223 @@ class TestScenario4CascadingFallback:
         assert len(semantic_attempts) == 3
         downgrade_logged = any("Downgrading to Stress" in l for l in log)
         assert downgrade_logged
+
+    def test_router_passes_accumulated_validator_feedback_to_semantic_retries(self, base_state, monkeypatch):
+        first_attempt_calls = []
+        repair_calls = []
+
+        def fake_semantic(state, llm, analyst_report, memory_advice="", previous_attempt_issues="", previous_generated_input=""):
+            first_attempt_calls.append(
+                {
+                    "memory_advice": memory_advice,
+                    "previous_attempt_issues": previous_attempt_issues,
+                    "previous_generated_input": previous_generated_input,
+                }
+            )
+            return "VALID C++"
+
+        def fake_repair_semantic(
+            state,
+            llm,
+            analyst_report,
+            last_generator_code,
+            failure_kind,
+            failure_reason,
+            previous_attempt_issues="",
+            previous_generated_input="",
+            memory_advice="",
+        ):
+            repair_calls.append(
+                {
+                    "last_generator_code": last_generator_code,
+                    "failure_kind": failure_kind,
+                    "failure_reason": failure_reason,
+                    "memory_advice": memory_advice,
+                    "previous_attempt_issues": previous_attempt_issues,
+                    "previous_generated_input": previous_generated_input,
+                }
+            )
+            return "VALID C++"
+
+        responses = iter(
+            [
+                (False, "3\nAA\nAA\nBB\n", "Validation Failed: duplicate found at line 3"),
+                (True, "3\nAA\nAB\nBB\n", ""),
+            ]
+        )
+
+        monkeypatch.setattr("src.nodes.cascading_router.generate_semantic_test_program", fake_semantic)
+        monkeypatch.setattr("src.nodes.cascading_router.repair_semantic_test_program", fake_repair_semantic)
+        monkeypatch.setattr(
+            "src.nodes.cascading_router.execute_generator_and_validate",
+            lambda *a, **k: next(responses),
+        )
+
+        from src.nodes.cascading_router import cascading_execution_router
+
+        llm = MagicMock()
+        analyst_report = {"suggested_route": "semantic"}
+        route, inp, log = cascading_execution_router(
+            base_state, llm, analyst_report, max_retries=3, memory_advice="prefer repeats"
+        )
+
+        assert route == "semantic"
+        assert len(first_attempt_calls) == 1
+        assert len(repair_calls) == 1
+        assert first_attempt_calls[0]["previous_attempt_issues"] == ""
+        assert repair_calls[0]["failure_kind"] == "validator_rejected"
+        assert "duplicate found at line 3" in repair_calls[0]["failure_reason"]
+        assert "duplicate found at line 3" in repair_calls[0]["previous_attempt_issues"]
+        assert "AA" in repair_calls[0]["previous_generated_input"]
+        assert repair_calls[0]["memory_advice"] == "prefer repeats"
+
+    def test_router_retries_semantic_with_patch_mode_and_previous_generator_code(self, base_state, monkeypatch):
+        generated_sources = []
+        repaired_calls = []
+
+        def fake_generate_semantic(state, llm, analyst_report, memory_advice="", previous_attempt_issues="", previous_generated_input=""):
+            generated_sources.append(
+                {
+                    "memory_advice": memory_advice,
+                    "previous_attempt_issues": previous_attempt_issues,
+                    "previous_generated_input": previous_generated_input,
+                }
+            )
+            return "SEMANTIC_V1"
+
+        def fake_repair_semantic(
+            state,
+            llm,
+            analyst_report,
+            last_generator_code,
+            failure_kind,
+            failure_reason,
+            previous_attempt_issues="",
+            previous_generated_input="",
+            memory_advice="",
+        ):
+            repaired_calls.append(
+                {
+                    "last_generator_code": last_generator_code,
+                    "failure_kind": failure_kind,
+                    "failure_reason": failure_reason,
+                    "previous_attempt_issues": previous_attempt_issues,
+                    "previous_generated_input": previous_generated_input,
+                    "memory_advice": memory_advice,
+                }
+            )
+            return "SEMANTIC_V2_PATCHED"
+
+        responses = iter(
+            [
+                (False, "3 2\nAA\nAA\nBB\n", "Validation Failed: duplicate strings"),
+                (True, "3 2\nAA\nAB\nBB\n", ""),
+            ]
+        )
+
+        monkeypatch.setattr("src.nodes.cascading_router.generate_semantic_test_program", fake_generate_semantic)
+        monkeypatch.setattr("src.nodes.cascading_router.repair_semantic_test_program", fake_repair_semantic)
+        monkeypatch.setattr(
+            "src.nodes.cascading_router.execute_generator_and_validate",
+            lambda cpp_source, *args, **kwargs: next(responses) if cpp_source in {"SEMANTIC_V1", "SEMANTIC_V2_PATCHED"} else pytest.fail(f"unexpected source {cpp_source}"),
+        )
+
+        from src.nodes.cascading_router import cascading_execution_router
+
+        llm = MagicMock()
+        analyst_report = {"suggested_route": "semantic"}
+        route, inp, log = cascading_execution_router(
+            base_state, llm, analyst_report, max_retries=3, memory_advice="prefer repeated prefixes"
+        )
+
+        assert route == "semantic"
+        assert inp == "3 2\nAA\nAB\nBB\n"
+        assert len(generated_sources) == 1
+        assert len(repaired_calls) == 1
+        assert repaired_calls[0]["last_generator_code"] == "SEMANTIC_V1"
+        assert repaired_calls[0]["failure_kind"] == "validator_rejected"
+        assert "duplicate strings" in repaired_calls[0]["failure_reason"]
+        assert "duplicate strings" in repaired_calls[0]["previous_attempt_issues"]
+        assert "AA" in repaired_calls[0]["previous_generated_input"]
+        assert repaired_calls[0]["memory_advice"] == "prefer repeated prefixes"
+
+    def test_router_retries_stress_with_patch_mode_after_semantic_exhaustion(self, base_state, monkeypatch):
+        semantic_calls = {"generate": 0, "repair": 0}
+        stress_calls = {"n": 0}
+        repaired_stress_calls = []
+
+        def fake_generate_semantic(*args, **kwargs):
+            semantic_calls["generate"] += 1
+            return "SEMANTIC_FAIL_GENERATE"
+
+        def fake_repair_semantic(*args, **kwargs):
+            semantic_calls["repair"] += 1
+            return f"SEMANTIC_FAIL_REPAIR_{semantic_calls['repair']}"
+
+        monkeypatch.setattr(
+            "src.nodes.cascading_router.generate_semantic_test_program",
+            fake_generate_semantic,
+        )
+        monkeypatch.setattr(
+            "src.nodes.cascading_router.repair_semantic_test_program",
+            fake_repair_semantic,
+        )
+
+        def fake_generate_stress(*args, **kwargs):
+            stress_calls["n"] += 1
+            return "STRESS_V1"
+
+        def fake_repair_stress(
+            state,
+            llm,
+            last_generator_code,
+            failure_kind,
+            failure_reason,
+            previous_attempt_issues="",
+            previous_generated_input="",
+        ):
+            repaired_stress_calls.append(
+                {
+                    "last_generator_code": last_generator_code,
+                    "failure_kind": failure_kind,
+                    "failure_reason": failure_reason,
+                    "previous_attempt_issues": previous_attempt_issues,
+                    "previous_generated_input": previous_generated_input,
+                }
+            )
+            return "STRESS_V2_PATCHED"
+
+        def fake_execute(cpp_source, validator_exe, problem_limits):
+            if str(cpp_source).startswith("SEMANTIC_FAIL_"):
+                return False, "", "Compilation Failed: syntax error"
+            if cpp_source == "STRESS_V1":
+                return False, "1 3\nAAA\n", "Validation Failed: string length not matching m"
+            if cpp_source == "STRESS_V2_PATCHED":
+                return True, "1 3\nAAB\n", ""
+            pytest.fail(f"unexpected source {cpp_source}")
+
+        monkeypatch.setattr("src.nodes.cascading_router.generate_stress_test_program", fake_generate_stress)
+        monkeypatch.setattr("src.nodes.cascading_router.repair_stress_test_program", fake_repair_stress)
+        monkeypatch.setattr("src.nodes.cascading_router.execute_generator_and_validate", fake_execute)
+
+        from src.nodes.cascading_router import cascading_execution_router
+
+        llm = MagicMock()
+        analyst_report = {"suggested_route": "semantic"}
+        route, inp, log = cascading_execution_router(
+            base_state, llm, analyst_report, max_retries=3
+        )
+
+        assert route == "stress"
+        assert inp == "1 3\nAAB\n"
+        assert semantic_calls["generate"] == 1
+        assert semantic_calls["repair"] == 2
+        assert stress_calls["n"] == 1
+        assert len(repaired_stress_calls) == 1
+        assert repaired_stress_calls[0]["last_generator_code"] == "STRESS_V1"
+        assert repaired_stress_calls[0]["failure_kind"] == "validator_rejected"
+        assert "string length not matching m" in repaired_stress_calls[0]["failure_reason"]
+        assert "AAA" in repaired_stress_calls[0]["previous_generated_input"]
 
     def test_router_anti_hash_degrades_to_semantic(self, base_state, monkeypatch):
         """

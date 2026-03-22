@@ -6,7 +6,14 @@ from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 from loguru import logger
 from src.llm import UnifiedLLMClient
-from src.utils.cpp_execution import sanitize_cpp, compile_cpp, run_program, run_checker, ExecutionLimits
+from src.utils.cpp_execution import (
+    sanitize_cpp,
+    compile_cpp,
+    run_program,
+    run_checker,
+    ExecutionLimits,
+    cleanup_tempdir,
+)
 from src.utils.patch_utils import parse_search_replace_blocks, apply_search_replace_blocks, compute_unified_diff
 from src.memory import MemoryClient, MemoryNamespace
 from src.utils.problem_utils import extract_problem_code
@@ -227,8 +234,8 @@ def _self_validate(
     if not verify_set:
         return True, [], 0
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
+    tmp = Path(tempfile.mkdtemp())
+    try:
         src_path = tmp / "solution.cpp"
         exe_path = tmp / "solution.exe"
         src_path.write_text(code, encoding="utf-8")
@@ -308,8 +315,9 @@ def _self_validate(
                     break
             else:
                 consecutive_fails = 0
-
         return len(failures) == 0, failures, total_run
+    finally:
+        cleanup_tempdir(tmp, windows_ignore_permission_errors=True)
 
 
 
