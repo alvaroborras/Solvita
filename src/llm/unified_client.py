@@ -6,6 +6,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from loguru import logger
 
+from .token_usage import (
+    ensure_token_usage_accumulator,
+    estimate_message_tokens,
+    estimate_text_tokens,
+    extract_completion_text,
+    extract_usage_counts,
+    get_token_usage_snapshot,
+    record_token_usage,
+)
+
 
 class FatalLLMError(Exception):
     """全局性致命 LLM 错误（如令牌额度耗尽、鉴权失败、限流），表示训练不可继续。"""
@@ -73,6 +83,12 @@ class UnifiedLLMClient:
         self.temperature: float = self._resolved["temperature"]
         self.max_tokens: int = self._resolved["max_tokens"]
 
+        self._usage_accumulator = ensure_token_usage_accumulator(self.config)
+        self._last_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "token_usage_source": "untracked",
+        }
         self.client = self._initialize_client()
 
     @staticmethod
@@ -229,81 +245,109 @@ class UnifiedLLMClient:
             return None
 
 
-    def generate(self, prompt: str, **kwargs) -> str:
-        """
-        Generate response from a single prompt.
+    def _record_response_usage(self, response: Any, messages: List[Dict[str, Any]], model: str) -> str:
+        content = extract_completion_text(response)
+        usage = extract_usage_counts(response)
 
-        Args:
-            prompt: Input prompt text
-            **kwargs: Additional parameters (temperature, max_tokens)
+        prompt_tokens = usage["prompt_tokens"]
+        completion_tokens = usage["completion_tokens"]
+        prompt_source = "api"
+        completion_source = "api"
+        if prompt_tokens is None:
+            prompt_tokens = estimate_message_tokens(messages, model=model)
+            prompt_source = "estimated"
+        if completion_tokens is None:
+            completion_tokens = estimate_text_tokens(content, model=model)
+            completion_source = "estimated"
 
-        Returns:
-            Generated response text
-        """
+        if prompt_source == completion_source == "api":
+            usage_source = "api"
+        elif prompt_source == completion_source == "estimated":
+            usage_source = "estimated"
+        else:
+            usage_source = "mixed"
+
+        record_token_usage(
+            self._usage_accumulator,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            source=usage_source,
+        )
+        self._last_usage = {
+            "prompt_tokens": int(prompt_tokens or 0),
+            "completion_tokens": int(completion_tokens or 0),
+            "token_usage_source": usage_source,
+        }
+        logger.debug(
+            "[LLM Usage] model={} prompt_tokens={} completion_tokens={} source={}",
+            model,
+            prompt_tokens,
+            completion_tokens,
+            usage_source,
+        )
+        return content
+
+    def _create_chat_completion(self, messages: List[Dict[str, Any]], **kwargs) -> str:
         if not self.client:
             return ""
 
+        model = kwargs.get("model", self.model)
         try:
             response = self.client.chat.completions.create(
-                model=kwargs.get("model", self.model),
-                messages=[{"role": "user", "content": prompt}],
-                temperature=kwargs.get("temperature", self.temperature),
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
-            )
-            if isinstance(response, str):
-                return response
-            content = response.choices[0].message.content
-            return content if content is not None else ""
-        except Exception as e:
-            _check_and_raise_prompt_too_long(e)
-            _check_and_raise_fatal(e)
-            logger.error(f"LLM API error: {e}")
-            return ""
-    
-    def generate_with_system(self, system: str, user: str, **kwargs) -> str:
-        """Generate response with system and user messages."""
-        if not self.client:
-            return ""
-
-        try:
-            response = self.client.chat.completions.create(
-                model=kwargs.get("model", self.model),
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=kwargs.get("temperature", self.temperature),
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
-            )
-            if isinstance(response, str):
-                return response
-            return response.choices[0].message.content
-        except Exception as e:
-            _check_and_raise_prompt_too_long(e)
-            _check_and_raise_fatal(e)
-            logger.error(f"LLM API error: {e}")
-            return ""
-    
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Generate response from chat message history."""
-        if not self.client:
-            return ""
-
-        try:
-            response = self.client.chat.completions.create(
-                model=kwargs.get("model", self.model),
+                model=model,
                 messages=messages,
                 temperature=kwargs.get("temperature", self.temperature),
                 max_tokens=kwargs.get("max_tokens", self.max_tokens),
             )
             if isinstance(response, str):
-                return response
-            return response.choices[0].message.content
+                content = response
+                prompt_tokens = estimate_message_tokens(messages, model=model)
+                completion_tokens = estimate_text_tokens(content, model=model)
+                record_token_usage(
+                    self._usage_accumulator,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    source="estimated",
+                )
+                self._last_usage = {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "token_usage_source": "estimated",
+                }
+                logger.debug(
+                    "[LLM Usage] model={} prompt_tokens={} completion_tokens={} source=estimated",
+                    model,
+                    prompt_tokens,
+                    completion_tokens,
+                )
+                return content
+            return self._record_response_usage(response, messages, model)
         except Exception as e:
             _check_and_raise_prompt_too_long(e)
             _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Generate response from a single prompt."""
+        return self._create_chat_completion(
+            [{"role": "user", "content": prompt}],
+            **kwargs,
+        )
+    
+    def generate_with_system(self, system: str, user: str, **kwargs) -> str:
+        """Generate response with system and user messages."""
+        return self._create_chat_completion(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            **kwargs,
+        )
+    
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+        """Generate response from chat message history."""
+        return self._create_chat_completion(messages, **kwargs)
     
     def update_config(self, config: Dict[str, Any]):
         """Update client configuration at runtime."""
@@ -324,6 +368,12 @@ class UnifiedLLMClient:
     @property
     def current_model(self) -> str:
         return self.model
+
+    def get_last_usage(self) -> Dict[str, Any]:
+        return dict(self._last_usage)
+
+    def get_usage_snapshot(self) -> Dict[str, Any]:
+        return get_token_usage_snapshot(self._usage_accumulator)
     
     @property
     def is_initialized(self) -> bool:

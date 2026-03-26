@@ -129,6 +129,9 @@ class SolvitaState(TypedDict):
     # -- Metadata --
     execution_log: Annotated[List[str], add]
     llm_calls: Annotated[int, add]
+    prompt_tokens: int
+    completion_tokens: int
+    token_usage_source: str
 
 
 def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) -> SolvitaState:
@@ -223,4 +226,7 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         # Metadata
         execution_log=[],
         llm_calls=0,
+        prompt_tokens=0,
+        completion_tokens=0,
+        token_usage_source="untracked",
     )

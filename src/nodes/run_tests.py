@@ -10,7 +10,8 @@ if TYPE_CHECKING:
 
 import tempfile
 from pathlib import Path
-from src.utils.cpp_execution import run_checker, ExecutionLimits
+from src.utils.cpp_execution import ExecutionLimits
+from src.utils.output_judging import judge_output_against_certified_expected
 
 def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     """
@@ -79,24 +80,24 @@ def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
                 passed_test = False
                 error_msg = result.stderr if result.stderr else None
 
-                if checker_exe and Path(checker_exe).exists():
-                    # Use Special Checker
-                    input_file = tmp_path / f"input_{i}.txt"
-                    output_file = tmp_path / f"output_{i}.txt"
-                    answer_file = tmp_path / f"answer_{i}.txt"
-                    
-                    input_file.write_text(test_input, encoding="utf-8")
-                    output_file.write_text(result.stdout, encoding="utf-8") # Use raw stdout for checker
-                    answer_file.write_text(expected, encoding="utf-8")
-                    
-                    chk_ok, chk_msg = run_checker(Path(checker_exe), input_file, output_file, answer_file)
-                    passed_test = chk_ok
-                    if not passed_test:
-                        # Append checker message to error
-                        error_msg = f"{error_msg or ''}\nChecker: {chk_msg}".strip()
-                else:
-                    # Fallback to string equality
-                    passed_test = (actual == expected)
+                input_file = tmp_path / f"input_{i}.txt"
+                output_file = tmp_path / f"output_{i}.txt"
+                answer_file = tmp_path / f"answer_{i}.txt"
+
+                input_file.write_text(test_input, encoding="utf-8")
+                output_file.write_text(result.stdout, encoding="utf-8")
+                answer_file.write_text(expected, encoding="utf-8")
+
+                passed_test, judge_msg = judge_output_against_certified_expected(
+                    actual_output=result.stdout,
+                    expected_output=expected,
+                    checker_exe=Path(checker_exe) if checker_exe else None,
+                    input_path=input_file,
+                    output_path=output_file,
+                    answer_path=answer_file,
+                )
+                if not passed_test and judge_msg:
+                    error_msg = f"{error_msg or ''}\n{judge_msg}".strip()
                 
                 if passed_test:
                     passed += 1
@@ -145,4 +146,3 @@ def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
         "tests": updated_tests,
         "execution_log": [f"Tests completed: {passed}/{total} passed ({pass_rate:.1%})"],
     }
-

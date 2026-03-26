@@ -21,7 +21,7 @@ def test_extract_problem_code_handles_loader_injected_problem_id():
 def test_resolve_data_root_defaults_to_repo_data_directory():
     resolved = _resolve_data_root({})
 
-    assert resolved == Path("d:/solvita-2/data").resolve()
+    assert resolved == Path(__file__).resolve().parents[2] / "data"
 
 
 def test_resolve_data_root_honors_config_override():

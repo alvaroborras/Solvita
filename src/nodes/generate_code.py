@@ -10,10 +10,10 @@ from src.utils.cpp_execution import (
     sanitize_cpp,
     compile_cpp,
     run_program,
-    run_checker,
     ExecutionLimits,
     cleanup_tempdir,
 )
+from src.utils.output_judging import judge_output_against_certified_expected
 from src.utils.patch_utils import parse_search_replace_blocks, apply_search_replace_blocks, compute_unified_diff
 from src.memory import MemoryClient, MemoryNamespace
 from src.utils.problem_utils import extract_problem_code
@@ -84,7 +84,14 @@ Requirements:
 - Include all necessary headers
 - Implement fast I/O
 - Handle all edge cases
-- Optimize for time complexity
+- Optimize for BOTH time and space complexity
+- Before coding, do an internal resource audit using the stated constraints
+- Every major container or table must have a size that is defensible under the maximum input bounds
+- Avoid any implementation whose memory or time scales as the product of two large unconstrained dimensions unless you can prove it is safe
+- Do not allocate dense matrices / DP tables / adjacency tables over max-sized dimensions by default
+- If the provided algorithm sketch would lead to an unsafe implementation, adapt the implementation strategy instead of following the sketch literally
+- Prefer streaming, aggregated counting, rolling-state, sparse, or compressed representations when full tables would be too large
+- The final code must be realistic for competitive-programming limits, not just mathematically plausible
 
 Generate ONLY the complete C++ code, no explanations."""
 
@@ -174,6 +181,9 @@ Every *SEARCH/REPLACE* edit must use this EXACT format:
 3. You can have multiple SEARCH/REPLACE blocks to fix multiple issues
 4. Preserve proper indentation in the REPLACE block
 5. Make minimal, surgical changes - only fix what's broken
+6. Re-check BOTH time and space complexity before proposing edits
+7. Replace unsafe data structures if the current implementation appears to allocate memory proportional to a dangerous product of input dimensions
+8. Do not preserve an existing approach just because it matches the plan if it is not implementable within the stated limits
 
 Example:
 <<<<<<< SEARCH
@@ -282,24 +292,22 @@ def _self_validate(
             passed_test = False
             error_msg = None
 
-            if checker_exe and checker_exe.exists():
-                # Use Special Checker
-                input_file = tmp / f"input_{i}.txt"
-                output_file = tmp / f"output_{i}.txt"
-                answer_file = tmp / f"answer_{i}.txt"
-                
-                input_file.write_text(inp, encoding="utf-8")
-                output_file.write_text(stdout, encoding="utf-8") # Checker needs raw stdout usually
-                answer_file.write_text(expected, encoding="utf-8")
-                
-                chk_ok, chk_msg = run_checker(checker_exe, input_file, output_file, answer_file)
-                passed_test = chk_ok
-                if not passed_test:
-                    error_msg = f"Checker: {chk_msg}"
-            else:
-                passed_test = (actual == expected)
-                if not passed_test:
-                    error_msg = f"Expected '{expected[:50]}...', got '{actual[:50]}...'"
+            input_file = tmp / f"input_{i}.txt"
+            output_file = tmp / f"output_{i}.txt"
+            answer_file = tmp / f"answer_{i}.txt"
+
+            input_file.write_text(inp, encoding="utf-8")
+            output_file.write_text(stdout, encoding="utf-8")
+            answer_file.write_text(expected, encoding="utf-8")
+
+            passed_test, error_msg = judge_output_against_certified_expected(
+                actual_output=stdout,
+                expected_output=expected,
+                checker_exe=checker_exe,
+                input_path=input_file,
+                output_path=output_file,
+                answer_path=answer_file,
+            )
 
             if not passed_test:
                 failures.append({

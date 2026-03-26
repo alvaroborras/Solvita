@@ -38,6 +38,7 @@ from src.nodes import (
     join_routing,
     phase_transition_node,
 )
+from src.llm.token_usage import ensure_token_usage_accumulator, get_token_usage_snapshot
 from src.nodes.settle_hacker_memory import settle_hacker_memory
 from typing import Dict, Any
 from loguru import logger
@@ -239,6 +240,7 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
             "max_iterations": 5,
             "max_hack_rounds": 3,
         }
+    ensure_token_usage_accumulator(config)
 
     logger.info("=" * 60)
     logger.info("Starting Solvita Workflow (3-Phase + Hack→CodeGen Loop)")
@@ -258,6 +260,13 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     logger.info(f"Iterations: {final_state.get('iteration', 0)}")
     logger.info(f"LLM Calls: {final_state.get('llm_calls', 0)}")
     logger.info(f"Pass Rate: {final_state['tests'].get('pass_rate', 0.0):.1%}")
+    token_usage = get_token_usage_snapshot(final_state.get("config", {}))
+    final_state["prompt_tokens"] = token_usage["prompt_tokens"]
+    final_state["completion_tokens"] = token_usage["completion_tokens"]
+    final_state["token_usage_source"] = token_usage["token_usage_source"]
+    logger.info(f"Prompt Tokens: {token_usage['prompt_tokens']}")
+    logger.info(f"Completion Tokens: {token_usage['completion_tokens']}")
+    logger.info(f"Token Usage Source: {token_usage['token_usage_source']}")
     logger.info("=" * 60)
 
     return final_state

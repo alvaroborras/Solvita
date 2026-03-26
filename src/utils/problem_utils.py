@@ -19,7 +19,7 @@ def extract_problem_code(raw_problem: Dict[str, Any]) -> Optional[str]:
         val = metadata.get(key)
         if not val or not isinstance(val, str):
             continue
-        match = re.search(r"(\d+_[A-Z])", val)
+        match = re.search(r"(\d+_[A-Z]\d*)", val)
         if match:
             return match.group(1)
 

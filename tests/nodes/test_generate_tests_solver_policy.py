@@ -7,6 +7,8 @@ from src.nodes.generate_tests import (
     build_solver_prompt,
     summarize_public_solver_failure,
     finalize_solver_certification,
+    _build_local_certified_tests,
+    _count_cyclic_divisible_segments_bruteforce,
 )
 
 
@@ -54,3 +56,36 @@ def test_finalize_solver_certification_keeps_best_partial_in_production():
     assert result["inputs"] == ["in1", "in2"]
     assert result["outputs"] == ["out1", "out2"]
     assert "PARTIALLY CERTIFIED" in result["message"]
+
+
+def test_build_solver_prompt_for_cyclic_sum_mentions_lifted_boundary():
+    desc = (
+        "Denote a cyclic sequence. You are given an array obtained by concatenating m copies. "
+        "Find the number of different segments where the sum of elements in the segment is divisible by k. "
+        "Two segments are considered different if the set of indices are different, even on the same set of indices."
+    )
+
+    prompt = build_solver_prompt(desc, {}, [], "", "", attempt=1)
+
+    assert "wrap-around vs non-wrap" in prompt
+    assert "lifted boundary at position N" in prompt
+    assert "doubled-array" in prompt
+
+
+def test_cyclic_sum_bruteforce_helper_matches_known_counterexample():
+    assert _count_cyclic_divisible_segments_bruteforce(1, 3, 2, [1]) == 3
+
+
+def test_build_local_certified_tests_includes_wrap_counterexamples():
+    desc = (
+        "Denote a cyclic sequence of size n as an array. You are given an array obtained from concatenating m copies. "
+        "Find the number of different segments where the sum of elements in the segment is divisible by k. "
+        "Two segments are considered different if the set of indices are different."
+    )
+
+    tests = _build_local_certified_tests(desc)
+
+    assert len(tests) >= 3
+    assert tests[0]["input"] == "1 3 2\n1\n"
+    assert tests[0]["output"] == "3\n"
+    assert all(test["type"] == "edge" for test in tests)

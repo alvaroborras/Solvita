@@ -1,6 +1,6 @@
 """Generate Tests Node - Create test cases for the problem"""
 
-from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, Set, Tuple, TYPE_CHECKING
 import json
 import re
 from pathlib import Path
@@ -48,6 +48,185 @@ def _log_prompt_size(stage: str, prompt: str, **sections: str) -> None:
     logger.debug(f"[PROMPT:{stage}] total_chars={len(prompt)} | {stats}")
 
 
+def _is_cyclic_equivalence_problem(problem_desc: str) -> bool:
+    text = (problem_desc or "").lower()
+    markers = (
+        "cyclic",
+        "same set of indices",
+        "considered different if the set of indices",
+        "wrap",
+        "concatenating m copies",
+    )
+    return sum(1 for marker in markers if marker in text) >= 2
+
+
+def _is_cyclic_sum_segment_count_problem(problem_desc: str) -> bool:
+    text = (problem_desc or "").lower()
+    markers = (
+        "cyclic sequence",
+        "segment",
+        "sum of elements in the segment is divisible by k",
+        "number of different segments",
+        "same set of indices",
+        "concatenating m copies",
+    )
+    return sum(1 for marker in markers if marker in text) >= 4
+
+
+def _build_generator_advice(problem_desc: str, certification_mode: bool) -> str:
+    lines = []
+    if certification_mode:
+        lines.extend(
+            [
+                "Certification mode: prefer structurally diverse but modest-size inputs that are easy to certify exactly.",
+                "Prioritize semantic edge cases over maximum-size random stress.",
+            ]
+        )
+    if _is_cyclic_equivalence_problem(problem_desc):
+        lines.extend(
+            [
+                "This problem has cyclic/equivalence semantics. Prioritize cases that distinguish wrap-around from ordinary linear segments.",
+                "Include cases where the full cycle is valid or invalid, because full-cycle deduplication is easy to get wrong.",
+                "Include small n with very large m, repeated values, and total sum modulo k equal to 0 and non-zero.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _build_checker_advice(problem_desc: str) -> str:
+    if not _is_cyclic_equivalence_problem(problem_desc):
+        return ""
+    return (
+        "Semantic warning: if the problem says two segment representations are the same when they correspond "
+        "to the same set of indices on the cycle, your checker MUST enforce that exact equivalence relation. "
+        "Do NOT count empty segments unless the statement explicitly allows them. If the full cycle has many "
+        "representations, it must still count as one object."
+    )
+
+
+def _build_solver_advice(problem_desc: str) -> str:
+    if not _is_cyclic_equivalence_problem(problem_desc):
+        return ""
+    lines = [
+        "Semantic warning: do NOT reduce this to ordinary linear subarray counting unless you explicitly prove "
+        "that the cyclic set-of-indices definition is preserved. Full-cycle representations and wrap-around "
+        "identity are common sources of off-by-many bugs here. Prefer a direct small-scale enumerator of cyclic "
+        "segments as sets of indices over a brittle closed-form formula."
+    ]
+    if _is_cyclic_sum_segment_count_problem(problem_desc):
+        lines.append(
+            "For cyclic segment-counting problems, equal prefix residues inside one linearized period are NOT "
+            "sufficient when totalSum(b) mod k != 0. You must reason separately about wrap-around vs non-wrap "
+            "segments, including the lifted boundary at position N, or use an explicitly justified doubled-array "
+            "window formulation."
+        )
+    return " ".join(lines)
+
+
+def _count_cyclic_divisible_segments_bruteforce(n: int, m: int, k: int, a: List[int]) -> int:
+    total_positions = n * m
+    if total_positions > 256:
+        raise ValueError("bruteforce helper is only intended for modest certification inputs")
+
+    b = a * m
+    total_sum = sum(b)
+    answer = 0
+    for start in range(total_positions):
+        segment_sum = 0
+        for length in range(1, total_positions):
+            segment_sum += b[(start + length - 1) % total_positions]
+            if segment_sum % k == 0:
+                answer += 1
+    if total_sum % k == 0:
+        answer += 1
+    return answer % 1000000007
+
+
+def _build_local_certified_tests(problem_desc: str) -> List[Dict[str, Any]]:
+    if not _is_cyclic_sum_segment_count_problem(problem_desc):
+        return []
+
+    cases = [
+        (1, 3, 2, [1]),
+        (1, 4, 3, [1]),
+        (2, 1, 5, [0, 1]),
+        (3, 2, 5, [1, 1, 1]),
+    ]
+
+    certified = []
+    for n, m, k, a in cases:
+        expected = _count_cyclic_divisible_segments_bruteforce(n, m, k, a)
+        certified.append(
+            {
+                "input": f"{n} {m} {k}\n{' '.join(map(str, a))}\n",
+                "output": f"{expected}\n",
+                "type": "edge",
+                "description": "Local exact cyclic wrap certification case",
+            }
+        )
+    return certified
+
+
+def _normalize_generated_input(text: str) -> str:
+    return text.strip() + "\n"
+
+
+def _append_distinct_generated_input(
+    generated_inputs: List[str],
+    seen_inputs: Set[str],
+    candidate_input: str,
+) -> bool:
+    normalized = _normalize_generated_input(candidate_input)
+    if not normalized.strip() or normalized in seen_inputs:
+        return False
+    seen_inputs.add(normalized)
+    generated_inputs.append(normalized)
+    return True
+
+
+def _build_checker_negative_output(expected_output: str) -> str:
+    base = str(expected_output or "").rstrip("\n")
+    if base:
+        return base + "\n__CHECKER_NEGATIVE_TOKEN__\n"
+    return "__CHECKER_NEGATIVE_TOKEN__\n"
+
+
+def _validate_checker_on_public_tests(
+    checker_exe: Path,
+    public_tests: List[Dict[str, Any]],
+    tests_dir: Path,
+) -> Tuple[bool, str]:
+    for i, pt in enumerate(public_tests):
+        expected_output = pt.get("output", "")
+        if not str(expected_output).strip():
+            continue
+
+        input_path = tests_dir / f"public_{i}.in"
+        candidate_path = tests_dir / f"public_{i}.out"
+        answer_path = tests_dir / f"public_{i}.ans"
+        negative_path = tests_dir / f"public_{i}.bad.out"
+
+        input_path.write_text(pt.get("input", ""), encoding="utf-8")
+        candidate_path.write_text(expected_output, encoding="utf-8")
+        answer_path.write_text(expected_output, encoding="utf-8")
+        negative_path.write_text(_build_checker_negative_output(expected_output), encoding="utf-8")
+
+        ok, err = run_checker(checker_exe, input_path, candidate_path, answer_path)
+        if not ok:
+            return False, f"Public test {i} failed on known-correct output: {err}"
+
+        bad_ok, bad_err = run_checker(checker_exe, input_path, negative_path, answer_path)
+        if bad_ok:
+            return False, (
+                f"Public test {i} malformed-output check failed: "
+                "checker accepted output with trailing garbage"
+            )
+        if not bad_err:
+            return False, f"Public test {i} malformed-output check failed without diagnostic"
+
+    return True, ""
+
+
 def _resolve_data_root(config: Dict[str, Any]) -> Path:
     configured = (config or {}).get("data_root")
     if configured:
@@ -80,7 +259,7 @@ def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
     # 如果是 "1575_A. Another Sorting Problem" 格式，只取 "1575_A"
     if isinstance(problem_id, str):
         # 提取 "数字_字母" 部分
-        match = re.match(r"^(\d+_[A-Z])", problem_id)
+        match = re.match(r"^(\d+_[A-Z]\d*)", problem_id)
         if match:
             problem_id = match.group(1)
         # 清理路径名中的非法字符
@@ -106,35 +285,19 @@ Hard requirements:
 - Call registerGen(argc, argv, 1)
 - Use rnd.next(...) for randomness (no std::random, no srand/rand)
 - Do not parse or set a random seed inside the program
+- The harness will run your generator many times with different seeds and expects multiple distinct valid outputs
+- Do NOT hardcode one fixed test case or ignore rnd.next(...)
+- Different seeds should usually lead to meaningfully different inputs, not the same bytes every time
+- Prefer generating from multiple structural families instead of a single canned example
 - Do not print any extra text
-- Keep individual string lengths small (2-6 characters) unless constraints strictly dictate otherwise.
-- For n strings of length m, ensure n <= 26^m (number of possible unique strings)
-- Use std::unordered_set<std::string> for deduplication
+- Prefer semantically targeted edge cases over generic large random data.
+- When exact certification is important, favor modest-size cases that still expose tricky logic.
 
 Minimal skeleton (illustrative only):
 #include "testlib.h"
-#include <unordered_set>
 int main(int argc, char* argv[]) {{
   registerGen(argc, argv, 1);
-  // Choose m first, then limit n based on 26^m
-  int m = rnd.next(2, 6);
-  long long maxStrings = 1;
-  for (int i = 0; i < m; i++) {{ maxStrings *= 26; }}
-  long long maxN = std::min(200LL, (long long)(maxStrings * 0.8));
-  int n = rnd.next(1, (int)maxN);
-  std::cout << n << " " << m << std::endl;
-  std::unordered_set<std::string> seen;
-  for (int i = 0; i < n; i++) {{
-    std::string s;
-    do {{
-      s = "";
-      for (int j = 0; j < m; j++) {{
-        s += char('A' + rnd.next(0, 25));
-      }}
-    }} while (seen.count(s));
-    seen.insert(s);
-    std::cout << s << std::endl;
-  }}
+  // Sample from the true input format and stay inside all constraints.
   return 0;
 }}
 
@@ -150,9 +313,10 @@ Public Tests:
 {compact_public_tests}
 {feedback_block}
 {advice_block}
-Return ONLY a JSON object. No other text, no markdown.
+Return ONLY a valid JSON object. No other text, no markdown, no code fences.
+CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
 Schema:
-{{"generator_cpp": "<complete C++17 source>"}}
+{{"generator_cpp": "#include ...\\nint main(){{...}}\\n"}}
 """
     _log_prompt_size("generator", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block, advice=advice_block)
     return prompt
@@ -170,8 +334,10 @@ Hard requirements:
 - Use testlib: #include "testlib.h"
 - Do NOT use non-standard headers like #include <bits/stdc++.h>
 - Call registerValidation(argc, argv)
-- Use inf.readInt/readLong/readToken to parse input
-- Use inf.readToken() WITHOUT pattern parameter to read arbitrary strings
+- Validate the INPUT ONLY. Do NOT read any answer token, candidate output, or expected output.
+- Stop immediately after consuming the valid input; then call inf.readEof()
+- Use only these testlib input APIs unless strictly necessary: inf.readInt, inf.readLong, inf.readToken, inf.readSpace, inf.readEoln, inf.readEof, ensuref
+- Do NOT use unsupported helpers such as peekChar or speculative stream-inspection APIs
 - Use ensuref(...) to report specific constraint violations
 - Include #include <unordered_set> if using unordered_set
 - Exit 0 on success, non-zero on failure
@@ -201,9 +367,10 @@ Constraints:
 Public Tests:
 {compact_public_tests}
 {feedback_block}
-Return ONLY a JSON object. No other text, no markdown.
+Return ONLY a valid JSON object. No other text, no markdown, no code fences.
+CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
 Schema:
-{{"validator_cpp": "<complete C++17 source>"}}
+{{"validator_cpp": "#include ...\\nint main(){{...}}\\n"}}
 """
     _log_prompt_size("validator", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block)
     return prompt
@@ -212,6 +379,8 @@ Schema:
 
 def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
+    checker_advice = _build_checker_advice(problem_desc)
+    checker_advice_block = f"\n{checker_advice}\n" if checker_advice else ""
     compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
     compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
     compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
@@ -241,6 +410,8 @@ Hard requirements:
 - Use quitf(_ok, "...") if the candidate output is correct
 - Use quitf(_wa, "...") with a specific error message if incorrect
 - Implement your own verification logic inside the checker
+- Do NOT intentionally reject large valid inputs just because a tiny brute-force checker would be slow
+- Never introduce empty objects unless the problem statement explicitly defines them
 
 Minimal skeleton (approach A — unique answer):
 #include "testlib.h"
@@ -284,12 +455,12 @@ Constraints:
 
 Public Tests:
 {compact_public_tests}
+{checker_advice_block}
 {feedback_block}
-Return ONLY a JSON object. No other text, no markdown.
+Return ONLY a valid JSON object. No other text, no markdown, no code fences.
+CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
 Schema:
-{{
-  "checker_cpp": "<complete C++17 source>"
-}}
+{{"checker_cpp": "#include ...\\nint main(){{...}}\\n"}}
 """
     _log_prompt_size("checker", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block)
     return prompt
@@ -302,6 +473,8 @@ def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_t
     compact_templates = _truncate_for_prompt(templates_json, 6000, "ORACLE_ADVICE")
     compact_feedback = _truncate_for_prompt(feedback, 4000, "SOLVER_FEEDBACK") if feedback else ""
     feedback_block = f"\nPrevious attempt issues:\n{compact_feedback}\n" if compact_feedback else ""
+    solver_advice = _build_solver_advice(problem_desc)
+    solver_advice_block = f"\nProblem-specific guidance:\n{solver_advice}\n" if solver_advice else ""
     
     # Format public tests clearly
     pt_block = ""
@@ -340,12 +513,10 @@ Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
 {compact_templates}
 
 {feedback_block}
-Return ONLY a JSON object. No markdown, no explanation.
+Return ONLY a valid JSON object. No markdown, no explanation, no code fences.
+CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
 Schema:
-{{
-  "template_name": "<name of the strategy you are using>",
-  "solver_cpp": "<complete C++17 source code>"
-}}
+{{"template_name": "<name of strategy>", "solver_cpp": "#include ...\\nint main(){{...}}\\n"}}
 """
     _log_prompt_size("solver", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=pt_block, templates=compact_templates, feedback=feedback_block)
     return prompt
@@ -369,7 +540,9 @@ def build_solver_stage_guidance(attempt: int) -> str:
 - Write a robust reference solution that still remains easy to trust.
 - It must run within the certification limits and address the observed failure mode.
 - Do not use factorial or exponential search.
-- If necessary, add sparse debug prints to stderr using TRACE lines, but never inside tight loops unless sampled."""
+- If necessary, add sparse debug prints to stderr using:
+  std::cerr << "TRACE: [message] " << vars... << std::endl;
+- Never print inside tight loops unless sampled."""
 
 
 def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1) -> str:
@@ -386,18 +559,22 @@ def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_t
         pt_block += f"\n--- Test {i} ---\nInput:\n{inp}\nExpected Output:\n{out}\n"
 
     stage_guidance = build_solver_stage_guidance(attempt)
+    solver_advice = _build_solver_advice(problem_desc)
+    solver_advice_block = f"\nProblem-specific guidance:\n{solver_advice}\n" if solver_advice else ""
 
     prompt = f"""You are an independent reference-solution author. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem.
 
 CRITICAL REQUIREMENTS:
 1. Your code MUST be a complete standalone program with #include, main(), cin/cout.
 2. Read input from stdin, write output to stdout, matching the exact I/O format shown in the public tests.
-3. Correctness is the first priority, but the solver must run within the certification limits on generated tests.
-4. The program MUST compile with: g++ -std=c++17 -O2
-5. Keep the solver independent and trustworthy as a reference oracle.
+3. Correctness is the first priority. Prefer a semantically exact small-scale reference solver over a brittle formula.
+4. The certification inputs are allowed to be modest; do NOT sacrifice correctness for aggressive large-constraint optimization.
+5. The program MUST compile with: g++ -std=c++17 -O2
+6. Keep the solver independent and trustworthy as a reference oracle.
 
 Attempt guidance:
 {stage_guidance}
+{solver_advice_block}
 
 Problem Description:
 {compact_problem_desc}
@@ -608,6 +785,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     
     public_tests = state["problem"].get("public_tests", [])
     constraints = state["problem"].get("constraints", {})
+    local_certified_tests = _build_local_certified_tests(problem_desc)
+    solver_public_tests = list(public_tests) + list(local_certified_tests)
 
     def role_client(role: str) -> UnifiedLLMClient:
         role_cfg = UnifiedLLMClient.build_role_config(config, role)
@@ -638,6 +817,15 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         logger.info(f"[AC] Lookup: {ac_path} -> FOUND")
     else:
         logger.info(f"[AC] Lookup: {ac_path} -> NOT FOUND")
+        target_count = min(target_count, 50)
+
+    certification_mode = not (ac_path and ac_path.exists())
+    generator_advice = _build_generator_advice(problem_desc, certification_mode=certification_mode)
+    if local_certified_tests:
+        logger.info(
+            f"[CERT] Added {len(local_certified_tests)} local exact certification case(s) "
+            "for cyclic wrap semantics"
+        )
 
     generated_inputs: List[str] = []
     gen_feedback = ""
@@ -645,7 +833,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     validator_exe: Optional[Path] = None
 
     for attempt in range(1, max_iter + 1):
-        gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback, memory_advice="")
+        gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback, memory_advice=generator_advice)
         gen_response = gen_llm.generate(gen_prompt)
         llm_calls += 1
         (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
@@ -688,6 +876,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         validator_exe = val_exe
 
         generated_inputs = []
+        seen_generated_inputs: Set[str] = set()
+        duplicate_inputs = 0
         attempts = 0
         max_attempts = target_count * 5
         while len(generated_inputs) < target_count and attempts < max_attempts:
@@ -716,22 +906,41 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 continue
 
             out = output_path.read_text(encoding="utf-8")
-            if not out.strip():
+            normalized_out = _normalize_generated_input(out)
+            if not normalized_out.strip():
                 gen_feedback = "Generator produced empty output"
                 (tests_dir / f"gen_{attempt}_{attempts}_empty.txt").write_text("EMPTY", encoding="utf-8")
                 continue
 
-            v_code, _, v_err = run_program(val_exe, input_text=out, limits=ExecutionLimits.default_run())
+            if normalized_out in seen_generated_inputs:
+                duplicate_inputs += 1
+                (tests_dir / f"gen_{attempt}_{attempts}_duplicate.txt").write_text("DUPLICATE", encoding="utf-8")
+                continue
+
+            v_code, _, v_err = run_program(val_exe, input_text=normalized_out, limits=ExecutionLimits.default_run())
             if v_code != 0:
                 val_feedback = f"Validator rejected input: {v_err}"
                 (tests_dir / f"gen_{attempt}_{attempts}_reject.txt").write_text(v_err, encoding="utf-8")
                 continue
-            generated_inputs.append(out.strip() + "\n")
+            _append_distinct_generated_input(generated_inputs, seen_generated_inputs, normalized_out)
+
+        if duplicate_inputs > 0:
+            logger.info(
+                f"[GV] Generator attempt {attempt} produced {duplicate_inputs} duplicate input(s); "
+                f"kept {len(generated_inputs)} distinct valid cases"
+            )
 
         if len(generated_inputs) >= target_count:
             break
 
-        gen_feedback = f"Only produced {len(generated_inputs)} valid inputs out of {target_count} target"
+        gen_feedback = (
+            f"Only produced {len(generated_inputs)} distinct valid inputs out of {target_count} target"
+        )
+        if duplicate_inputs > 0:
+            gen_feedback += (
+                f". Detected {duplicate_inputs} duplicate outputs across different seeds. "
+                "Do not hardcode one case; use rnd.next(...) so different seeds usually produce different valid inputs."
+            )
 
     if not generated_inputs:
         logger.warning("[GV] Failed to generate inputs, using public tests only")
@@ -780,19 +989,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 checker_feedback = f"Checker compile failed: {checker_log}"
                 continue
 
-            public_ok = True
-            for i, pt in enumerate(public_tests):
-                input_path = tests_dir / f"public_{i}.in"
-                candidate_path = tests_dir / f"public_{i}.out"
-                answer_path = tests_dir / f"public_{i}.ans"
-                input_path.write_text(pt.get("input", ""), encoding="utf-8")
-                candidate_path.write_text(pt.get("output", ""), encoding="utf-8")
-                answer_path.write_text(pt.get("output", ""), encoding="utf-8")
-                ok, err = run_checker(candidate_checker_exe, input_path, candidate_path, answer_path)
-                if not ok:
-                    public_ok = False
-                    checker_feedback = f"Public test {i} failed: {err}"
-                    break
+            public_ok, checker_err = _validate_checker_on_public_tests(
+                candidate_checker_exe,
+                public_tests,
+                tests_dir,
+            )
+            if not public_ok:
+                checker_feedback = checker_err
 
             if public_ok:
                 checker_exe = candidate_checker_exe  # 自检也通过后才正式赋值
@@ -854,9 +1057,10 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             diagnostic_info = "" # Reset diagnostic info for this attempt
             public_actual = ""
             
-            for pi, pt in enumerate(public_tests):
+            for pi, pt in enumerate(solver_public_tests):
                 pt_input = pt.get("input", "")
                 pt_expected = pt.get("output", "")
+                test_label = f"{pt.get('type', 'public')}_{pi}"
                 if not pt_input.strip() or not pt_expected.strip():
                     continue
                 try:
@@ -879,11 +1083,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                             diagnostic_info = f"Diagnostic compile failed:\n{diag_log}"
                     
                     output_feedback = summarize_public_solver_failure(
-                        test_id=f"public_{pi}",
+                        test_id=test_label,
                         test_input=pt_input,
                         expected=pt_expected,
                         actual=s_out,
-                        error=f"Solver crashed on public test {pi}: {s_err}",
+                        error=f"Solver crashed on self-check test {test_label}: {s_err}",
                         diagnostic_info=diagnostic_info,
                     )
                     break
@@ -899,11 +1103,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     if not chk_ok:
                         solver_public_ok = False
                         output_feedback = summarize_public_solver_failure(
-                            test_id=f"public_{pi}",
+                            test_id=test_label,
                             test_input=pt_input,
                             expected=pt_expected,
                             actual=s_out,
-                            error=f"Solver wrong on public test {pi}: {chk_msg}",
+                            error=f"Solver wrong on self-check test {test_label}: {chk_msg}",
                             diagnostic_info=diagnostic_info,
                         )
                         break
@@ -913,11 +1117,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     if _norm(s_out) != _norm(pt_expected):
                         solver_public_ok = False
                         output_feedback = summarize_public_solver_failure(
-                            test_id=f"public_{pi}",
+                            test_id=test_label,
                             test_input=pt_input,
                             expected=pt_expected,
                             actual=s_out,
-                            error=f"Solver wrong on public test {pi}",
+                            error=f"Solver wrong on self-check test {test_label}",
                             diagnostic_info=diagnostic_info,
                         )
                         break
@@ -1097,6 +1301,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         
         # Also remove temporary marker files from failed validation/generation attempts
         for pattern in ["gen_*_*_reject.txt", "gen_*_*_empty.txt", "gen_*_*_runtime_err.txt",
+                        "gen_*_*_duplicate.txt",
                         "solver_*_*_failed.txt", "solver_*_*_failed.json"]:
             stale_markers = glob.glob(str(tests_dir / pattern))
             for f in stale_markers:
@@ -1113,6 +1318,16 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 "expected_output": pt.get("output", ""),
                 "type": "public",
                 "description": "Public test case",
+            }
+        )
+
+    for pt in local_certified_tests:
+        generated_tests.append(
+            {
+                "input": pt.get("input", ""),
+                "expected_output": pt.get("output", ""),
+                "type": pt.get("type", "edge"),
+                "description": pt.get("description", "Local exact certification case"),
             }
         )
 

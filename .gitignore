@@ -29,6 +29,13 @@ docs/repair_plan_1575B.md
 solvita_train_tanh_schema.md
 
 .agent
+.benchmark_runs/logs/
+.benchmark_runs/replaced_*/
+.benchmark_runs/solvita_pipeline_*/
+.benchmark_runs/reports/
+tjy
+train_oracle.log
+train_oracle.log.old
 
 data/
 scripts/extract_1149e.py

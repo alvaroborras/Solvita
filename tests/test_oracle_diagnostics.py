@@ -6,7 +6,10 @@ from src.nodes.generate_tests import (
     build_generator_prompt,
     build_validator_prompt,
     build_checker_prompt,
+    _append_distinct_generated_input,
+    _validate_checker_on_public_tests,
 )
+from src.utils.output_judging import judge_output_against_certified_expected
 
 def test_format_solver_feedback_with_asan():
     failed = [
@@ -121,6 +124,104 @@ def test_build_generator_prompt_truncates_large_context():
 
     assert "[TRUNCATED" in prompt
     assert len(prompt) < 25000
+
+
+def test_build_generator_prompt_forbids_fixed_single_case_generators():
+    prompt = build_generator_prompt("desc", {"n": "1e5"}, [], "")
+
+    assert "Do NOT hardcode one fixed test case" in prompt
+    assert "different seeds" in prompt
+    assert "multiple distinct valid outputs" in prompt
+
+
+def test_append_distinct_generated_input_rejects_duplicates():
+    generated_inputs = []
+    seen_inputs = set()
+
+    assert _append_distinct_generated_input(generated_inputs, seen_inputs, "1 2 3\n4 5 6\n") is True
+    assert _append_distinct_generated_input(generated_inputs, seen_inputs, "1 2 3\n4 5 6\n\n") is False
+    assert _append_distinct_generated_input(generated_inputs, seen_inputs, "7 8 9\n") is True
+
+    assert generated_inputs == ["1 2 3\n4 5 6\n", "7 8 9\n"]
+    assert seen_inputs == {"1 2 3\n4 5 6\n", "7 8 9\n"}
+
+
+def test_validate_checker_on_public_tests_rejects_trailing_garbage(monkeypatch, tmp_path):
+    checker_exe = tmp_path / "checker.exe"
+    checker_exe.write_text("", encoding="utf-8")
+    calls = []
+
+    def fake_run_checker(_checker, _input_path, output_path, _answer_path):
+        text = output_path.read_text(encoding="utf-8")
+        calls.append(text)
+        if "__CHECKER_NEGATIVE_TOKEN__" in text:
+            return True, "incorrectly accepted"
+        return True, "ok"
+
+    monkeypatch.setattr("src.nodes.generate_tests.run_checker", fake_run_checker)
+
+    ok, message = _validate_checker_on_public_tests(
+        checker_exe,
+        [{"input": "1\n", "output": "42\n"}],
+        tmp_path,
+    )
+
+    assert ok is False
+    assert "trailing garbage" in message
+    assert len(calls) == 2
+
+
+def test_judge_output_against_certified_expected_ignores_conflicting_checker(monkeypatch, tmp_path):
+    checker_exe = tmp_path / "checker.exe"
+    checker_exe.write_text("", encoding="utf-8")
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    answer_path = tmp_path / "answer.txt"
+    input_path.write_text("1\n", encoding="utf-8")
+    output_path.write_text("2\n", encoding="utf-8")
+    answer_path.write_text("1\n", encoding="utf-8")
+
+    monkeypatch.setattr("src.utils.output_judging.run_checker", lambda *args, **kwargs: (True, "ok"))
+
+    passed, message = judge_output_against_certified_expected(
+        actual_output="2\n",
+        expected_output="1\n",
+        checker_exe=checker_exe,
+        input_path=input_path,
+        output_path=output_path,
+        answer_path=answer_path,
+    )
+
+    assert passed is False
+    assert "certified expected output takes precedence" in message
+
+
+def test_judge_output_against_certified_expected_skips_checker_on_exact_match(monkeypatch, tmp_path):
+    checker_exe = tmp_path / "checker.exe"
+    checker_exe.write_text("", encoding="utf-8")
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    answer_path = tmp_path / "answer.txt"
+    input_path.write_text("1\n", encoding="utf-8")
+    output_path.write_text("1\n", encoding="utf-8")
+    answer_path.write_text("1\n", encoding="utf-8")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("checker should not run when actual matches certified expected output")
+
+    monkeypatch.setattr("src.utils.output_judging.run_checker", fail_if_called)
+
+    passed, message = judge_output_against_certified_expected(
+        actual_output="1\n",
+        expected_output="1\n",
+        checker_exe=checker_exe,
+        input_path=input_path,
+        output_path=output_path,
+        answer_path=answer_path,
+    )
+
+    assert passed is True
+    assert message is None
 
 
 def test_other_prompt_builders_truncate_large_context():
