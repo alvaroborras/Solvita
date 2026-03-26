@@ -6,6 +6,7 @@ from src.nodes.generate_tests import (
     build_generator_prompt,
     build_validator_prompt,
     build_checker_prompt,
+    _generate_with_compact_retry,
     _append_distinct_generated_input,
     _validate_checker_on_public_tests,
 )
@@ -259,5 +260,60 @@ def test_analyze_compilation_errors_retries_with_compact_prompt_on_prompt_too_lo
     )
 
     assert result["analysis"] == "fixed"
+    assert len(llm.prompts) == 2
+    assert "[TRUNCATED" in llm.prompts[1]
+
+
+def test_generate_tests_generator_retries_with_compact_prompt_on_prompt_too_long():
+    class FakeLLM:
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                raise PromptTooLongError("prompt is too long: maximum context length")
+            return "{\"generator_cpp\":\"int main(){return 0;}\"}"
+
+    llm = FakeLLM()
+    result = _generate_with_compact_retry(
+        llm,
+        build_generator_prompt,
+        "P" * 20000,
+        {"payload": "C" * 8000},
+        [{"input": "I" * 5000, "output": "O" * 5000} for _ in range(6)],
+        "F" * 4000,
+        memory_advice="A" * 4000,
+    )
+
+    assert "generator_cpp" in result
+    assert len(llm.prompts) == 2
+    assert "[TRUNCATED" in llm.prompts[1]
+
+
+def test_generate_tests_solver_retries_with_compact_prompt_on_prompt_too_long():
+    class FakeLLM:
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                raise PromptTooLongError("prompt is too long: maximum context length")
+            return "{\"template_name\":\"x\",\"solver_cpp\":\"int main(){return 0;}\"}"
+
+    llm = FakeLLM()
+    result = _generate_with_compact_retry(
+        llm,
+        build_solver_prompt,
+        "P" * 20000,
+        {"payload": "C" * 8000},
+        [{"input": "I" * 5000, "output": "O" * 5000} for _ in range(6)],
+        "T" * 12000,
+        "F" * 6000,
+        attempt=2,
+    )
+
+    assert "solver_cpp" in result
     assert len(llm.prompts) == 2
     assert "[TRUNCATED" in llm.prompts[1]

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from loguru import logger
 from src.llm import UnifiedLLMClient
+from src.llm.unified_client import PromptTooLongError
 from src.memory import MemoryClient, MemoryNamespace
 from src.memory.client import render_oracle_plan_to_prompt_payload, resolve_oracle_item_ids_by_family_ids
 from src.oracle.catalog import build_oracle_catalog
@@ -52,6 +53,16 @@ def _compact_public_tests_for_prompt(public_tests: List[Dict[str, Any]], max_tes
 def _log_prompt_size(stage: str, prompt: str, **sections: str) -> None:
     stats = ", ".join(f"{name}={len(value)}" for name, value in sections.items())
     logger.debug(f"[PROMPT:{stage}] total_chars={len(prompt)} | {stats}")
+
+
+def _generate_with_compact_retry(llm: UnifiedLLMClient, prompt_builder, *args, **kwargs) -> str:
+    prompt = prompt_builder(*args, compact=False, **kwargs)
+    try:
+        return llm.generate(prompt)
+    except PromptTooLongError:
+        compact_prompt = prompt_builder(*args, compact=True, **kwargs)
+        logger.warning("[TestGen] Prompt exceeded max tokens, retrying with compact prompt")
+        return llm.generate(compact_prompt)
 
 
 def _is_cyclic_equivalence_problem(problem_desc: str) -> bool:
@@ -348,12 +359,12 @@ def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
 from src.utils.cpp_execution import compile_cpp, run_program, run_checker, sanitize_cpp, ExecutionLimits
 
 
-def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, memory_advice: str = "") -> str:
+def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, memory_advice: str = "", compact: bool = False) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     advice_block = f"\n{memory_advice}\n" if memory_advice else ""
-    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
-    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
-    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
+    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3 if not compact else 2, field_chars=400 if not compact else 180)
     prompt = f"""You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
 
 Hard requirements:
@@ -400,11 +411,11 @@ Schema:
 
 
 
-def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
+def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, compact: bool = False) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
-    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
-    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
-    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
+    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3 if not compact else 2, field_chars=400 if not compact else 180)
     prompt = f"""You are a validator agent. Write a C++17 program that reads one test case from stdin and validates it.
 
 Hard requirements:
@@ -454,13 +465,13 @@ Schema:
 
 
 
-def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str) -> str:
+def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, compact: bool = False) -> str:
     feedback_block = f"\nPrevious attempt issues:\n{feedback}\n" if feedback else ""
     checker_advice = _build_checker_advice(problem_desc)
     checker_advice_block = f"\n{checker_advice}\n" if checker_advice else ""
-    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
-    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
-    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3, field_chars=400)
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
+    compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3 if not compact else 2, field_chars=400 if not compact else 180)
     prompt = f"""You are a checker/verifier agent. Write a C++17 program that **independently verifies**
 whether a candidate output is correct for a given input — WITHOUT needing any reference answer.
 
@@ -544,11 +555,11 @@ Schema:
 
 
 
-def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1) -> str:
-    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
-    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
-    compact_templates = _truncate_for_prompt(templates_json, 6000, "ORACLE_ADVICE")
-    compact_feedback = _truncate_for_prompt(feedback, 4000, "SOLVER_FEEDBACK") if feedback else ""
+def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1, compact: bool = False) -> str:
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
+    compact_templates = _truncate_for_prompt(templates_json, 6000 if not compact else 2500, "ORACLE_ADVICE")
+    compact_feedback = _truncate_for_prompt(feedback, 4000 if not compact else 1500, "SOLVER_FEEDBACK") if feedback else ""
     feedback_block = f"\nPrevious attempt issues:\n{compact_feedback}\n" if compact_feedback else ""
     solver_advice = _build_solver_advice(problem_desc)
     solver_advice_block = f"\nProblem-specific guidance:\n{solver_advice}\n" if solver_advice else ""
@@ -622,17 +633,17 @@ def build_solver_stage_guidance(attempt: int) -> str:
 - Never print inside tight loops unless sampled."""
 
 
-def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1) -> str:
-    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000, "PROBLEM_DESC")
-    compact_constraints = _compact_json_for_prompt(constraints, 3000, "CONSTRAINTS")
-    compact_templates = _truncate_for_prompt(templates_json, 6000, "ORACLE_ADVICE")
-    compact_feedback = _truncate_for_prompt(feedback, 4000, "SOLVER_FEEDBACK") if feedback else ""
+def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1, compact: bool = False) -> str:
+    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
+    compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
+    compact_templates = _truncate_for_prompt(templates_json, 6000 if not compact else 2500, "ORACLE_ADVICE")
+    compact_feedback = _truncate_for_prompt(feedback, 4000 if not compact else 1500, "SOLVER_FEEDBACK") if feedback else ""
     feedback_block = f"\nPrevious attempt issues:\n{compact_feedback}\n" if compact_feedback else ""
 
     pt_block = ""
-    for i, pt in enumerate(public_tests[:3]):
-        inp = _truncate_for_prompt(pt.get('input', '').strip(), 400, 'PUBLIC_INPUT')
-        out = _truncate_for_prompt(pt.get('output', '').strip(), 400, 'PUBLIC_OUTPUT')
+    for i, pt in enumerate(public_tests[: (3 if not compact else 2)]):
+        inp = _truncate_for_prompt(pt.get('input', '').strip(), 400 if not compact else 180, 'PUBLIC_INPUT')
+        out = _truncate_for_prompt(pt.get('output', '').strip(), 400 if not compact else 180, 'PUBLIC_OUTPUT')
         pt_block += f"\n--- Test {i} ---\nInput:\n{inp}\nExpected Output:\n{out}\n"
 
     stage_guidance = build_solver_stage_guidance(attempt)
@@ -918,8 +929,15 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     validator_exe: Optional[Path] = None
 
     for attempt in range(1, max_iter + 1):
-        gen_prompt = build_generator_prompt(problem_desc, constraints, public_tests, gen_feedback, memory_advice=generator_advice)
-        gen_response = gen_llm.generate(gen_prompt)
+        gen_response = _generate_with_compact_retry(
+            gen_llm,
+            build_generator_prompt,
+            problem_desc,
+            constraints,
+            public_tests,
+            gen_feedback,
+            memory_advice=generator_advice,
+        )
         llm_calls += 1
         (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
         try:
@@ -938,8 +956,14 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             (code_dir / f"generator_{attempt}.log").write_text(gen_log, encoding="utf-8")
             continue
 
-        val_prompt = build_validator_prompt(problem_desc, constraints, public_tests, val_feedback)
-        val_response = val_llm.generate(val_prompt)
+        val_response = _generate_with_compact_retry(
+            val_llm,
+            build_validator_prompt,
+            problem_desc,
+            constraints,
+            public_tests,
+            val_feedback,
+        )
         llm_calls += 1
         logger.info(f"[GV] Validator response length: {len(val_response)}")
         (code_dir / f"validator_{attempt}_raw.txt").write_text(val_response, encoding="utf-8")
@@ -1058,8 +1082,14 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     if generated_inputs and not generated_outputs:
         checker_feedback = ""
         for attempt in range(1, max_iter + 1):
-            checker_prompt = build_checker_prompt(problem_desc, constraints, public_tests, checker_feedback)
-            checker_response = chk_llm.generate(checker_prompt, temperature=0.0)
+            checker_response = _generate_with_compact_retry(
+                chk_llm,
+                build_checker_prompt,
+                problem_desc,
+                constraints,
+                public_tests,
+                checker_feedback,
+            )
             llm_calls += 1
             (code_dir / f"checker_{attempt}_raw.txt").write_text(checker_response, encoding="utf-8")
             try:
@@ -1107,11 +1137,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         best_partial_inputs: list = []
         best_partial_outputs: list = []
         for attempt in range(1, output_max_iter + 1):
-            solver_prompt = build_solver_prompt(
-                problem_desc, constraints, public_tests, oracle_advice, 
-                output_feedback, attempt=attempt
+            solver_response = _generate_with_compact_retry(
+                out_llm,
+                build_solver_prompt,
+                problem_desc, constraints, public_tests, oracle_advice,
+                output_feedback,
+                attempt=attempt,
             )
-            solver_response = out_llm.generate(solver_prompt)
             llm_calls += 1
             (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
             try:
