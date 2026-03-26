@@ -10,6 +10,8 @@ from src.nodes.generate_tests import (
     _validate_checker_on_public_tests,
 )
 from src.utils.output_judging import judge_output_against_certified_expected
+from src.nodes.analyze_feedback import _analyze_compilation_errors
+from src.llm.unified_client import PromptTooLongError
 
 def test_format_solver_feedback_with_asan():
     failed = [
@@ -236,3 +238,26 @@ def test_other_prompt_builders_truncate_large_context():
     assert "[TRUNCATED" in validator_prompt
     assert "[TRUNCATED" in checker_prompt
     assert "[TRUNCATED" in solver_prompt
+
+
+def test_analyze_compilation_errors_retries_with_compact_prompt_on_prompt_too_long():
+    class FakeLLM:
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                raise PromptTooLongError("prompt is too long: maximum context length")
+            return "fixed"
+
+    llm = FakeLLM()
+    result = _analyze_compilation_errors(
+        llm,
+        "int main() {\n" + ("x++;\\n" * 10000) + "}\n",
+        ["E" * 5000],
+    )
+
+    assert result["analysis"] == "fixed"
+    assert len(llm.prompts) == 2
+    assert "[TRUNCATED" in llm.prompts[1]

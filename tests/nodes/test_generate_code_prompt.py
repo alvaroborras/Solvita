@@ -3,7 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.nodes.generate_code import _build_initial_prompt, _build_patch_prompt
+from src.llm.unified_client import PromptTooLongError
+from src.nodes.generate_code import _build_initial_prompt, _build_patch_prompt, _generate_with_compact_retry
 
 
 def test_initial_prompt_requires_resource_audit():
@@ -65,3 +66,32 @@ def test_patch_prompt_truncates_large_context():
 
     assert "[TRUNCATED" in prompt
     assert len(prompt) < 40000
+
+
+def test_generate_code_retries_with_compact_prompt_on_prompt_too_long():
+    class FakeLLM:
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                raise PromptTooLongError("prompt is too long: maximum context length")
+            return "int main() { return 0; }"
+
+    llm = FakeLLM()
+    result = _generate_with_compact_retry(
+        llm,
+        _build_initial_prompt,
+        "P" * 20000,
+        "Prefix sums",
+        ["Build", "Answer"],
+        {"payload": "C" * 8000},
+        [{"input": "I" * 3000, "output": "O" * 3000} for _ in range(5)],
+        [{"input": "G" * 3000} for _ in range(5)],
+        memory_advice="A" * 4000,
+    )
+
+    assert result == "int main() { return 0; }"
+    assert len(llm.prompts) == 2
+    assert "[TRUNCATED" in llm.prompts[1]

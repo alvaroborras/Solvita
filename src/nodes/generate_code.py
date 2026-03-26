@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 from loguru import logger
 from src.llm import UnifiedLLMClient
+from src.llm.unified_client import PromptTooLongError
 from src.utils.cpp_execution import (
     sanitize_cpp,
     compile_cpp,
@@ -210,6 +211,21 @@ Example:
 >>>>>>> REPLACE
 
 Generate the SEARCH/REPLACE edits now:"""
+
+
+def _generate_with_compact_retry(
+    llm: UnifiedLLMClient,
+    prompt_builder,
+    *args,
+    **kwargs,
+) -> str:
+    prompt = prompt_builder(*args, compact=False, **kwargs)
+    try:
+        return llm.generate(prompt)
+    except PromptTooLongError:
+        compact_prompt = prompt_builder(*args, compact=True, **kwargs)
+        logger.warning("[GenCode] Prompt exceeded max tokens, retrying with compact prompt")
+        return llm.generate(compact_prompt)
 
 
 def _indent(text: str, n: int) -> str:
@@ -468,13 +484,13 @@ Required Properties: {canonical.get('required_properties', [])}"""
         logger.info("[GenCode] Initial generation (no previous code)")
         
         for attempt in range(1, max_self_attempts + 1):
-            prompt = _build_initial_prompt(
+            code = _generate_with_compact_retry(
+                llm,
+                _build_initial_prompt,
                 problem_desc, algorithm, steps,
                 constraints, public_tests, generated_tests,
                 memory_advice=memory_advice,
             )
-
-            code = llm.generate(prompt)
             llm_calls += 1
             code = sanitize_cpp(code)
 
@@ -517,7 +533,9 @@ Required Properties: {canonical.get('required_properties', [])}"""
                 feedback_text = f"Analysis: {analysis}\nError Pattern: {error_pattern}"
         
         for attempt in range(1, max_self_attempts + 1):
-            prompt = _build_patch_prompt(
+            llm_response = _generate_with_compact_retry(
+                llm,
+                _build_patch_prompt,
                 prev_code,
                 problem_desc,
                 algorithm,
@@ -527,8 +545,6 @@ Required Properties: {canonical.get('required_properties', [])}"""
                 feedback_text,
                 memory_advice=memory_advice,
             )
-            
-            llm_response = llm.generate(prompt)
             llm_calls += 1
             
             # Parse SEARCH/REPLACE blocks

@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 from loguru import logger
 from src.llm import UnifiedLLMClient
+from src.llm.unified_client import PromptTooLongError
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
 from src.utils.json_utils import parse_json_response
@@ -12,6 +13,16 @@ from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
+
+
+def _generate_feedback_with_retry(llm: UnifiedLLMClient, build_prompt, *args, **kwargs) -> str:
+    prompt = build_prompt(*args, compact=False, **kwargs)
+    try:
+        return llm.generate(prompt)
+    except PromptTooLongError:
+        compact_prompt = build_prompt(*args, compact=True, **kwargs)
+        logger.warning("[AnalyzeFeedback] Prompt exceeded max tokens, retrying with compact prompt")
+        return llm.generate(compact_prompt)
 
 
 def analyze_feedback_node(state: "SolvitaState") -> Dict[str, Any]:
@@ -114,12 +125,12 @@ Required Properties: {canonical.get('required_properties', [])}"""
     }
 
 
-def _analyze_compilation_errors(llm: UnifiedLLMClient, code: str, errors: list[str]) -> Dict:
+def _build_compilation_error_prompt(code: str, errors: list[str], compact: bool = False) -> str:
     """Analyze compilation errors"""
-    error_text = truncate_for_prompt('\n'.join(errors), 5000, "COMPILATION_ERRORS")
-    code = truncate_for_prompt(code, 12000, "CODE")
+    error_text = truncate_for_prompt('\n'.join(errors), 5000 if not compact else 2000, "COMPILATION_ERRORS")
+    code = truncate_for_prompt(code, 12000 if not compact else 5000, "CODE")
     
-    prompt = f"""The following C++ code has compilation errors:
+    return f"""The following C++ code has compilation errors:
 
 Code:
 ```cpp
@@ -134,9 +145,11 @@ Provide:
 2. Specific fixes needed
 3. Corrected code snippets
 
-Be concise and actionable."""
-    
-    analysis = llm.generate(prompt)
+    Be concise and actionable."""
+
+
+def _analyze_compilation_errors(llm: UnifiedLLMClient, code: str, errors: list[str]) -> Dict:
+    analysis = _generate_feedback_with_retry(llm, _build_compilation_error_prompt, code, errors)
     
     return {
         'error_type': 'compilation',
@@ -309,55 +322,46 @@ def _run_diagnostic_sanitizer(code: str, failed_tests: List[Dict]) -> str:
         return ""
 
 
-def _analyze_test_failures(
-    llm: UnifiedLLMClient, 
-    code: str, 
+def _build_test_failure_prompt(
+    code: str,
     failed_tests: list[Dict],
     problem_desc: str,
     algorithm: str,
     steps: List[str],
     iteration: int,
     pass_rate: float,
-    diagnostic_output: str = ""
-) -> Dict:
-    """Analyze test failures with full context"""
-    if not failed_tests:
-        return {'error_type': 'none', 'analysis': 'No failures', 'suggested_fixes': [], 'failures': []}
-    
-    # Smart selection: up to 10 representative failures
-    selected_tests = _select_representative_failures(failed_tests, max_count=10)
+    diagnostic_output: str = "",
+    compact: bool = False,
+) -> str:
+    selected_tests = _select_representative_failures(failed_tests, max_count=10 if not compact else 5)
     error_pattern = _analyze_error_pattern(failed_tests)
-    
-    # Format failures for prompt
     failure_details = []
-    
     for i, test in enumerate(selected_tests):
-        inp = str(test.get('input', ''))
-        if len(inp) > 500: inp = inp[:500] + "...(truncated)"
-        
+        inp = truncate_for_prompt(str(test.get('input', '')), 500 if not compact else 180, f"FAIL_INPUT_{i+1}")
+        expected = truncate_for_prompt(str(test.get('expected', '')), 300 if not compact else 120, f"FAIL_EXPECTED_{i+1}")
+        actual = truncate_for_prompt(str(test.get('actual', '')), 300 if not compact else 120, f"FAIL_ACTUAL_{i+1}")
+        error = truncate_for_prompt(str(test.get('error', '')), 300 if not compact else 120, f"FAIL_ERROR_{i+1}")
         failure_details.append(
             f"--- Failure Case {i+1} ---\n"
             f"Input:\n{inp}\n"
-            f"Expected Output: {test.get('expected', '')}\n"
-            f"Actual Output:   {test.get('actual', '')}\n"
-            f"Error Message:   {test.get('error', '')}"
+            f"Expected Output: {expected}\n"
+            f"Actual Output:   {actual}\n"
+            f"Error Message:   {error}"
         )
-    
+
     failures_text = '\n\n'.join(failure_details)
     steps_text = '\n'.join([f"- {s}" for s in steps])
-    
-    # Add diagnostic output if available
     diagnostic_section = ""
     if diagnostic_output:
-        diagnostic_section = f"\n## Diagnostic Sanitizer Output\n{truncate_for_prompt(diagnostic_output, 4000, 'DIAGNOSTIC_OUTPUT')}\n"
+        diagnostic_section = f"\n## Diagnostic Sanitizer Output\n{truncate_for_prompt(diagnostic_output, 4000 if not compact else 1500, 'DIAGNOSTIC_OUTPUT')}\n"
 
-    problem_desc = truncate_for_prompt(problem_desc, 7000, "PROBLEM_DESC")
-    algorithm = truncate_for_prompt(algorithm, 800, "ALGORITHM")
-    steps_text = truncate_for_prompt(steps_text, 2000, "STEPS")
-    code = truncate_for_prompt(code, 12000, "CODE")
-    failures_text = truncate_for_prompt(failures_text, 8000, "FAILURES")
-    
-    prompt = f"""You are a competitive programming debugging expert. Analyze the following failures and provide CONCRETE fixes.
+    problem_desc = truncate_for_prompt(problem_desc, 7000 if not compact else 3000, "PROBLEM_DESC")
+    algorithm = truncate_for_prompt(algorithm, 800 if not compact else 400, "ALGORITHM")
+    steps_text = truncate_for_prompt(steps_text, 2000 if not compact else 800, "STEPS")
+    code = truncate_for_prompt(code, 12000 if not compact else 5000, "CODE")
+    failures_text = truncate_for_prompt(failures_text, 8000 if not compact else 2500, "FAILURES")
+
+    return f"""You are a competitive programming debugging expert. Analyze the following failures and provide CONCRETE fixes.
 
 ## Problem Description
 {problem_desc}
@@ -397,8 +401,36 @@ Return ONLY valid JSON (no markdown, no explanation outside JSON):
         "<specific fix 2, e.g. 'Add special case handling when n==1'>"
     ]
 }}"""
-    
-    analysis = llm.generate(prompt)
+
+
+def _analyze_test_failures(
+    llm: UnifiedLLMClient, 
+    code: str, 
+    failed_tests: list[Dict],
+    problem_desc: str,
+    algorithm: str,
+    steps: List[str],
+    iteration: int,
+    pass_rate: float,
+    diagnostic_output: str = ""
+) -> Dict:
+    """Analyze test failures with full context"""
+    if not failed_tests:
+        return {'error_type': 'none', 'analysis': 'No failures', 'suggested_fixes': [], 'failures': []}
+    selected_tests = _select_representative_failures(failed_tests, max_count=10)
+    error_pattern = _analyze_error_pattern(failed_tests)
+    analysis = _generate_feedback_with_retry(
+        llm,
+        _build_test_failure_prompt,
+        code,
+        failed_tests,
+        problem_desc,
+        algorithm,
+        steps,
+        iteration,
+        pass_rate,
+        diagnostic_output,
+    )
     
     # Parse structured response
     try:
@@ -442,39 +474,51 @@ def _analyze_hack_failures(
     iteration: int
 ) -> Dict[str, Any]:
     """Analyze failures from the Adversarial Hack Phase"""
-    
-    failures_text = ""
-    for i, fail in enumerate(hack_failures[:3]): # Limit to top 3
-        failures_text += f"\n--- Hack Test {i+1} ---\n"
-        failures_text += f"Type: {fail.get('type', 'Unknown')}\n"
-        failures_text += f"Input:\n{fail.get('input', '')}\n"
-        details = []
-        if fail.get('expected'):
-            details.append(f"Expected:\n{fail.get('expected', '')}")
-        if fail.get('output'):
-            details.append(f"Actual Output:\n{fail.get('output', '')}") 
-        if fail.get('details'):
-             details.append(f"Details:\n{fail.get('details', '')}")
-        failures_text += "\n".join(details) + "\n"
+    def _build_hack_failure_prompt(compact: bool = False) -> str:
+        failures_text = ""
+        for i, fail in enumerate(hack_failures[:3]):  # Limit to top 3
+            failures_text += f"\n--- Hack Test {i+1} ---\n"
+            failures_text += f"Type: {fail.get('type', 'Unknown')}\n"
+            failures_text += f"Input:\n{truncate_for_prompt(fail.get('input', ''), 300 if not compact else 150, f'HACK_INPUT_{i+1}')}\n"
+            details = []
+            if fail.get('expected'):
+                details.append(
+                    f"Expected:\n{truncate_for_prompt(fail.get('expected', ''), 200 if not compact else 100, f'HACK_EXPECTED_{i+1}')}"
+                )
+            if fail.get('output'):
+                details.append(
+                    f"Actual Output:\n{truncate_for_prompt(fail.get('output', ''), 200 if not compact else 100, f'HACK_OUTPUT_{i+1}')}"
+                )
+            if fail.get('details'):
+                details.append(
+                    f"Details:\n{truncate_for_prompt(fail.get('details', ''), 200 if not compact else 100, f'HACK_DETAILS_{i+1}')}"
+                )
+            failures_text += "\n".join(details) + "\n"
 
-    prompt = f"""You are a debugging expert. The solution passed all basic tests but FAILED adversarial hack tests.
+        compact_problem_desc = truncate_for_prompt(problem_desc, 7000 if not compact else 3000, "PROBLEM_DESC")
+        compact_algorithm = truncate_for_prompt(algorithm, 800 if not compact else 300, "ALGORITHM")
+        compact_code = truncate_for_prompt(code, 12000 if not compact else 5000, "CODE")
+        steps_json = compact_json_for_prompt(steps, 2000 if not compact else 800, "STEPS")
+        compact_failures = truncate_for_prompt(failures_text, 6000 if not compact else 2000, "HACK_FAILURES")
+
+        return f"""You are a debugging expert. The solution passed all basic tests but FAILED adversarial hack tests.
 
 Problem:
-{problem_desc}
+{compact_problem_desc}
 
 Current Algorithm:
-{algorithm}
+{compact_algorithm}
 
 Implementation Steps:
-{json.dumps(steps, indent=2)}
+{steps_json}
 
 Code:
 ```cpp
-{code}
+{compact_code}
 ```
 
 HACK FAILURES (The code logic is likely correct for simple cases but fails edge cases):
-{failures_text}
+{compact_failures}
 
 Task:
 1. Analyze why the code fails these specific hack cases.
@@ -487,8 +531,8 @@ Return ONLY JSON:
     "suggested_fixes": ["<fix 1>", "<fix 2>"]
 }}
 """
-    
-    response = llm.generate(prompt)
+
+    response = _generate_feedback_with_retry(llm, _build_hack_failure_prompt)
     
     try:
         analysis_data = parse_json_response(response)
