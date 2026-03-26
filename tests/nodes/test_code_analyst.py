@@ -2,6 +2,7 @@ import json
 import pytest
 from unittest.mock import MagicMock
 from src.nodes.code_analyst import parse_code_analyst_response, execute_tool, run_code_analyst, build_analyst_prompt
+from src.llm.unified_client import PromptTooLongError
 
 def test_parse_analyst_tool_call():
     """Test parsing a valid tool call."""
@@ -334,3 +335,46 @@ def test_build_analyst_prompt_includes_memory_advice():
 
     assert "HACKER STRATEGY ADVICE" in prompt
     assert "repeated prefixes" in prompt
+
+
+def test_build_analyst_prompt_truncates_large_context():
+    prompt = build_analyst_prompt(
+        "P" * 20000,
+        {"payload": "C" * 8000},
+        "int main() {\n" + ("x++;\\n" * 10000) + "}\n",
+        ["history " + ("H" * 5000) for _ in range(6)],
+        memory_advice="Prefer repeated prefixes.",
+    )
+
+    assert "[TRUNCATED" in prompt
+    assert len(prompt) < 45000
+
+
+def test_run_code_analyst_retries_with_compact_prompt_on_prompt_too_long(monkeypatch):
+    class FakeLLM:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, prompt, **kwargs):
+            self.calls.append(prompt)
+            if len(self.calls) == 1:
+                raise PromptTooLongError("prompt is too long: maximum context length")
+            return """{
+              "bug_class": "unknown",
+              "confidence": "low",
+              "evidence": ["fallback"],
+              "suggested_route": "semantic",
+              "input_hypothesis": ["large_n"]
+            }"""
+
+    llm = FakeLLM()
+    state = {
+        "problem": {"description": "P" * 20000, "constraints": {"payload": "C" * 8000}},
+        "solution": {"code": "int main() {\n" + ("x++;\\n" * 10000) + "}\n"},
+    }
+
+    report = run_code_analyst(state, llm, max_rounds=1)
+
+    assert report["bug_class"] == "unknown"
+    assert len(llm.calls) == 3
+    assert "[TRUNCATED" in llm.calls[1]

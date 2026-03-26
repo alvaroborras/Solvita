@@ -17,6 +17,7 @@ from src.utils.output_judging import judge_output_against_certified_expected
 from src.utils.patch_utils import parse_search_replace_blocks, apply_search_replace_blocks, compute_unified_diff
 from src.memory import MemoryClient, MemoryNamespace
 from src.utils.problem_utils import extract_problem_code
+from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
 
 
 def _build_initial_prompt(
@@ -27,23 +28,31 @@ def _build_initial_prompt(
     public_tests: List[Dict],
     generated_tests: List[Dict],
     memory_advice: str = "",
+    compact: bool = False,
 ) -> str:
     """Build prompt for initial code generation (no previous code)."""
+    desc_chars = 10000 if not compact else 5000
+    constraint_chars = 2500 if not compact else 1200
+    generated_chars = 300 if not compact else 150
+    public_chars = 400 if not compact else 180
+    problem_desc = truncate_for_prompt(problem_desc, desc_chars, "PROBLEM_DESC")
     
     # Format public tests
     public_block = ""
     if public_tests:
         parts = []
-        for i, t in enumerate(public_tests):
+        for i, t in enumerate(public_tests[:3]):
+            sample_input = truncate_for_prompt(t.get('input', ''), public_chars, f"PUBLIC_INPUT_{i+1}")
+            sample_output = truncate_for_prompt(t.get('output', ''), public_chars, f"PUBLIC_OUTPUT_{i+1}")
             parts.append(f"  Sample {i+1}:")
-            parts.append(f"    Input:\n{_indent(t.get('input', ''), 6)}")
-            parts.append(f"    Output:\n{_indent(t.get('output', ''), 6)}")
+            parts.append(f"    Input:\n{_indent(sample_input, 6)}")
+            parts.append(f"    Output:\n{_indent(sample_output, 6)}")
         public_block = "Public test cases:\n" + "\n".join(parts)
 
     # Format constraints
     constraints_block = ""
     if constraints:
-        constraints_block = f"Constraints:\n  {json.dumps(constraints, indent=2)}"
+        constraints_block = f"Constraints:\n  {compact_json_for_prompt(constraints, constraint_chars, 'CONSTRAINTS')}"
 
     # Format generated test inputs (first 3, input only)
     gen_block = ""
@@ -52,8 +61,8 @@ def _build_initial_prompt(
         parts = []
         for i, t in enumerate(samples):
             inp = t.get("input", "").strip()
-            if len(inp) > 300:
-                inp = inp[:300] + "..."
+            if len(inp) > generated_chars:
+                inp = inp[:generated_chars] + "...(truncated)"
             parts.append(f"  Generated input {i+1}:\n{_indent(inp, 4)}")
         gen_block = (
             "Sample generated inputs (for format/scale reference):\n"
@@ -105,8 +114,12 @@ def _build_patch_prompt(
     suggested_fixes: List[str],
     feedback_text: str,
     memory_advice: str = "",
+    compact: bool = False,
 ) -> str:
     """Build prompt for patching existing code using SEARCH/REPLACE."""
+    prev_code = truncate_for_prompt(prev_code, 16000 if not compact else 8000, "PREV_CODE")
+    problem_desc = truncate_for_prompt(problem_desc, 9000 if not compact else 4500, "PROBLEM_DESC")
+    feedback_text = truncate_for_prompt(feedback_text, 5000 if not compact else 2000, "FEEDBACK_TEXT")
     
     # Format specific failures (up to 10)
     failures_block = ""
@@ -116,23 +129,23 @@ def _build_patch_prompt(
             parts.append(f"\nFailure {i+1} ({fail.get('type', 'Unknown Error')}):")
             # Truncate input if too long
             inp = str(fail.get('input', ''))
-            if len(inp) > 300:
-                inp = inp[:300] + "...(truncated)"
+            if len(inp) > (300 if not compact else 150):
+                inp = inp[:(300 if not compact else 150)] + "...(truncated)"
             parts.append(f"  Input:\n{_indent(inp, 4)}")
             if fail.get('expected'):
                 exp = str(fail.get('expected', ''))
-                if len(exp) > 200:
-                    exp = exp[:200] + "...(truncated)"
+                if len(exp) > (200 if not compact else 120):
+                    exp = exp[:(200 if not compact else 120)] + "...(truncated)"
                 parts.append(f"  Expected:\n{_indent(exp, 4)}")
             if fail.get('output'):
                 out = str(fail.get('output', ''))
-                if len(out) > 200:
-                    out = out[:200] + "...(truncated)"
+                if len(out) > (200 if not compact else 120):
+                    out = out[:(200 if not compact else 120)] + "...(truncated)"
                 parts.append(f"  Actual Output:\n{_indent(out, 4)}")
             if fail.get('details'):
                 details = str(fail.get('details', ''))
-                if len(details) > 200:
-                    details = details[:200] + "...(truncated)"
+                if len(details) > (200 if not compact else 120):
+                    details = details[:(200 if not compact else 120)] + "...(truncated)"
                 parts.append(f"  Details:\n{_indent(details, 4)}")
         failures_block = "\n".join(parts)
 

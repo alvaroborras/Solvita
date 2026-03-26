@@ -8,6 +8,7 @@ from src.llm import UnifiedLLMClient
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
 from src.utils.json_utils import parse_json_response
+from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
@@ -115,7 +116,8 @@ Required Properties: {canonical.get('required_properties', [])}"""
 
 def _analyze_compilation_errors(llm: UnifiedLLMClient, code: str, errors: list[str]) -> Dict:
     """Analyze compilation errors"""
-    error_text = '\n'.join(errors)
+    error_text = truncate_for_prompt('\n'.join(errors), 5000, "COMPILATION_ERRORS")
+    code = truncate_for_prompt(code, 12000, "CODE")
     
     prompt = f"""The following C++ code has compilation errors:
 
@@ -347,7 +349,13 @@ def _analyze_test_failures(
     # Add diagnostic output if available
     diagnostic_section = ""
     if diagnostic_output:
-        diagnostic_section = f"\n## Diagnostic Sanitizer Output\n{diagnostic_output}\n"
+        diagnostic_section = f"\n## Diagnostic Sanitizer Output\n{truncate_for_prompt(diagnostic_output, 4000, 'DIAGNOSTIC_OUTPUT')}\n"
+
+    problem_desc = truncate_for_prompt(problem_desc, 7000, "PROBLEM_DESC")
+    algorithm = truncate_for_prompt(algorithm, 800, "ALGORITHM")
+    steps_text = truncate_for_prompt(steps_text, 2000, "STEPS")
+    code = truncate_for_prompt(code, 12000, "CODE")
+    failures_text = truncate_for_prompt(failures_text, 8000, "FAILURES")
     
     prompt = f"""You are a competitive programming debugging expert. Analyze the following failures and provide CONCRETE fixes.
 

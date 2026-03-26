@@ -36,3 +36,32 @@ def test_patch_prompt_requires_rechecking_space_complexity():
     assert "Re-check BOTH time and space complexity" in prompt
     assert "dangerous product of input dimensions" in prompt
     assert "not implementable within the stated limits" in prompt
+
+
+def test_initial_prompt_truncates_large_context():
+    prompt = _build_initial_prompt(
+        problem_desc="D" * 20000,
+        algorithm="Prefix sums",
+        steps=["Build data structure", "Answer queries"],
+        constraints={"payload": "C" * 8000},
+        public_tests=[{"input": "I" * 3000, "output": "O" * 3000} for _ in range(5)],
+        generated_tests=[{"input": "G" * 3000} for _ in range(5)],
+    )
+
+    assert "[TRUNCATED" in prompt
+    assert len(prompt) < 30000
+
+
+def test_patch_prompt_truncates_large_context():
+    prompt = _build_patch_prompt(
+        prev_code="int main() {\n" + ("x++;\\n" * 10000) + "}\n",
+        problem_desc="P" * 16000,
+        algorithm="Prefix sums",
+        steps=["Build data structure", "Answer queries"],
+        specific_failures=[{"input": "I" * 2000, "expected": "E" * 1000, "output": "O" * 1000, "details": "D" * 1000}],
+        suggested_fixes=["fix"],
+        feedback_text="F" * 8000,
+    )
+
+    assert "[TRUNCATED" in prompt
+    assert len(prompt) < 40000

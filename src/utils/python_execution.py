@@ -5,6 +5,7 @@ Ensures strict resource limits and denies dangerous imports/functions.
 
 import ast
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -133,7 +134,13 @@ def run_python(
         stdout = _truncate_output(result.stdout or "", max_chars=10000)
         stderr = _truncate_output(result.stderr or "", max_chars=10000)
         
-        return result.returncode, stdout, stderr
+        normalized_ret = result.returncode
+        normalized_err = stderr
+        if limits.cpu_seconds is not None and result.returncode in (-signal.SIGKILL, -signal.SIGXCPU):
+            normalized_ret = 124
+            normalized_err = "Time Limit Exceeded"
+
+        return normalized_ret, stdout, normalized_err
         
     except subprocess.TimeoutExpired:
         return 124, "", f"Time Limit Exceeded: Python execution took longer than {limits.wall_seconds}s."

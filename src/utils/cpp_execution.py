@@ -5,6 +5,7 @@ Shared utilities for C++ execution, compilation, and checking with sandboxing.
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -391,15 +392,21 @@ def run_program(
         )
         result = subprocess.run(cmd, **run_kwargs)
         
+        normalized_ret = result.returncode
+        normalized_stderr = result.stderr or ""
+        if limits.cpu_seconds is not None and result.returncode in (-signal.SIGKILL, -signal.SIGXCPU):
+            normalized_ret = 124
+            normalized_stderr = "Time Limit Exceeded"
+
         if truncate_output:
             # Physical truncation to prevent log bloat in human-facing logs.
             stdout = _truncate_output(result.stdout)
-            stderr = _truncate_output(result.stderr)
+            stderr = _truncate_output(normalized_stderr)
         else:
             stdout = result.stdout
-            stderr = result.stderr
+            stderr = normalized_stderr
         
-        return result.returncode, stdout, stderr
+        return normalized_ret, stdout, stderr
     except subprocess.TimeoutExpired:
         return 124, "", "Time Limit Exceeded"
     except Exception as e:

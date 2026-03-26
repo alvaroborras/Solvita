@@ -5,8 +5,10 @@ from typing import Dict, Any, List, Optional, Tuple
 from loguru import logger
 
 from src.llm import UnifiedLLMClient
+from src.llm.unified_client import PromptTooLongError
 from src.utils.python_execution import run_python
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
+from src.utils.prompt_utils import compact_json_for_prompt, compact_list_for_prompt, truncate_for_prompt
 
 def parse_code_analyst_response(text: str) -> Tuple[str, Dict[str, Any]]:
     """
@@ -103,12 +105,15 @@ def execute_tool(tool_name: str, parameters: Dict[str, Any]) -> str:
     return f"Error: Executor for '{tool_name}' not implemented."
 
 
-def build_analyst_prompt(problem_desc: str, constraints: Dict[str, Any], target_code: str, history: List[str], memory_advice: str = "") -> str:
-    constraints_json = json.dumps(constraints, indent=2)
-    history_text = "\n\n".join(history) if history else "No actions taken yet."
+def build_analyst_prompt(problem_desc: str, constraints: Dict[str, Any], target_code: str, history: List[str], memory_advice: str = "", compact: bool = False) -> str:
+    problem_desc = truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
+    constraints_json = compact_json_for_prompt(constraints, 2500 if not compact else 1200, "CONSTRAINTS")
+    history_items = compact_list_for_prompt(history, 6 if not compact else 3, 1800 if not compact else 600, "HISTORY")
+    history_text = "\n\n".join(history_items) if history_items else "No actions taken yet."
+    target_code = truncate_for_prompt(target_code, 14000 if not compact else 6000, "TARGET_CODE")
     advice_section = ""
     if memory_advice:
-        advice_section = f"\nHACKER STRATEGY ADVICE:\n{memory_advice}\n"
+        advice_section = f"\nHACKER STRATEGY ADVICE:\n{truncate_for_prompt(memory_advice, 2500 if not compact else 1000, 'MEMORY_ADVICE')}\n"
     
     return f"""You are the Code Analyst, the strategy planner for an adversarial Hacker System.
 Your goal is to find bugs, logic flaws, or vulnerabilities (WA, TLE, RE, MLE) in the provided C++ target code.
@@ -166,11 +171,15 @@ def build_json_repair_prompt(
     constraints: Dict[str, Any],
     target_code: str,
     memory_advice: str = "",
+    compact: bool = False,
 ) -> str:
-    constraints_json = json.dumps(constraints, indent=2)
+    previous_response = truncate_for_prompt(previous_response, 4000 if not compact else 1500, "PREVIOUS_RESPONSE")
+    problem_desc = truncate_for_prompt(problem_desc, 7000 if not compact else 3000, "PROBLEM_DESC")
+    constraints_json = compact_json_for_prompt(constraints, 2500 if not compact else 1200, "CONSTRAINTS")
+    target_code = truncate_for_prompt(target_code, 12000 if not compact else 5000, "TARGET_CODE")
     advice_section = ""
     if memory_advice:
-        advice_section = f"\nHACKER STRATEGY ADVICE:\n{memory_advice}\n"
+        advice_section = f"\nHACKER STRATEGY ADVICE:\n{truncate_for_prompt(memory_advice, 2500 if not compact else 1000, 'MEMORY_ADVICE')}\n"
 
     return f"""Your previous reply was not valid JSON for the Code Analyst protocol.
 
@@ -217,13 +226,17 @@ def build_force_tool_prompt(
     history: List[str],
     weak_report: Dict[str, Any],
     memory_advice: str = "",
+    compact: bool = False,
 ) -> str:
-    constraints_json = json.dumps(constraints, indent=2)
-    history_text = "\n\n".join(history) if history else "No actions taken yet."
-    weak_report_json = json.dumps(weak_report, indent=2)
+    problem_desc = truncate_for_prompt(problem_desc, 7000 if not compact else 3000, "PROBLEM_DESC")
+    constraints_json = compact_json_for_prompt(constraints, 2500 if not compact else 1200, "CONSTRAINTS")
+    history_items = compact_list_for_prompt(history, 6 if not compact else 3, 1800 if not compact else 600, "HISTORY")
+    history_text = "\n\n".join(history_items) if history_items else "No actions taken yet."
+    weak_report_json = compact_json_for_prompt(weak_report, 3000 if not compact else 1200, "WEAK_REPORT")
+    target_code = truncate_for_prompt(target_code, 12000 if not compact else 5000, "TARGET_CODE")
     advice_section = ""
     if memory_advice:
-        advice_section = f"\nHACKER STRATEGY ADVICE:\n{memory_advice}\n"
+        advice_section = f"\nHACKER STRATEGY ADVICE:\n{truncate_for_prompt(memory_advice, 2500 if not compact else 1000, 'MEMORY_ADVICE')}\n"
 
     return f"""Your current vulnerability report is too weak to submit as a final answer.
 
@@ -280,10 +293,18 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
     history = []
     has_tool_evidence = False
     round_num = 1
+    prompt_compact = False
 
     while round_num <= max_rounds:
-        prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice)
-        response_text = llm.generate(prompt)
+        prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice, compact=prompt_compact)
+        try:
+            response_text = llm.generate(prompt)
+        except PromptTooLongError:
+            if prompt_compact:
+                raise
+            prompt_compact = True
+            logger.warning("[Code Analyst] Prompt exceeded max tokens, retrying in compact mode")
+            continue
         
         logger.debug(f"[Code Analyst] Round {round_num} raw response:\n{response_text[:300]}...")
         while True:
@@ -299,8 +320,24 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         history=history,
                         weak_report=parsed_data,
                         memory_advice=memory_advice,
+                        compact=prompt_compact,
                     )
-                    forced_response = llm.generate(force_prompt, temperature=0.0)
+                    try:
+                        forced_response = llm.generate(force_prompt, temperature=0.0)
+                    except PromptTooLongError:
+                        if prompt_compact:
+                            raise
+                        prompt_compact = True
+                        force_prompt = build_force_tool_prompt(
+                            problem_desc=problem_desc,
+                            constraints=constraints,
+                            target_code=target_code,
+                            history=history,
+                            weak_report=parsed_data,
+                            memory_advice=memory_advice,
+                            compact=True,
+                        )
+                        forced_response = llm.generate(force_prompt, temperature=0.0)
                     logger.debug(f"[Code Analyst] Round {round_num} forced-tool response:\n{forced_response[:300]}...")
                     forced_type, forced_data = parse_code_analyst_response(forced_response)
                     if forced_type == "tool_call":
@@ -309,6 +346,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         tool_output = execute_tool(tool_name, forced_data.get("parameters", {}))
                         history.append(f"Action: Tool '{tool_name}' invoked.\nOutput:\n{tool_output}")
                         has_tool_evidence = True
+                        prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice, compact=prompt_compact)
                         response_text = llm.generate(prompt)
                         logger.debug(f"[Code Analyst] Round {round_num} post-tool response:\n{response_text[:300]}...")
                         continue
@@ -334,8 +372,23 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                     constraints=constraints,
                     target_code=target_code,
                     memory_advice=memory_advice,
+                    compact=prompt_compact,
                 )
-                repaired_response = llm.generate(repair_prompt, temperature=0.0)
+                try:
+                    repaired_response = llm.generate(repair_prompt, temperature=0.0)
+                except PromptTooLongError:
+                    if prompt_compact:
+                        raise
+                    prompt_compact = True
+                    repair_prompt = build_json_repair_prompt(
+                        response_text,
+                        problem_desc=problem_desc,
+                        constraints=constraints,
+                        target_code=target_code,
+                        memory_advice=memory_advice,
+                        compact=True,
+                    )
+                    repaired_response = llm.generate(repair_prompt, temperature=0.0)
                 logger.debug(f"[Code Analyst] Round {round_num} repair response:\n{repaired_response[:300]}...")
                 repaired_type, repaired_data = parse_code_analyst_response(repaired_response)
                 if repaired_type == "final_report":

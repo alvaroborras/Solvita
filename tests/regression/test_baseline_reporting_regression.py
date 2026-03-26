@@ -1,3 +1,23 @@
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture
+def load_repo_module():
+    def _load(path: str):
+        repo_root = Path(__file__).resolve().parents[2]
+        module_path = repo_root / path
+        spec = importlib.util.spec_from_file_location(module_path.stem.replace("-", "_"), module_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec is not None and spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    return _load
+
+
 def test_run_one_reports_hack_broken_when_hacker_finds_bug_at_terminal_state(load_repo_module, monkeypatch):
     module = load_repo_module("scripts/run_baseline.py")
 
