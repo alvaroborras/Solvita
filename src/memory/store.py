@@ -93,9 +93,19 @@ class MemoryStore:
                     selected_item_ids_json TEXT NOT NULL,
                     reward REAL NOT NULL,
                     problem_hash TEXT,
-                    iteration INTEGER DEFAULT 0
+                    iteration INTEGER DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
                 )
             """)
+
+            event_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(events)").fetchall()
+            }
+            if "metadata_json" not in event_columns:
+                conn.execute(
+                    "ALTER TABLE events ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+                )
             
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_events_namespace_timestamp 
@@ -287,8 +297,8 @@ class MemoryStore:
         """Insert event into database (helper for reuse in migration)."""
         conn.execute("""
             INSERT INTO events 
-            (timestamp, namespace, observation_json, selected_item_ids_json, reward, problem_hash, iteration)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (timestamp, namespace, observation_json, selected_item_ids_json, reward, problem_hash, iteration, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             event.timestamp,
             event.namespace.value,
@@ -304,6 +314,7 @@ class MemoryStore:
             event.reward,
             event.problem_hash,
             event.iteration,
+            json.dumps(event.metadata),
         ))
 
     def get_events(self, limit: Optional[int] = None) -> List[MemoryEvent]:
@@ -350,6 +361,7 @@ class MemoryStore:
                         reward=row["reward"],
                         problem_hash=row["problem_hash"],
                         iteration=row["iteration"],
+                        metadata=json.loads(row["metadata_json"]) if row["metadata_json"] else {},
                     )
                     events.append(event)
                 

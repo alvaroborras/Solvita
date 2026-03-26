@@ -143,6 +143,7 @@ class MemoryClient:
         selected_item_ids: List[str],
         reward: float,
         iteration: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Log an event and update policy + item stats.
@@ -160,6 +161,7 @@ class MemoryClient:
                 reward=reward,
                 problem_hash=self.problem_hash,
                 iteration=iteration,
+                metadata=metadata or {},
             )
             
             # Log event to disk
@@ -277,4 +279,3 @@ class MemoryClient:
         
         lines.append("")  # Trailing newline
         return "\n".join(lines)
-

@@ -88,7 +88,13 @@ def update_oracle_memory_node(state: "SolvitaState") -> Dict[str, Any]:
     if memory.featurizer:
         obs.feature_keys = memory.featurizer.extract_features(obs, MemoryNamespace.ORACLE)
 
-    memory.log_event(obs, item_ids, reward, iteration=iteration)
+    memory.log_event(
+        obs,
+        item_ids,
+        reward,
+        iteration=iteration,
+        metadata=state.get("oracle_event_metadata", {}),
+    )
 
     return {
         "execution_log": [
