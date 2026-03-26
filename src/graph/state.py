@@ -72,6 +72,10 @@ class TestData(TypedDict, total=False):
     checker_exe: Optional[str]
     # Validator executable path (set by generate_tests_node)
     validator_exe: Optional[str]
+    oracle_route: Optional[str]
+    accepted_artifact_kind: Optional[str]
+    verifier_provenance: Optional[Dict[str, Any]]
+    certification_evidence: List[Dict[str, Any]]
 
 
 class FeedbackData(TypedDict, total=False):
@@ -192,6 +196,10 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             ready=False,
             checker_exe=None,
             validator_exe=None,
+            oracle_route=None,
+            accepted_artifact_kind=None,
+            verifier_provenance=None,
+            certification_evidence=[],
         ),
         feedback=FeedbackData(
             feedback={},
