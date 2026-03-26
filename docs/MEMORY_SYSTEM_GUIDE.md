@@ -14,9 +14,20 @@ config = {
         "plan_top_k": 5,    # Top-K items for plan agent
         "solve_top_k": 3,   # Top-K items for solve agent
         "test_top_k": 3,    # Top-K items for test agent
-    }
+    },
+    "oracle": {
+        "mode": "safe",          # safe | balanced | legacy
+        "accept_threshold": 0.95,
+        "enable_fallback": False,
+    },
 }
 ```
+
+For the redesigned oracle/testgen flow:
+
+- `safe` is the default and prefers abstention when confidence is insufficient
+- `balanced` allows a modestly looser threshold and optional fallback family use
+- `legacy` preserves behavior close to the older oracle path for comparison
 
 ### Basic Usage
 
@@ -105,6 +116,23 @@ Each agent has its own memory space with different item types:
             "Include test with maximum n",
         ],
         "validator_pitfalls": ["Forgetting to check n >= min_n"],
+    }
+}
+```
+
+#### 4. Oracle Agent (`namespace="oracle"`)
+**Stores**: Reference-solver strategy families used by `generate_tests` to build trusted supervision artifacts.
+
+**Example item**:
+```python
+{
+    "family_id": "oracle.dp.topdown",
+    "text": "Top-down Memoized DP",
+    "route_hint": "exact_single_answer",
+    "tags": ["dp", "oracle"],
+    "payload": {
+        "brute_force_strategies": ["Exponential State Space to Polynomial via Top-Down DP"],
+        "complexity_notes": ["O(StateSpace). Filters invalid states directly."],
     }
 }
 ```

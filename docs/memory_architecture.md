@@ -200,9 +200,19 @@ config = {
         "plan_top_k": 5,
         "solve_top_k": 3,
         "test_top_k": 3,
-    }
+    },
+    "oracle": {
+        "mode": "safe",
+        "accept_threshold": 0.95,
+        "enable_fallback": False,
+    },
 }
 ```
+
+Oracle-specific note:
+
+- oracle events may now carry OPE-oriented metadata such as candidate family pool, selected family ids, route, verifier provenance, decision, and artifact kind
+- redesigned oracle supervision distinguishes exact-answer artifacts from checker-backed bundles
 
 ## Cold Start
 
