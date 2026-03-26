@@ -29,6 +29,7 @@ docs/repair_plan_1575B.md
 solvita_train_tanh_schema.md
 
 .agent
+.worktrees/
 .benchmark_runs/logs/
 .benchmark_runs/replaced_*/
 .benchmark_runs/solvita_pipeline_*/
