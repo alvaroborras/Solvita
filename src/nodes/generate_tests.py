@@ -14,6 +14,7 @@ from src.oracle.catalog import build_oracle_catalog
 from src.oracle.selector import build_rule_based_oracle_plan
 from src.oracle.trainability import classify_trainability
 from src.oracle.evidence import build_accepted_artifact
+from src.oracle.types import OracleRoute
 from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
 
@@ -278,6 +279,36 @@ def _resolve_oracle_selection(
         family_ids.append(oracle_plan.fallback_family_id)
     oracle_item_ids = resolve_oracle_item_ids_by_family_ids(oracle_memory, family_ids)
     return oracle_plan, oracle_advice, oracle_item_ids, trusted_checker_provenance
+
+
+def _apply_oracle_acceptance_gate(
+    *,
+    route: str,
+    generated_inputs: List[str],
+    generated_outputs: List[str],
+    confidence: float,
+    threshold: float,
+    trusted_checker_provenance: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not generated_inputs or not generated_outputs:
+        return None
+    if confidence < threshold:
+        return None
+    if route == "trusted_checker_backed_multi_answer" and not trusted_checker_provenance:
+        return None
+
+    oracle_route = (
+        OracleRoute.TRUSTED_CHECKER_BACKED_MULTI
+        if route == "trusted_checker_backed_multi_answer"
+        else OracleRoute.EXACT_SINGLE_ANSWER
+    )
+    return build_accepted_artifact(
+        route=oracle_route,
+        input_text=generated_inputs[0],
+        output_text=generated_outputs[0],
+        verifier_provenance=trusted_checker_provenance,
+        evidence={"source": "generate_tests"},
+    )
 
 
 def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
@@ -816,6 +847,14 @@ def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
 
     config = state["config"]
     raw_problem = state.get("raw_problem", {})
+    oracle_cfg = (config or {}).get("oracle") or {}
+    oracle_mode = oracle_cfg.get("mode", "safe")
+    oracle_accept_threshold = float(
+        oracle_cfg.get(
+            "accept_threshold",
+            0.95 if oracle_mode == "safe" else 0.80 if oracle_mode == "balanced" else 0.0,
+        )
+    )
     
     # Prefer canonical problem representation if available
     canonical = state["problem"].get("canonical", {})
@@ -1432,24 +1471,32 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "oracle_public_self_check_pass": last_public_self_check_pass,
         "oracle_probe_pack_pass": last_probe_pack_pass,
     }
-
-    if generated_inputs and generated_outputs and 'oracle_plan' in locals():
-        accepted_input = generated_inputs[0]
-        accepted_output = generated_outputs[0]
-        if oracle_plan.route.value == "trusted_checker_backed_multi_answer" and not trusted_checker_provenance:
-            tests["accepted_artifact_kind"] = None
-        else:
-            accepted_artifact = build_accepted_artifact(
-                route=oracle_plan.route,
-                input_text=accepted_input,
-                output_text=accepted_output,
-                verifier_provenance=trusted_checker_provenance,
-                evidence={"source": "generate_tests"},
-            )
-            tests["accepted_artifact_kind"] = accepted_artifact["kind"]
+    accepted_artifact = None
+    if 'oracle_plan' in locals():
+        confidence = 1.0 if solver_ok and generated_inputs and generated_outputs else 0.0
+        accepted_artifact = _apply_oracle_acceptance_gate(
+            route=oracle_plan.route.value,
+            generated_inputs=generated_inputs,
+            generated_outputs=generated_outputs,
+            confidence=confidence,
+            threshold=oracle_accept_threshold,
+            trusted_checker_provenance=trusted_checker_provenance,
+        )
+        tests["accepted_artifact_kind"] = accepted_artifact["kind"] if accepted_artifact else None
 
     return {
         "tests": tests,
+        "oracle_event_metadata": {
+            "trainability_class": tests.get("oracle_route"),
+            "artifact_kind": tests.get("accepted_artifact_kind"),
+            "certification_evidence": tests.get("certification_evidence", []),
+            "verifier_provenance": tests.get("verifier_provenance"),
+            "candidate_family_pool": tests.get("candidate_family_pool", []),
+            "selected_family_ids": [family_id for family_id in [tests.get("oracle_primary_family_id"), tests.get("oracle_fallback_family_id")] if family_id],
+            "selector_version": "rule_v1",
+            "propensity": 1.0,
+            "decision": "accept" if accepted_artifact else "abstain",
+        },
         "execution_log": [
             f"Generated {len(generated_tests)} test cases",
             f"  Public: {test_counts['public']}, Edge: {test_counts['edge']}, "

@@ -9,7 +9,9 @@ from src.nodes.generate_tests import (
     finalize_solver_certification,
     _build_local_certified_tests,
     _count_cyclic_divisible_segments_bruteforce,
+    _apply_oracle_acceptance_gate,
 )
+from src.oracle.types import AcceptedArtifactKind
 
 
 def test_build_solver_prompt_attempts_escalate_strategy():
@@ -89,3 +91,28 @@ def test_build_local_certified_tests_includes_wrap_counterexamples():
     assert tests[0]["input"] == "1 3 2\n1\n"
     assert tests[0]["output"] == "3\n"
     assert all(test["type"] == "edge" for test in tests)
+
+
+def test_safe_mode_prefers_abstain_when_confidence_missing():
+    artifact = _apply_oracle_acceptance_gate(
+        route="exact_single_answer",
+        generated_inputs=["1\n"],
+        generated_outputs=["1\n"],
+        confidence=0.0,
+        threshold=0.95,
+        trusted_checker_provenance=None,
+    )
+    assert artifact is None
+
+
+def test_route_b_requires_checker_bundle_when_accepted():
+    artifact = _apply_oracle_acceptance_gate(
+        route="trusted_checker_backed_multi_answer",
+        generated_inputs=["1\n"],
+        generated_outputs=["2 1\n"],
+        confidence=1.0,
+        threshold=0.80,
+        trusted_checker_provenance={"kind": "official_checker", "source_id": "dataset://checker/demo"},
+    )
+    assert artifact is not None
+    assert artifact["kind"] == AcceptedArtifactKind.CHECKER_BUNDLE.value
