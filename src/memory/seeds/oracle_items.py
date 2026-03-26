@@ -324,3 +324,51 @@ struct PairHash {
         "tags": ["hash", "brute_force", "oracle", "custom_hash"]
     }
 ]
+
+_ORACLE_FAMILY_METADATA = {
+    "N-Nested Loops Simulation (Dynamic Depth DFS)": {
+        "family_id": "oracle.enumeration.n_nested_loops",
+        "route_hint": "exact_single_answer",
+    },
+    "All Paths DFS Traversal (Graph/Grid)": {
+        "family_id": "oracle.graph.all_paths",
+        "route_hint": "exact_single_answer",
+    },
+    "Minimax with Memoization (Game Theory)": {
+        "family_id": "oracle.game.minimax_memo",
+        "route_hint": "exact_single_answer",
+    },
+    "Top-down Memoized DP": {
+        "family_id": "oracle.dp.topdown",
+        "route_hint": "exact_single_answer",
+    },
+    "Combinatorial Enum & Set Partitions (Bell Numbers)": {
+        "family_id": "oracle.combinatorics.partitions",
+        "route_hint": "exact_single_answer",
+    },
+    "Meet-in-the-Middle (Subset Sum)": {
+        "family_id": "oracle.mitm.subset_sum",
+        "route_hint": "exact_single_answer",
+    },
+    "String Subsequences (Bitmask Simulation)": {
+        "family_id": "oracle.string.subsequence_bitmask",
+        "route_hint": "exact_single_answer",
+    },
+    "Geometry Triplets & Exhaustive Enumeration": {
+        "family_id": "oracle.geometry.triplets",
+        "route_hint": "exact_single_answer",
+    },
+    "Bitmask SOS Subset Sum Enumeration": {
+        "family_id": "oracle.bitmask.sos",
+        "route_hint": "exact_single_answer",
+    },
+    "VectorStateHash and PairStateHash (Custom Hashing for DFS Memory)": {
+        "family_id": "oracle.hash.state_hash",
+        "route_hint": "exact_single_answer",
+    },
+}
+
+for _item in ORACLE_SEED_ITEMS:
+    _meta = _ORACLE_FAMILY_METADATA[_item["text"]]
+    _item["family_id"] = _meta["family_id"]
+    _item["route_hint"] = _meta["route_hint"]

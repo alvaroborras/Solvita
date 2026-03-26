@@ -20,6 +20,19 @@ from src.memory.skill_loader import SkillLoader
 logger = logging.getLogger(__name__)
 
 
+def render_oracle_plan_to_prompt_payload(plan: Any, catalog_item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    del plan
+    return [
+        {
+            "family_id": catalog_item["family_id"],
+            "name": catalog_item["text"],
+            "strategy": ", ".join(catalog_item["payload"].get("brute_force_strategies", [])),
+            "complexity_notes": catalog_item["payload"].get("complexity_notes", []),
+            "code_snippet": catalog_item["payload"].get("code_template", "").strip(),
+        }
+    ]
+
+
 class MemoryClient:
     """
     Unified memory client supporting plan/solve/test namespaces.
