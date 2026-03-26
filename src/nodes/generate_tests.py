@@ -996,6 +996,9 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     ac_exe: Optional[Path] = None
     training_mode: bool = bool(state.get("training_mode", False))
     training_runner = state.get("training_runner", None)  # (kind, path) tuple from train_oracle.py
+    last_solver_compile_ok = False
+    last_public_self_check_pass = False
+    last_probe_pack_pass = False
 
     if ac_path and ac_path.exists():
         ac_exe = code_dir / "ac_solution.exe"
@@ -1086,6 +1089,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             solver_path.write_text(solver_cpp, encoding="utf-8")
             solver_exe = code_dir / f"solver_bf_{attempt}.exe"
             solver_compile_ok, solver_log = compile_cpp(solver_path, solver_exe, include_testlib=False)
+            last_solver_compile_ok = solver_compile_ok
             if not solver_compile_ok:
                 output_feedback = f"Solver compile failed:\n{solver_log}"
                 (code_dir / f"solver_bf_{attempt}.log").write_text(solver_log, encoding="utf-8")
@@ -1173,6 +1177,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             if not solver_public_ok:
                 logger.warning(f"[SOLVER] solver_bf_{attempt} FAILED public self-check: {output_feedback}")
                 continue  # continues 'for attempt in range(...)' loop
+            last_public_self_check_pass = True
 
             # ===== Micro-test verification — runs ONCE per attempt ==========
             failed = []
@@ -1272,6 +1277,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     generated_inputs = result["inputs"]
                     generated_outputs = result["outputs"]
                     solver_ok = True
+                    last_probe_pack_pass = True
                     logger.info(f"[SOLVER] solver_bf_{attempt} {result['message']}")
                     break
 
@@ -1295,6 +1301,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     generated_inputs = result["inputs"]
                     generated_outputs = result["outputs"]
                     solver_ok = True
+                    last_probe_pack_pass = True
                     logger.info(f"[SOLVER] solver_bf_{attempt} {result['message']}")
                     break
 
@@ -1411,7 +1418,19 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "oracle_route": oracle_plan.route.value if 'oracle_plan' in locals() else None,
         "accepted_artifact_kind": None,
         "verifier_provenance": trusted_checker_provenance if 'trusted_checker_provenance' in locals() else None,
-        "certification_evidence": [],
+        "certification_evidence": [
+            {
+                "compile_success": last_solver_compile_ok,
+                "public_self_check_pass": last_public_self_check_pass,
+                "probe_pack_pass": last_probe_pack_pass,
+            }
+        ],
+        "oracle_primary_family_id": oracle_plan.primary_family_id if 'oracle_plan' in locals() else None,
+        "oracle_fallback_family_id": oracle_plan.fallback_family_id if 'oracle_plan' in locals() else None,
+        "candidate_family_pool": [oracle_plan.primary_family_id] + ([oracle_plan.fallback_family_id] if 'oracle_plan' in locals() and oracle_plan.fallback_family_id else []) if 'oracle_plan' in locals() else [],
+        "oracle_compile_success": last_solver_compile_ok,
+        "oracle_public_self_check_pass": last_public_self_check_pass,
+        "oracle_probe_pack_pass": last_probe_pack_pass,
     }
 
     if generated_inputs and generated_outputs and 'oracle_plan' in locals():

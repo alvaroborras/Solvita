@@ -35,15 +35,17 @@ from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 
 import ast
 import subprocess as _subprocess
+from src.oracle.dataset import append_candidate_record, build_candidate_record
+from src.oracle.truth import evaluate_solution_consensus
 
 
 # ─────────────────────────────────────────────────────────────
 # 正确解运行器解析：遍历所有 correct_solutions，取第一个能成功编译或运行的
 # ─────────────────────────────────────────────────────────────
 
-def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
+def resolve_correct_runners(correct_solutions: list, tmpdir: Path):
     """
-    遍历 correct_solutions，返回第一个可用的运行器描述:
+    遍历 correct_solutions，返回所有可用的运行器描述:
       - ("cpp", Path)       — C++ 可执行文件
       - ("python", Path)    — Python3 脚本
 
@@ -53,8 +55,9 @@ def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
       3. 两者均失败 → 跳过该 solution
 
     Returns:
-        ("cpp", Path) | ("python", Path) 或 None
+        List[("cpp", Path) | ("python", Path)]
     """
+    runners = []
     for idx, sol in enumerate(correct_solutions):
         code = sol.get("code", "") if isinstance(sol, dict) else str(sol)
         if not code.strip():
@@ -67,7 +70,8 @@ def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
         ok, _ = compile_cpp(cpp_src, cpp_exe)
         if ok:
             logger.debug(f"[RUNNER] Solution {idx}: compiled as C++")
-            return ("cpp", cpp_exe)
+            runners.append(("cpp", cpp_exe))
+            continue
 
         # Strategy 2: Try Python 3 (AST parse check)
         try:
@@ -75,13 +79,16 @@ def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
             py_src = tmpdir / f"correct_{idx}.py"
             py_src.write_text(code, encoding="utf-8")
             logger.debug(f"[RUNNER] Solution {idx}: identified as Python 3")
-            return ("python", py_src)
+            runners.append(("python", py_src))
         except SyntaxError:
-            pass
+            logger.warning(f"[RUNNER] Solution {idx}: neither C++ nor Python 3, skipping")
 
-        logger.warning(f"[RUNNER] Solution {idx}: neither C++ nor Python 3, skipping")
+    return runners
 
-    return None  # 全部失败
+
+def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
+    runners = resolve_correct_runners(correct_solutions, tmpdir)
+    return runners[0] if runners else None
 
 
 def _run_correct(runner, inp: str):
@@ -145,7 +152,26 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
     elif passed > 0:
         return -0.2  # 部分错误
     else:
-        return -0.5  # 全错
+    return -0.5  # 全错
+
+
+def verify_generated_tests_route_aware(tests: list, runners: list, route: str) -> bool:
+    if not tests or not runners:
+        return False
+    cases = []
+    for test in tests:
+        inp = test.get("input", "")
+        outputs = []
+        for runner in runners:
+            rc, out = _run_correct(runner, inp)
+            if rc == 0:
+                outputs.append({"input": inp, "output": out, "witness": None})
+        if not outputs:
+            return False
+        result = evaluate_solution_consensus(route=route, cases=outputs, verifier=None)
+        if not result["trusted"]:
+            return False
+    return True
 
 
 
@@ -200,6 +226,7 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
             tmp = Path(tmpdir)
 
             runner = resolve_correct_runner(correct_solutions, tmp)
+            runners = resolve_correct_runners(correct_solutions, tmp)
             if runner is not None:
                 state["training_mode"] = True
                 state["training_runner"] = runner
@@ -214,6 +241,7 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
             tests = state.get("tests", {})
             generated_list = tests.get("generated_tests", [])
             oracle_ids = state.get("oracle_memory_item_ids", [])
+            route = tests.get("oracle_route") or "exact_single_answer"
 
             if tests.get("ready", False) and generated_list:
                 certified_count = sum(1 for t in generated_list if t.get("type") == "generated")
@@ -228,11 +256,31 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
                         logger.warning(f"[{problem_id}] All solvers failed self-check — penalty reward -0.70")
                         reward = -0.7
                 elif cert_ratio >= 1.0:
-                    reward = verify_generated_tests(generated_list, correct_solutions, tmp)
+                    if route == "exact_single_answer":
+                        reward = verify_generated_tests(generated_list, correct_solutions, tmp)
+                    else:
+                        reward = 1.0 if verify_generated_tests_route_aware(generated_list, runners, route) else -0.2
                 else:
                     reward = round(cert_ratio * 0.9, 2)
             else:
                 reward = -0.6
+
+            candidate_record = build_candidate_record(
+                problem_id=problem_id,
+                trainability_class=route,
+                candidate_family_pool=tests.get("candidate_family_pool", []),
+                selected_family_id=tests.get("oracle_primary_family_id") or "",
+                compile_success=bool(tests.get("oracle_compile_success", False)),
+                public_self_check_pass=bool(tests.get("oracle_public_self_check_pass", False)),
+                probe_pack_pass=bool(tests.get("oracle_probe_pack_pass", False)),
+                route=route,
+                artifact_kind=tests.get("accepted_artifact_kind") or "",
+                decision="accept" if reward > 0 else "reject",
+                verifier_provenance=tests.get("verifier_provenance"),
+                cost={"llm_calls": state.get("llm_calls", 0)},
+            )
+            candidate_dataset_path = Path(config.get("oracle_candidate_records_path", "data/checkpoints/oracle_candidate_records.jsonl"))
+            append_candidate_record(candidate_dataset_path, candidate_record)
 
             # Prepare state snapshot for settlement (Phase 2)
             pass_rate = max(0.0, min(1.0, (reward + 1.0) / 2.0))
@@ -247,7 +295,15 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
                     "iteration": trial_idx,
                     "problem": state.get("problem", {}),
                     "oracle_memory_item_ids": oracle_ids,
-                    "tests": {"pass_rate": pass_rate},
+                    "tests": {
+                        "pass_rate": pass_rate,
+                        "total_tests": tests.get("total_tests", 0),
+                        "test_results": tests.get("test_results", []),
+                        "oracle_route": route,
+                        "accepted_artifact_kind": tests.get("accepted_artifact_kind"),
+                        "certification_evidence": tests.get("certification_evidence", []),
+                        "verifier_provenance": tests.get("verifier_provenance"),
+                    },
                     "status": state.get("status", "pending"),
                 },
             }
