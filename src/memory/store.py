@@ -209,12 +209,17 @@ class MemoryStore:
             # Generate deterministic ID from text
             text = seed_data["text"]
             item_id = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+            payload = dict(seed_data.get("payload", {}))
+            if "family_id" in seed_data:
+                payload["family_id"] = seed_data["family_id"]
+            if "route_hint" in seed_data:
+                payload["route_hint"] = seed_data["route_hint"]
             
             item = MemoryItem(
                 id=item_id,
                 namespace=self.namespace,
                 text=text,
-                payload=seed_data.get("payload", {}),
+                payload=payload,
                 tags=seed_data.get("tags", []),
             )
             self.add_item(item)

@@ -33,6 +33,23 @@ def render_oracle_plan_to_prompt_payload(plan: Any, catalog_item: Dict[str, Any]
     ]
 
 
+def resolve_oracle_item_ids_by_family_ids(
+    client: "MemoryClient",
+    family_ids: List[str],
+) -> List[str]:
+    if not client.enabled or not client.store:
+        return []
+
+    remaining = set(family_ids)
+    resolved: List[str] = []
+    for item in client.store.get_all_items():
+        family_id = item.payload.get("family_id")
+        if family_id in remaining:
+            resolved.append(item.id)
+            remaining.remove(family_id)
+    return resolved
+
+
 class MemoryClient:
     """
     Unified memory client supporting plan/solve/test namespaces.

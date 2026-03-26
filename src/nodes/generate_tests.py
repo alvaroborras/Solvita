@@ -9,6 +9,11 @@ import subprocess
 from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.memory import MemoryClient, MemoryNamespace
+from src.memory.client import render_oracle_plan_to_prompt_payload, resolve_oracle_item_ids_by_family_ids
+from src.oracle.catalog import build_oracle_catalog
+from src.oracle.selector import build_rule_based_oracle_plan
+from src.oracle.trainability import classify_trainability
+from src.oracle.evidence import build_accepted_artifact
 from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
 
@@ -232,6 +237,47 @@ def _resolve_data_root(config: Dict[str, Any]) -> Path:
     if configured:
         return Path(configured).resolve()
     return (Path(__file__).resolve().parents[2] / "data").resolve()
+
+
+def _resolve_oracle_selection(
+    state: "SolvitaState",
+    config: Dict[str, Any],
+    problem_desc: str,
+    constraints: Dict[str, Any],
+    canonical: Dict[str, Any],
+    checker_exe: Optional[Path],
+) -> Tuple[Any, str, List[str], Optional[Dict[str, Any]]]:
+    raw_problem = state.get("raw_problem", {})
+    trusted_checker_provenance = raw_problem.get("trusted_checker_provenance")
+    trainability_class = classify_trainability(
+        has_checker=checker_exe is not None,
+        is_interactive=bool(raw_problem.get("interactive", False)),
+        is_multi_answer=bool(raw_problem.get("is_multi_solution", False) or canonical.get("is_multi_solution", False)),
+        has_trusted_checker=bool(trusted_checker_provenance),
+        has_trusted_normalizer=bool(raw_problem.get("trusted_normalizer")),
+    )
+    oracle_plan = build_rule_based_oracle_plan(
+        trainability_class=trainability_class,
+        problem_tags=canonical.get("tags", []) or raw_problem.get("tags", []),
+        problem_constraints=constraints,
+        acceptance_mode=((config or {}).get("oracle") or {}).get("mode", "safe"),
+    )
+    catalog = build_oracle_catalog()
+    primary_item = catalog[oracle_plan.primary_family_id]
+    oracle_payload = render_oracle_plan_to_prompt_payload(oracle_plan, primary_item)
+    oracle_advice = json.dumps(oracle_payload, indent=2)
+
+    oracle_memory = MemoryClient(
+        namespace=MemoryNamespace.ORACLE,
+        config=config,
+        problem_desc=problem_desc,
+        canonical=canonical,
+    )
+    family_ids = [oracle_plan.primary_family_id]
+    if oracle_plan.fallback_family_id:
+        family_ids.append(oracle_plan.fallback_family_id)
+    oracle_item_ids = resolve_oracle_item_ids_by_family_ids(oracle_memory, family_ids)
+    return oracle_plan, oracle_advice, oracle_item_ids, trusted_checker_provenance
 
 
 def safe_problem_dir_name(raw_problem: Dict[str, Any]) -> str:
@@ -1004,16 +1050,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         if checker_exe is None:
             logger.warning("[CHECKER] Failed to build checker, using exact string matching fallback")
 
-        oracle_memory = MemoryClient(
-            namespace=MemoryNamespace.ORACLE,
+        oracle_plan, oracle_advice, oracle_item_ids, trusted_checker_provenance = _resolve_oracle_selection(
+            state=state,
             config=config,
             problem_desc=problem_desc,
+            constraints=constraints,
             canonical=canonical,
-        )
-        oracle_advice, oracle_item_ids = oracle_memory.get_injection(
-            fsm_state="SOLVER",
-            failure_type=None,
-            attempt_count=0
+            checker_exe=checker_exe,
         )
 
         output_feedback = ""
@@ -1365,7 +1408,26 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "ready": True,
         "checker_exe": str(checker_exe) if checker_exe else None,
         "validator_exe": str(validator_exe) if validator_exe else None,
+        "oracle_route": oracle_plan.route.value if 'oracle_plan' in locals() else None,
+        "accepted_artifact_kind": None,
+        "verifier_provenance": trusted_checker_provenance if 'trusted_checker_provenance' in locals() else None,
+        "certification_evidence": [],
     }
+
+    if generated_inputs and generated_outputs and 'oracle_plan' in locals():
+        accepted_input = generated_inputs[0]
+        accepted_output = generated_outputs[0]
+        if oracle_plan.route.value == "trusted_checker_backed_multi_answer" and not trusted_checker_provenance:
+            tests["accepted_artifact_kind"] = None
+        else:
+            accepted_artifact = build_accepted_artifact(
+                route=oracle_plan.route,
+                input_text=accepted_input,
+                output_text=accepted_output,
+                verifier_provenance=trusted_checker_provenance,
+                evidence={"source": "generate_tests"},
+            )
+            tests["accepted_artifact_kind"] = accepted_artifact["kind"]
 
     return {
         "tests": tests,

@@ -189,6 +189,8 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
         "time_limit": 2000,
         "space_limit": 256,
         "public_tests": public_tests,
+        "tags": item.get("tags", []),
+        "is_multi_solution": bool(item.get("is_multi_solution", False)),
     }
     state = create_initial_state(raw_problem, config)
     state["iteration"] = trial_idx
