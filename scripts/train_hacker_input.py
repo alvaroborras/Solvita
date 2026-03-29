@@ -1,6 +1,11 @@
 """
 Offline training script for the Hacker Input Generation policy.
 
+Legacy auxiliary script for experimental hacker-input evaluation.
+
+Do not use this script as the formal Hacker memory trainer.
+The official trainer entrypoint is `scripts/train_hacker.py`.
+
 Usage:
     python scripts/train_hacker_input.py \\
         --data data/solvita_train/solvita_train_tanh.jsonl \\

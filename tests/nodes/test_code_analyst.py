@@ -86,6 +86,23 @@ def test_parse_analyst_unrecognized_json():
     assert res_type == "error"
     assert "Unrecognized JSON structure" in parsed["message"]
 
+
+def test_parse_analyst_extracts_fenced_json_after_preface():
+    resp = """I checked it carefully.
+
+```json
+{
+  "bug_class": "overflow",
+  "confidence": "high",
+  "evidence": ["saw a large accumulation"],
+  "suggested_route": "semantic",
+  "input_hypothesis": ["large_n"]
+}
+```"""
+    res_type, parsed = parse_code_analyst_response(resp)
+    assert res_type == "final_report"
+    assert parsed["bug_class"] == "overflow"
+
 def test_execute_tool_unknown():
     out = execute_tool("run_magic", {})
     assert "not implemented" in out
@@ -164,6 +181,31 @@ def test_run_code_analyst_loop():
     # Should return fallback report
     assert report["bug_class"] == "unknown"
     assert report["suggested_route"] == "semantic"
+
+
+def test_run_code_analyst_prefers_system_prompt_channel():
+    class DummyLLM:
+        def generate(self, prompt, **kwargs):
+            raise AssertionError("generate() should not be used when system prompt channel is available")
+
+        def generate_with_system(self, system, user, **kwargs):
+            assert "Return ONLY valid JSON" in system
+            return json.dumps({
+                "bug_class": "logic_branch",
+                "confidence": "medium",
+                "evidence": ["system prompt path"],
+                "suggested_route": "semantic",
+                "input_hypothesis": ["edge_case"],
+            })
+
+    state = {
+        "problem": {"description": "test", "constraints": {}},
+        "solution": {"code": "int main() {}"},
+    }
+
+    report = run_code_analyst(state, DummyLLM(), max_rounds=1)
+
+    assert report["bug_class"] == "logic_branch"
 
 def test_run_code_analyst_success():
     """Test Analyst successfully finishing after tool calls."""
@@ -334,3 +376,33 @@ def test_build_analyst_prompt_includes_memory_advice():
 
     assert "HACKER STRATEGY ADVICE" in prompt
     assert "repeated prefixes" in prompt
+
+
+def test_build_analyst_prompt_trims_old_and_large_history():
+    history = [
+        "oldest entry should be dropped",
+        "middle entry:\n" + ("x" * 12000),
+        "recent entry should stay",
+    ]
+
+    prompt = build_analyst_prompt(
+        "problem",
+        {"n": "1..10"},
+        "int main() {}",
+        history,
+    )
+
+    assert "oldest entry should be dropped" not in prompt
+    assert "recent entry should stay" in prompt
+    assert len(prompt) < 10000
+
+
+def test_execute_tool_cpp_rejects_overlarge_probe_before_compile(monkeypatch):
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("compile_cpp should not run for overlarge probes")
+
+    monkeypatch.setattr("src.nodes.code_analyst.compile_cpp", should_not_run)
+
+    out = execute_tool("run_cpp", {"cpp_code": "int main(){}\n" + ("// filler\n" * 5000)})
+
+    assert "too large" in out.lower()

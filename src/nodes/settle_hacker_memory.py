@@ -9,6 +9,7 @@ from typing import Dict, Any, TYPE_CHECKING
 from loguru import logger
 
 from src.memory import MemoryClient, MemoryNamespace, Observation
+from src.hacker.logging import build_hacker_event_payload
 from src.utils.reward_calculator import compute_hacker_reward
 
 if TYPE_CHECKING:
@@ -34,9 +35,13 @@ def settle_hacker_memory(state: "SolvitaState") -> Dict[str, Any]:
 
     sandbox_verdicts = state.get("sandbox_verdicts", [])
     compile_failures  = state.get("compile_failures", 0)
+    hack_result = state.get("hack_result", "")
 
     # --- Compute real reward (replaces T4.1 placeholder) ---
-    reward = compute_hacker_reward(sandbox_verdicts, compile_failures=compile_failures)
+    if hack_result == "GEN_FAILED" and not sandbox_verdicts:
+        reward = -0.6 - min(0.3, 0.1 * compile_failures)
+    else:
+        reward = compute_hacker_reward(sandbox_verdicts, compile_failures=compile_failures)
     logger.info(f"[Hack Memory] Computed reward = {reward:.3f} "
                 f"(verdicts={len(sandbox_verdicts)}, compile_fail={compile_failures})")
 
@@ -47,7 +52,6 @@ def settle_hacker_memory(state: "SolvitaState") -> Dict[str, Any]:
 
     analyst_report      = state.get("analyst_report", {})
     generator_route     = state.get("generator_route_used", "")
-    hack_result         = state.get("hack_result", "")
     hack_failure_type   = state.get("hack_failure_type", "")
 
     memory = MemoryClient(
@@ -77,7 +81,18 @@ def settle_hacker_memory(state: "SolvitaState") -> Dict[str, Any]:
     if memory.featurizer:
         obs.feature_keys = memory.featurizer.extract_features(obs, MemoryNamespace.HACK)
 
-    memory.log_event(obs, item_ids, reward, iteration=hack_round)
+    metadata = build_hacker_event_payload(
+        route_used=generator_route,
+        hack_result=hack_result,
+        failure_type=hack_failure_type,
+        generator_failure_kind=state.get("generator_failure_kind", ""),
+        compile_failures=compile_failures,
+        validity_passed=bool(sandbox_verdicts),
+        buggy_distinguished=(hack_result == "BREAK"),
+        reward=reward,
+    )
+
+    memory.log_event(obs, item_ids, reward, iteration=hack_round, metadata=metadata)
 
     return {
         "hacker_reward": reward,   # replace placeholder with real value

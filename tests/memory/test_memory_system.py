@@ -1,6 +1,7 @@
 """Unit tests for Trainable Memory."""
 
 import json
+import sqlite3
 import pytest
 from pathlib import Path
 
@@ -108,6 +109,57 @@ def test_event_logging(temp_memory_dir):
     events = store.get_events()
     assert len(events) == 1
     assert events[0].reward == 0.5
+
+
+def test_event_metadata_round_trip(temp_memory_dir):
+    store = MemoryStore(MemoryNamespace.HACK, temp_memory_dir)
+    store.initialize()
+
+    obs = Observation(fsm_state="HACK_SETTLE")
+    event = MemoryEvent(
+        timestamp="2026-03-29T00:00:00",
+        namespace=MemoryNamespace.HACK,
+        observation=obs,
+        selected_item_ids=["id1"],
+        reward=0.5,
+        metadata={"route_used": "semantic", "hack_result": "BREAK"},
+    )
+
+    store.log_event(event)
+    reloaded = store.get_events()[0]
+
+    assert reloaded.metadata["route_used"] == "semantic"
+    assert reloaded.metadata["hack_result"] == "BREAK"
+
+
+def test_store_migrates_events_table_add_metadata_json(temp_memory_dir):
+    db_dir = temp_memory_dir / "hack"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "memory.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                observation_json TEXT NOT NULL,
+                selected_item_ids_json TEXT NOT NULL,
+                reward REAL NOT NULL,
+                problem_hash TEXT,
+                iteration INTEGER DEFAULT 0
+            )
+            """
+        )
+
+    store = MemoryStore(MemoryNamespace.HACK, temp_memory_dir)
+    store.initialize()
+
+    with sqlite3.connect(db_path) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+
+    assert "metadata_json" in cols
 
 
 def test_policy_prediction(temp_memory_dir):
@@ -339,4 +391,3 @@ def test_featurizer_checker_and_graph_features():
     )
     features = featurizer.extract_features(obs_dag, MemoryNamespace.TEST)
     assert "GRAPH:dag" in features
-

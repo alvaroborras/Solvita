@@ -178,6 +178,14 @@ generate_tests_node
   └─ immediate reward updates on compile/runtime failures
 ```
 
+### Hacker Agent Flow
+```
+hack_test_node
+  ↓ (stores hacker_memory_item_ids and raw hacker verdict evidence in state)
+settle_hacker_memory
+  ↓ (computes final reward and logs structured metadata)
+```
+
 ## Skills System
 
 The solve agent can reference reusable code skills from `skills/*.md`:
@@ -208,17 +216,17 @@ When injected, the SkillLoader reads the file and includes the full snippet.
 ```
 data/memory/
 ├── plan/
-│   ├── items.jsonl       # Memory items for plan agent
-│   ├── policy.json       # Trainable weights
-│   └── events.jsonl      # Event log (observations + rewards)
+│   ├── memory.db         # SQLite items + events
+│   └── policy.json       # Trainable weights
 ├── solve/
-│   ├── items.jsonl
-│   ├── policy.json
-│   └── events.jsonl
-└── test/
-    ├── items.jsonl
-    ├── policy.json
-    └── events.jsonl
+│   ├── memory.db
+│   └── policy.json
+├── oracle/
+│   ├── memory.db
+│   └── policy.json
+└── hack/
+    ├── memory.db
+    └── policy.json
 ```
 
 ### items.jsonl Format
@@ -228,11 +236,28 @@ One item per line (JSONL):
 {"id": "def456", "namespace": "plan", "text": "...", "payload": {...}, "uses": 3, "avg_reward": -0.2}
 ```
 
-### events.jsonl Format
-One event per line (JSONL):
+### events / memory.db Event Fields
+Events are stored in SQLite. Conceptually each event includes:
 ```json
-{"timestamp": "...", "namespace": "plan", "observation": {...}, "selected_item_ids": [...], "reward": 1.0}
+{"timestamp": "...", "namespace": "hack", "observation": {...}, "selected_item_ids": [...], "reward": 1.0, "metadata": {"route_used": "semantic", "hack_result": "BREAK"}}
 ```
+
+For HACK settlement, metadata may include:
+- `route_used`
+- `hack_result`
+- `failure_type`
+- `generator_failure_kind`
+- `compile_failures`
+- `validity_passed`
+- `buggy_distinguished`
+
+Formal offline Hacker trainer:
+
+```bash
+python3 scripts/train_hacker.py --dataset data/solvita_train/solvita_train_tanh.jsonl --data-dir data/memory
+```
+
+`scripts/train_hacker_input.py` is legacy and is not the formal trainer.
 
 ### policy.json Format
 ```json

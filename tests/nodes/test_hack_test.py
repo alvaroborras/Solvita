@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from src.nodes.hack_test import hack_test_node
 from src.utils.verdict import VerdictStatus, FailureType
+from src.hacker.runtime import execute_hack_candidate
 
 @pytest.fixture
 def base_mocks(monkeypatch):
@@ -140,3 +141,21 @@ def test_execution_exception_handled(mock_state, base_mocks, monkeypatch):
     result = hack_test_node(mock_state)
 
     assert any(f.get("type") == "System Error" for f in result["hack_failures"])
+
+
+def test_execute_hack_candidate_uses_expected_output_without_checker(monkeypatch, tmp_path):
+    exe_path = tmp_path / "sol.exe"
+    exe_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("src.hacker.runtime.run_program", lambda *a, **k: (0, "13\n", ""))
+
+    result = execute_hack_candidate(
+        exe_path=exe_path,
+        generated_input="5\n1 2 3 4 5\n",
+        expected_output="15\n",
+        checker_exe=None,
+    )
+
+    assert result["sandbox_verdicts"][0]["verdict"] == VerdictStatus.VALID_AND_BREAK.value
+    assert result["sandbox_verdicts"][0]["failure_type"] == FailureType.WA.value
+    assert result["hack_failures"][0]["expected"] == "15"

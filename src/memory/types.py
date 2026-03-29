@@ -108,6 +108,7 @@ class MemoryEvent:
     # Optional metadata
     problem_hash: Optional[str] = None
     iteration: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -125,6 +126,7 @@ class MemoryEvent:
             "reward": self.reward,
             "problem_hash": self.problem_hash,
             "iteration": self.iteration,
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -146,4 +148,5 @@ class MemoryEvent:
             reward=data["reward"],
             problem_hash=data.get("problem_hash"),
             iteration=data.get("iteration", 0),
+            metadata=data.get("metadata", {}),
         )
