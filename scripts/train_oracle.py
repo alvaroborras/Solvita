@@ -43,7 +43,7 @@ from src.oracle.truth import evaluate_solution_consensus
 # 正确解运行器解析：遍历所有 correct_solutions，取第一个能成功编译或运行的
 # ─────────────────────────────────────────────────────────────
 
-def resolve_correct_runners(correct_solutions: list, tmpdir: Path):
+def resolve_correct_runners(correct_solutions: list, tmpdir: Path, max_runners: int = 3):
     """
     遍历 correct_solutions，返回所有可用的运行器描述:
       - ("cpp", Path)       — C++ 可执行文件
@@ -59,6 +59,8 @@ def resolve_correct_runners(correct_solutions: list, tmpdir: Path):
     """
     runners = []
     for idx, sol in enumerate(correct_solutions):
+        if len(runners) >= max_runners:
+            break
         code = sol.get("code", "") if isinstance(sol, dict) else str(sol)
         if not code.strip():
             continue
@@ -86,8 +88,8 @@ def resolve_correct_runners(correct_solutions: list, tmpdir: Path):
     return runners
 
 
-def resolve_correct_runner(correct_solutions: list, tmpdir: Path):
-    runners = resolve_correct_runners(correct_solutions, tmpdir)
+def resolve_correct_runner(correct_solutions: list, tmpdir: Path, max_runners: int = 3):
+    runners = resolve_correct_runners(correct_solutions, tmpdir, max_runners=max_runners)
     return runners[0] if runners else None
 
 
@@ -152,7 +154,7 @@ def verify_generated_tests(tests: list, correct_solutions: list, tmpdir: Path) -
     elif passed > 0:
         return -0.2  # 部分错误
     else:
-    return -0.5  # 全错
+        return -0.5  # 全错
 
 
 def verify_generated_tests_route_aware(tests: list, runners: list, route: str) -> bool:
@@ -172,6 +174,160 @@ def verify_generated_tests_route_aware(tests: list, runners: list, route: str) -
         if not result["trusted"]:
             return False
     return True
+
+
+def _build_candidate_audit_fields(tests: dict, reward: float) -> dict:
+    certified_count = int(tests.get("certified_count", 0) or 0)
+    certified_target_count = int(tests.get("certified_target_count", 0) or 0)
+    cert_ratio = float(tests.get("cert_ratio", 0.0) or 0.0)
+    compile_success = bool(tests.get("oracle_compile_success", False))
+    public_self_check_pass = bool(tests.get("oracle_public_self_check_pass", False))
+    probe_pack_pass = bool(tests.get("oracle_probe_pack_pass", False))
+    artifact_kind = tests.get("accepted_artifact_kind") or ""
+    ready = bool(tests.get("ready", False))
+    generated_tests = tests.get("generated_tests", []) or []
+
+    decision = "accept" if reward > 0 else "reject"
+    reward_reason = ""
+    failure_stage = ""
+    failure_subtype = ""
+
+    if reward > 0:
+        reward_reason = "fully_certified" if cert_ratio >= 1.0 else "partial_certification"
+        if cert_ratio < 1.0:
+            failure_stage = "micro_test_certification"
+            failure_subtype = "partial_certification"
+    elif not ready or not generated_tests:
+        reward_reason = "no_generated_tests"
+        failure_stage = "generation"
+        failure_subtype = "empty_generated_test_set"
+    elif not compile_success:
+        reward_reason = "solver_compile_failed"
+        failure_stage = "solver_compile"
+        failure_subtype = "compile_failed"
+    elif not public_self_check_pass:
+        reward_reason = "public_self_check_failed"
+        failure_stage = "public_self_check"
+        failure_subtype = "public_self_check_failed"
+    elif certified_count == 0:
+        reward_reason = "zero_certified_outputs"
+        failure_stage = "micro_test_certification"
+        failure_subtype = "empty_certification_set"
+    elif not probe_pack_pass:
+        reward_reason = "probe_pack_failed"
+        failure_stage = "micro_test_certification"
+        failure_subtype = "probe_pack_failed"
+    elif not artifact_kind:
+        reward_reason = "acceptance_gate_rejected"
+        failure_stage = "artifact_emission"
+        failure_subtype = "missing_accepted_artifact"
+    else:
+        reward_reason = "negative_reward"
+        failure_stage = "verification"
+        failure_subtype = "verification_rejected"
+
+    return {
+        "decision": decision,
+        "certified_count": certified_count,
+        "certified_target_count": certified_target_count,
+        "cert_ratio": cert_ratio,
+        "reward": reward,
+        "reward_reason": reward_reason,
+        "failure_stage": failure_stage,
+        "failure_subtype": failure_subtype,
+        "checker_fallback_used": bool(tests.get("checker_fallback_used", False)),
+        "solver_attempt_count": int(tests.get("solver_attempt_count", 0) or 0),
+        "selected_template_name": tests.get("selected_template_name") or "",
+        "prompt_char_stats": dict(tests.get("prompt_char_stats", {}) or {}),
+        "compact_retry_count": int(tests.get("compact_retry_count", 0) or 0),
+    }
+
+
+def _build_training_state_snapshot(
+    *,
+    state: dict,
+    config: dict,
+    trial_idx: int,
+    tests: dict,
+    route: str,
+    oracle_ids: list,
+    pass_rate: float,
+) -> dict:
+    return {
+        "config": config,
+        "iteration": trial_idx,
+        "raw_problem": state.get("raw_problem", {}),
+        "problem": state.get("problem", {}),
+        "oracle_memory_item_ids": oracle_ids,
+        "tests": {
+            "pass_rate": pass_rate,
+            "total_tests": tests.get("total_tests", 0),
+            "test_results": tests.get("test_results", []),
+            "oracle_route": route,
+            "oracle_memory_decision": state.get("oracle_memory_decision"),
+            "accepted_artifact_kind": tests.get("accepted_artifact_kind"),
+            "certification_evidence": tests.get("certification_evidence", []),
+            "verifier_provenance": tests.get("verifier_provenance"),
+        },
+        "oracle_event_metadata": state.get("oracle_event_metadata", {}),
+        "status": state.get("status", "pending"),
+    }
+
+
+def _rebuild_oracle_memory_snapshot(config: dict) -> None:
+    trainable_memory = config.get("trainable_memory", {}) or {}
+    if str(trainable_memory.get("oracle_memory_mode", "updated") or "updated") != "updated":
+        return
+    if bool(trainable_memory.get("skip_oracle_memory_rebuild", False)):
+        return
+
+    snapshot_id = str(trainable_memory.get("oracle_memory_snapshot_id") or "oracle_memory_mvp_v1").strip()
+    output_dir = str(trainable_memory.get("oracle_memory_output_dir") or "data/oracle_memory_models")
+    data_dir = str(trainable_memory.get("data_dir") or "data/memory")
+    rebuild_script = Path(__file__).with_name("rebuild_oracle_memory_db.py")
+
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(rebuild_script),
+                "--data-dir",
+                data_dir,
+                "--snapshot-id",
+                snapshot_id,
+                "--output-dir",
+                output_dir,
+                "--prefix",
+                snapshot_id,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "Oracle memory snapshot rebuild failed: snapshot_id={}, returncode={}, stderr={}",
+            snapshot_id,
+            exc.returncode,
+            (exc.stderr or "").strip(),
+        )
+        return
+    except OSError as exc:
+        logger.warning(
+            "Oracle memory snapshot rebuild could not be launched: snapshot_id={}, error={}",
+            snapshot_id,
+            str(exc),
+        )
+        return
+    logger.info(
+        "Oracle memory snapshot rebuild complete: snapshot_id={}, output_dir={}",
+        snapshot_id,
+        output_dir,
+    )
+    if completed.stdout.strip():
+        logger.info("Oracle memory rebuild output: {}", completed.stdout.strip())
+    if completed.stderr.strip():
+        logger.warning("Oracle memory rebuild stderr: {}", completed.stderr.strip())
 
 
 
@@ -225,8 +381,9 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
         with tempfile.TemporaryDirectory(dir=tmp_dir) as tmpdir:
             tmp = Path(tmpdir)
 
-            runner = resolve_correct_runner(correct_solutions, tmp)
-            runners = resolve_correct_runners(correct_solutions, tmp)
+            max_runners = int(config.get("oracle_max_correct_runners", 3))
+            runner = resolve_correct_runner(correct_solutions, tmp, max_runners=max_runners)
+            runners = resolve_correct_runners(correct_solutions, tmp, max_runners=max_runners)
             if runner is not None:
                 state["training_mode"] = True
                 state["training_runner"] = runner
@@ -265,17 +422,35 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
             else:
                 reward = -0.6
 
+            audit_fields = _build_candidate_audit_fields(tests, reward)
+            oracle_event_metadata = dict(state.get("oracle_event_metadata", {}))
+            oracle_event_metadata.update(audit_fields)
+            state["oracle_event_metadata"] = oracle_event_metadata
+
             candidate_record = build_candidate_record(
                 problem_id=problem_id,
                 trainability_class=route,
                 candidate_family_pool=tests.get("candidate_family_pool", []),
-                selected_family_id=tests.get("oracle_primary_family_id") or "",
+                selected_family_id=tests.get("oracle_selected_family_id") or tests.get("oracle_primary_family_id") or "",
+                fallback_family_id=tests.get("oracle_fallback_family_id") or "",
                 compile_success=bool(tests.get("oracle_compile_success", False)),
                 public_self_check_pass=bool(tests.get("oracle_public_self_check_pass", False)),
                 probe_pack_pass=bool(tests.get("oracle_probe_pack_pass", False)),
                 route=route,
                 artifact_kind=tests.get("accepted_artifact_kind") or "",
-                decision="accept" if reward > 0 else "reject",
+                decision=audit_fields["decision"],
+                certified_count=audit_fields["certified_count"],
+                certified_target_count=audit_fields["certified_target_count"],
+                cert_ratio=audit_fields["cert_ratio"],
+                reward=audit_fields["reward"],
+                reward_reason=audit_fields["reward_reason"],
+                failure_stage=audit_fields["failure_stage"],
+                failure_subtype=audit_fields["failure_subtype"],
+                checker_fallback_used=audit_fields["checker_fallback_used"],
+                solver_attempt_count=audit_fields["solver_attempt_count"],
+                selected_template_name=audit_fields["selected_template_name"],
+                prompt_char_stats=audit_fields["prompt_char_stats"],
+                compact_retry_count=audit_fields["compact_retry_count"],
                 verifier_provenance=tests.get("verifier_provenance"),
                 cost={"llm_calls": state.get("llm_calls", 0)},
             )
@@ -290,22 +465,15 @@ def _worker_generate(item: dict, config: dict, trial_idx: int, tmp_dir: str = No
                 "reward": reward,
                 "oracle_ids": oracle_ids,
                 "pass_rate": pass_rate,
-                "state_snapshot": {
-                    "config": config,
-                    "iteration": trial_idx,
-                    "problem": state.get("problem", {}),
-                    "oracle_memory_item_ids": oracle_ids,
-                    "tests": {
-                        "pass_rate": pass_rate,
-                        "total_tests": tests.get("total_tests", 0),
-                        "test_results": tests.get("test_results", []),
-                        "oracle_route": route,
-                        "accepted_artifact_kind": tests.get("accepted_artifact_kind"),
-                        "certification_evidence": tests.get("certification_evidence", []),
-                        "verifier_provenance": tests.get("verifier_provenance"),
-                    },
-                    "status": state.get("status", "pending"),
-                },
+                "state_snapshot": _build_training_state_snapshot(
+                    state=state,
+                    config=config,
+                    trial_idx=trial_idx,
+                    tests=tests,
+                    route=route,
+                    oracle_ids=oracle_ids,
+                    pass_rate=pass_rate,
+                ),
             }
 
     except FatalLLMError as e:
@@ -403,6 +571,28 @@ def main():
     parser.add_argument("--tmp-dir", default=None, help="临时文件存放目录 (建议设在大盘路径)")
     parser.add_argument("--checkpoint-dir", default=None, help="断点文件目录 (默认同 data-dir)")
     parser.add_argument("--max-consecutive-errors", type=int, default=5, help="连续多少道题发生普通错误时触发快停")
+    parser.add_argument("--max-correct-runners", type=int, default=3, help="每题最多保留多少个可运行 correct_solution 作为辅助校验")
+    parser.add_argument(
+        "--oracle-memory-mode",
+        choices=["off", "frozen", "updated"],
+        default="updated",
+        help="Oracle memory runtime/rebuild mode",
+    )
+    parser.add_argument(
+        "--oracle-memory-snapshot-id",
+        default="oracle_memory_mvp_v1",
+        help="Snapshot id used for Oracle memory runtime and rebuild output",
+    )
+    parser.add_argument(
+        "--skip-oracle-memory-rebuild",
+        action="store_true",
+        help="Skip rebuilding the Oracle memory DB snapshot after training",
+    )
+    parser.add_argument(
+        "--oracle-memory-output-dir",
+        default="data/oracle_memory_models",
+        help="Output directory for rebuilt Oracle memory artifacts",
+    )
     args = parser.parse_args()
 
     if args.tmp_dir:
@@ -416,7 +606,12 @@ def main():
             "enabled": True,
             "data_dir": args.data_dir,
             "oracle_top_k": 3,
-        }
+            "oracle_memory_mode": args.oracle_memory_mode,
+            "oracle_memory_snapshot_id": args.oracle_memory_snapshot_id,
+            "skip_oracle_memory_rebuild": args.skip_oracle_memory_rebuild,
+            "oracle_memory_output_dir": args.oracle_memory_output_dir,
+        },
+        "oracle_max_correct_runners": args.max_correct_runners,
     }
     
     # Checkpoint Signature
@@ -567,6 +762,7 @@ def main():
         logger.info(f"训练完毕!")
         if rewards:
             logger.info(f"本次新跑平均 reward: {sum(rewards)/len(rewards):+.3f}")
+        _rebuild_oracle_memory_snapshot(config)
         logger.info("=" * 50)
 
 

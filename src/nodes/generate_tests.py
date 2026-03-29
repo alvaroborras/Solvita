@@ -15,6 +15,9 @@ from src.oracle.catalog import build_oracle_catalog
 from src.oracle.selector import build_rule_based_oracle_plan
 from src.oracle.trainability import classify_trainability
 from src.oracle.evidence import build_accepted_artifact
+from src.oracle.logging import build_oracle_event_payload
+from src.oracle.oracle_memory_runtime import decide_oracle_memory_gate
+from src.oracle.oracle_memory_policy import recipe_bucket_from_template_name
 from src.oracle.types import OracleRoute
 from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
@@ -55,14 +58,45 @@ def _log_prompt_size(stage: str, prompt: str, **sections: str) -> None:
     logger.debug(f"[PROMPT:{stage}] total_chars={len(prompt)} | {stats}")
 
 
-def _generate_with_compact_retry(llm: UnifiedLLMClient, prompt_builder, *args, **kwargs) -> str:
+def _update_prompt_telemetry(
+    telemetry: Optional[Dict[str, Any]],
+    stage: Optional[str],
+    prompt: str,
+) -> None:
+    if telemetry is None or not stage:
+        return
+    prompt_char_stats = telemetry.setdefault("prompt_char_stats", {})
+    prompt_char_stats[stage] = max(prompt_char_stats.get(stage, 0), len(prompt))
+
+
+def _generate_with_compact_retry(
+    llm: UnifiedLLMClient,
+    prompt_builder,
+    *args,
+    _telemetry: Optional[Dict[str, Any]] = None,
+    _stage: Optional[str] = None,
+    **kwargs,
+) -> str:
     prompt = prompt_builder(*args, compact=False, **kwargs)
+    _update_prompt_telemetry(_telemetry, _stage, prompt)
     try:
         return llm.generate(prompt)
     except PromptTooLongError:
         compact_prompt = prompt_builder(*args, compact=True, **kwargs)
+        _update_prompt_telemetry(_telemetry, _stage, compact_prompt)
+        if _telemetry is not None and _stage:
+            _telemetry["compact_retry_count"] = _telemetry.get("compact_retry_count", 0) + 1
+            stages = _telemetry.setdefault("compact_retry_stages", [])
+            if _stage not in stages:
+                stages.append(_stage)
         logger.warning("[TestGen] Prompt exceeded max tokens, retrying with compact prompt")
         return llm.generate(compact_prompt)
+
+
+def _compute_certification_ratio(certified_count: int, target_count: int) -> float:
+    if certified_count <= 0 or target_count <= 0:
+        return 0.0
+    return certified_count / float(target_count)
 
 
 def _is_cyclic_equivalence_problem(problem_desc: str) -> bool:
@@ -290,6 +324,17 @@ def _resolve_oracle_selection(
         family_ids.append(oracle_plan.fallback_family_id)
     oracle_item_ids = resolve_oracle_item_ids_by_family_ids(oracle_memory, family_ids)
     return oracle_plan, oracle_advice, oracle_item_ids, trusted_checker_provenance
+
+
+def _resolve_selected_family_id(solver_data: Dict[str, Any], oracle_plan: Any) -> str:
+    candidate_family_ids = [oracle_plan.primary_family_id]
+    if getattr(oracle_plan, "fallback_family_id", None):
+        candidate_family_ids.append(oracle_plan.fallback_family_id)
+
+    selected_family_id = solver_data.get("selected_family_id")
+    if selected_family_id in candidate_family_ids:
+        return selected_family_id
+    return oracle_plan.primary_family_id
 
 
 def _apply_oracle_acceptance_gate(
@@ -604,7 +649,7 @@ Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
 Return ONLY a valid JSON object. No markdown, no explanation, no code fences.
 CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
 Schema:
-{{"template_name": "<name of strategy>", "solver_cpp": "#include ...\\nint main(){{...}}\\n"}}
+{{"selected_family_id": "<family_id from strategy reference>", "template_name": "<name of strategy>", "solver_cpp": "#include ...\\nint main(){{...}}\\n"}}
 """
     _log_prompt_size("solver", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=pt_block, templates=compact_templates, feedback=feedback_block)
     return prompt
@@ -680,6 +725,7 @@ Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
 Return ONLY a JSON object. No markdown, no explanation.
 Schema:
 {{
+  "selected_family_id": "<family_id from the strategy reference>",
   "template_name": "<name of the strategy you are using>",
   "solver_cpp": "<complete C++17 source code>"
 }}
@@ -853,6 +899,68 @@ def _run_training_runner(runner, inp: str):
             return -1, ""
 
 
+def _build_oracle_memory_decision(
+    *,
+    config: Dict[str, Any],
+    selected_template_name: str,
+    gate_decision: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_template_name = str(selected_template_name or "").strip()
+    selected_action_bucket = (
+        recipe_bucket_from_template_name(normalized_template_name)
+        if normalized_template_name
+        else None
+    )
+    oracle_memory_mode = (
+        config.get("trainable_memory", {}).get("oracle_memory_mode", "off")
+        if isinstance(config, dict)
+        else "off"
+    )
+    decision = {
+        "memory_mode": oracle_memory_mode,
+        "policy_version": "rule_v1",
+        "selected_action": selected_action_bucket,
+        "candidate_action_set": [selected_action_bucket] if selected_action_bucket else [],
+        "exploration_flag": False,
+        "replacement_action": None,
+        "applied": False,
+        "reason": "gate_not_run",
+    }
+    if not normalized_template_name:
+        decision["reason"] = "template_unknown"
+        return decision
+    if gate_decision:
+        decision.update(gate_decision)
+        decision["selected_action"] = selected_action_bucket
+        decision["candidate_action_set"] = [selected_action_bucket]
+        decision["replacement_action"] = None
+        decision["exploration_flag"] = False
+        decision["memory_mode"] = oracle_memory_mode
+        decision["policy_version"] = "rule_v1"
+    return decision
+
+
+def _evaluate_oracle_memory_gate_if_ready(
+    *,
+    config: Dict[str, Any],
+    selected_template_name: str,
+) -> Dict[str, Any]:
+    normalized_template_name = str(selected_template_name or "").strip()
+    if not normalized_template_name:
+        return {
+            "applied": False,
+            "reason": "template_unknown",
+            "selected_action": None,
+            "replacement_action": None,
+            "candidate_action_set": [],
+            "exploration_flag": False,
+        }
+    return decide_oracle_memory_gate(
+        config=config,
+        selected_template_name=normalized_template_name,
+    )
+
+
 def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     logger.info("[Node] Generating test cases")
 
@@ -927,6 +1035,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     gen_feedback = ""
     val_feedback = ""
     validator_exe: Optional[Path] = None
+    oracle_telemetry: Dict[str, Any] = {
+        "prompt_char_stats": {},
+        "compact_retry_count": 0,
+        "compact_retry_stages": [],
+    }
 
     for attempt in range(1, max_iter + 1):
         gen_response = _generate_with_compact_retry(
@@ -937,6 +1050,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             public_tests,
             gen_feedback,
             memory_advice=generator_advice,
+            _telemetry=oracle_telemetry,
+            _stage="generator",
         )
         llm_calls += 1
         (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
@@ -963,6 +1078,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             constraints,
             public_tests,
             val_feedback,
+            _telemetry=oracle_telemetry,
+            _stage="validator",
         )
         llm_calls += 1
         logger.info(f"[GV] Validator response length: {len(val_response)}")
@@ -1062,6 +1179,9 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     last_solver_compile_ok = False
     last_public_self_check_pass = False
     last_probe_pack_pass = False
+    checker_fallback_used = False
+    solver_attempt_count = 0
+    selected_template_name = ""
 
     if ac_path and ac_path.exists():
         ac_exe = code_dir / "ac_solution.exe"
@@ -1089,6 +1209,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 constraints,
                 public_tests,
                 checker_feedback,
+                _telemetry=oracle_telemetry,
+                _stage="checker",
             )
             llm_calls += 1
             (code_dir / f"checker_{attempt}_raw.txt").write_text(checker_response, encoding="utf-8")
@@ -1120,6 +1242,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 break
 
         if checker_exe is None:
+            checker_fallback_used = True
             logger.warning("[CHECKER] Failed to build checker, using exact string matching fallback")
 
         oracle_plan, oracle_advice, oracle_item_ids, trusted_checker_provenance = _resolve_oracle_selection(
@@ -1134,22 +1257,28 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         output_feedback = ""
         diagnostic_info = ""
         solver_ok = False
+        selected_family_id = oracle_plan.primary_family_id
         best_partial_inputs: list = []
         best_partial_outputs: list = []
         for attempt in range(1, output_max_iter + 1):
+            solver_attempt_count = attempt
             solver_response = _generate_with_compact_retry(
                 out_llm,
                 build_solver_prompt,
                 problem_desc, constraints, public_tests, oracle_advice,
                 output_feedback,
                 attempt=attempt,
+                _telemetry=oracle_telemetry,
+                _stage="solver",
             )
             llm_calls += 1
             (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
             try:
                 solver_data = parse_json_response(solver_response)
                 solver_cpp = solver_data.get("solver_cpp", "")
+                selected_family_id = _resolve_selected_family_id(solver_data, oracle_plan)
                 tmpl_name = solver_data.get("template_name", "UNKNOWN")
+                selected_template_name = tmpl_name
                 logger.info(f"[SOLVER] LLM chose template: {tmpl_name}")
             except Exception:
                 output_feedback = "Invalid JSON (must return pure JSON with template_name and solver_cpp)"
@@ -1473,7 +1602,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
     # Compute solver cert_ratio for graduated reward in training mode
     _cert_count = sum(1 for t in generated_tests if t["type"] == "generated")
-    _cert_ratio = (_cert_count / 200.0) if _cert_count > 0 else 0.0  # 200 is the target input count
+    _cert_ratio = _compute_certification_ratio(_cert_count, target_count)
 
     tests = {
         "generated_tests": generated_tests,
@@ -1482,6 +1611,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "passed_tests": 0,
         "pass_rate": 0.0,
         "cert_ratio": _cert_ratio,   # fraction of the 200 target micro-tests that were certified
+        "certified_count": _cert_count,
+        "certified_target_count": target_count,
         "pending_execution": False,
         "ready": True,
         "checker_exe": str(checker_exe) if checker_exe else None,
@@ -1498,10 +1629,16 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         ],
         "oracle_primary_family_id": oracle_plan.primary_family_id if 'oracle_plan' in locals() else None,
         "oracle_fallback_family_id": oracle_plan.fallback_family_id if 'oracle_plan' in locals() else None,
+        "oracle_selected_family_id": selected_family_id if 'selected_family_id' in locals() else None,
         "candidate_family_pool": [oracle_plan.primary_family_id] + ([oracle_plan.fallback_family_id] if 'oracle_plan' in locals() and oracle_plan.fallback_family_id else []) if 'oracle_plan' in locals() else [],
         "oracle_compile_success": last_solver_compile_ok,
         "oracle_public_self_check_pass": last_public_self_check_pass,
         "oracle_probe_pack_pass": last_probe_pack_pass,
+        "checker_fallback_used": checker_fallback_used,
+        "solver_attempt_count": solver_attempt_count,
+        "selected_template_name": selected_template_name,
+        "prompt_char_stats": oracle_telemetry.get("prompt_char_stats", {}),
+        "compact_retry_count": oracle_telemetry.get("compact_retry_count", 0),
     }
     accepted_artifact = None
     if 'oracle_plan' in locals():
@@ -1516,19 +1653,49 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         )
         tests["accepted_artifact_kind"] = accepted_artifact["kind"] if accepted_artifact else None
 
+    oracle_memory_gate_decision = _evaluate_oracle_memory_gate_if_ready(
+        config=config,
+        selected_template_name=selected_template_name,
+    )
+    oracle_memory_decision = _build_oracle_memory_decision(
+        config=config,
+        selected_template_name=selected_template_name,
+        gate_decision=oracle_memory_gate_decision,
+    )
+    tests["oracle_memory_decision"] = oracle_memory_decision
+
     return {
         "tests": tests,
-        "oracle_event_metadata": {
-            "trainability_class": tests.get("oracle_route"),
-            "artifact_kind": tests.get("accepted_artifact_kind"),
-            "certification_evidence": tests.get("certification_evidence", []),
-            "verifier_provenance": tests.get("verifier_provenance"),
-            "candidate_family_pool": tests.get("candidate_family_pool", []),
-            "selected_family_ids": [family_id for family_id in [tests.get("oracle_primary_family_id"), tests.get("oracle_fallback_family_id")] if family_id],
-            "selector_version": "rule_v1",
-            "propensity": 1.0,
-            "decision": "accept" if accepted_artifact else "abstain",
-        },
+        "oracle_memory_decision": oracle_memory_decision,
+        "oracle_event_metadata": build_oracle_event_payload(
+            problem_hash="",
+            trainability_class=tests.get("oracle_route"),
+            candidate_family_pool=tests.get("candidate_family_pool", []),
+            selected_family_ids=[
+                family_id for family_id in [tests.get("oracle_selected_family_id")] if family_id
+            ],
+            selector_version="rule_v1",
+            propensity=1.0,
+            certification_route=tests.get("oracle_route"),
+            verifier_provenance=tests.get("verifier_provenance"),
+            decision="accept" if accepted_artifact else "abstain",
+            artifact_kind=tests.get("accepted_artifact_kind"),
+            cost={"llm_calls": llm_calls},
+            certified_count=tests.get("certified_count", 0),
+            certified_target_count=tests.get("certified_target_count", 0),
+            cert_ratio=tests.get("cert_ratio", 0.0),
+            checker_fallback_used=tests.get("checker_fallback_used", False),
+            solver_attempt_count=tests.get("solver_attempt_count", 0),
+            selected_template_name=tests.get("selected_template_name", ""),
+            prompt_char_stats=tests.get("prompt_char_stats", {}),
+            compact_retry_count=tests.get("compact_retry_count", 0),
+            evidence={"certification_evidence": tests.get("certification_evidence", [])},
+            memory_mode=oracle_memory_decision["memory_mode"],
+            policy_version=oracle_memory_decision["policy_version"],
+            candidate_action_set=oracle_memory_decision["candidate_action_set"],
+            selected_action=oracle_memory_decision["selected_action"],
+            exploration_flag=oracle_memory_decision["exploration_flag"],
+        ),
         "execution_log": [
             f"Generated {len(generated_tests)} test cases",
             f"  Public: {test_counts['public']}, Edge: {test_counts['edge']}, "

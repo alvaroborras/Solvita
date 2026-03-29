@@ -6,13 +6,16 @@ from src.nodes.generate_tests import (
     build_generator_prompt,
     build_validator_prompt,
     build_checker_prompt,
+    _compute_certification_ratio,
     _generate_with_compact_retry,
     _append_distinct_generated_input,
+    _resolve_selected_family_id,
     _validate_checker_on_public_tests,
 )
 from src.utils.output_judging import judge_output_against_certified_expected
 from src.nodes.analyze_feedback import _analyze_compilation_errors
 from src.llm.unified_client import PromptTooLongError
+from src.oracle.types import OraclePlan, OracleRoute
 
 def test_format_solver_feedback_with_asan():
     failed = [
@@ -317,3 +320,37 @@ def test_generate_tests_solver_retries_with_compact_prompt_on_prompt_too_long():
     assert "solver_cpp" in result
     assert len(llm.prompts) == 2
     assert "[TRUNCATED" in llm.prompts[1]
+
+
+def test_compute_certification_ratio_uses_actual_target_count():
+    assert _compute_certification_ratio(certified_count=50, target_count=50) == 1.0
+    assert _compute_certification_ratio(certified_count=2, target_count=50) == 0.04
+    assert _compute_certification_ratio(certified_count=0, target_count=50) == 0.0
+
+
+def test_resolve_selected_family_id_prefers_solver_declared_family():
+    plan = OraclePlan(
+        trainability_class="exact_single_answer",
+        primary_family_id="oracle.enumeration.n_nested_loops",
+        fallback_family_id="oracle.dp.topdown",
+        route=OracleRoute.EXACT_SINGLE_ANSWER,
+        acceptance_mode="safe",
+        prompt_payloads=[],
+    )
+    solver_data = {"selected_family_id": "oracle.dp.topdown"}
+
+    assert _resolve_selected_family_id(solver_data, plan) == "oracle.dp.topdown"
+
+
+def test_resolve_selected_family_id_falls_back_to_primary_on_invalid_value():
+    plan = OraclePlan(
+        trainability_class="exact_single_answer",
+        primary_family_id="oracle.enumeration.n_nested_loops",
+        fallback_family_id="oracle.dp.topdown",
+        route=OracleRoute.EXACT_SINGLE_ANSWER,
+        acceptance_mode="safe",
+        prompt_payloads=[],
+    )
+    solver_data = {"selected_family_id": "oracle.graph.all_paths"}
+
+    assert _resolve_selected_family_id(solver_data, plan) == "oracle.enumeration.n_nested_loops"

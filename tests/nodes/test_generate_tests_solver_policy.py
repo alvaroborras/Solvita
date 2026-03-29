@@ -10,8 +10,75 @@ from src.nodes.generate_tests import (
     _build_local_certified_tests,
     _count_cyclic_divisible_segments_bruteforce,
     _apply_oracle_acceptance_gate,
+    _build_oracle_memory_decision,
+    _evaluate_oracle_memory_gate_if_ready,
 )
+
 from src.oracle.types import AcceptedArtifactKind
+
+
+def test_build_oracle_memory_decision_does_not_invent_new_primary_action() -> None:
+    decision = _build_oracle_memory_decision(
+        config={"trainable_memory": {"oracle_memory_mode": "oracle"}},
+        selected_template_name="Top-down Memoized DP",
+        gate_decision={
+            "applied": True,
+            "reason": "low_confidence_selected_action",
+            "selected_action": "recipe.dp.memo_default",
+            "replacement_action": "recipe.specialized.other",
+            "candidate_action_set": [
+                "recipe.dp.memo_default",
+                "recipe.specialized.other",
+            ],
+            "exploration_flag": False,
+        },
+    )
+
+    assert decision["selected_action"] == "recipe.dp.memo_default"
+    assert decision["replacement_action"] is None
+    assert decision["candidate_action_set"] == ["recipe.dp.memo_default"]
+
+
+def test_build_oracle_memory_decision_skips_runtime_signal_when_template_unknown() -> None:
+    decision = _build_oracle_memory_decision(
+        config={"trainable_memory": {"oracle_memory_mode": "oracle"}},
+        selected_template_name="",
+        gate_decision={
+            "applied": True,
+            "reason": "low_confidence_selected_action",
+            "selected_action": "recipe.specialized.other",
+            "replacement_action": None,
+            "candidate_action_set": ["recipe.specialized.other"],
+            "exploration_flag": False,
+        },
+    )
+
+    assert decision["applied"] is False
+    assert decision["reason"] == "template_unknown"
+    assert decision["selected_action"] is None
+    assert decision["candidate_action_set"] == []
+    assert decision["replacement_action"] is None
+
+
+def test_evaluate_oracle_memory_gate_if_ready_does_not_call_runtime_gate_when_template_unknown(monkeypatch) -> None:
+    called = {"value": False}
+
+    def _unexpected_gate(**kwargs):
+        called["value"] = True
+        raise AssertionError("runtime gate should not be called for blank template")
+
+    monkeypatch.setattr("src.nodes.generate_tests.decide_oracle_memory_gate", _unexpected_gate)
+
+    decision = _evaluate_oracle_memory_gate_if_ready(
+        config={"trainable_memory": {"oracle_memory_mode": "oracle"}},
+        selected_template_name="",
+    )
+
+    assert called["value"] is False
+    assert decision["applied"] is False
+    assert decision["reason"] == "template_unknown"
+    assert decision["selected_action"] is None
+    assert decision["candidate_action_set"] == []
 
 
 def test_build_solver_prompt_attempts_escalate_strategy():

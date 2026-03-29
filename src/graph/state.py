@@ -76,6 +76,21 @@ class TestData(TypedDict, total=False):
     accepted_artifact_kind: Optional[str]
     verifier_provenance: Optional[Dict[str, Any]]
     certification_evidence: List[Dict[str, Any]]
+    cert_ratio: float
+    certified_count: int
+    certified_target_count: int
+    oracle_primary_family_id: Optional[str]
+    oracle_fallback_family_id: Optional[str]
+    oracle_selected_family_id: Optional[str]
+    candidate_family_pool: List[str]
+    oracle_compile_success: bool
+    oracle_public_self_check_pass: bool
+    oracle_probe_pack_pass: bool
+    checker_fallback_used: bool
+    solver_attempt_count: int
+    selected_template_name: Optional[str]
+    prompt_char_stats: Dict[str, int]
+    compact_retry_count: int
 
 
 class FeedbackData(TypedDict, total=False):
@@ -101,6 +116,8 @@ class SolvitaState(TypedDict):
     buggy_solution: Optional[Dict[str, Any]]
     tests: Annotated[TestData, merge_dict]
     feedback: Annotated[FeedbackData, merge_dict]
+    oracle_event_metadata: Annotated[Dict[str, Any], merge_dict]
+    oracle_memory_decision: Annotated[Dict[str, Any], merge_dict]
 
     # -- LLM conversation history --
     messages: Annotated[List[Dict[str, str]], add_messages]
@@ -200,11 +217,28 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             accepted_artifact_kind=None,
             verifier_provenance=None,
             certification_evidence=[],
+            cert_ratio=0.0,
+            certified_count=0,
+            certified_target_count=0,
+            oracle_primary_family_id=None,
+            oracle_fallback_family_id=None,
+            oracle_selected_family_id=None,
+            candidate_family_pool=[],
+            oracle_compile_success=False,
+            oracle_public_self_check_pass=False,
+            oracle_probe_pack_pass=False,
+            checker_fallback_used=False,
+            solver_attempt_count=0,
+            selected_template_name=None,
+            prompt_char_stats={},
+            compact_retry_count=0,
         ),
         feedback=FeedbackData(
             feedback={},
             suggested_fixes=[],
         ),
+        oracle_event_metadata={},
+        oracle_memory_decision={},
 
         # LLM conversation history
         messages=[],

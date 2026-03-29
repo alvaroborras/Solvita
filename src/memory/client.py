@@ -20,17 +20,27 @@ from src.memory.skill_loader import SkillLoader
 logger = logging.getLogger(__name__)
 
 
-def render_oracle_plan_to_prompt_payload(plan: Any, catalog_item: Dict[str, Any]) -> List[Dict[str, Any]]:
-    del plan
-    return [
-        {
-            "family_id": catalog_item["family_id"],
-            "name": catalog_item["text"],
-            "strategy": ", ".join(catalog_item["payload"].get("brute_force_strategies", [])),
-            "complexity_notes": catalog_item["payload"].get("complexity_notes", []),
-            "code_snippet": catalog_item["payload"].get("code_template", "").strip(),
-        }
-    ]
+def render_oracle_plan_to_prompt_payload(
+    plan: Any,
+    catalog_item: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    prompt_payloads = list(getattr(plan, "prompt_payloads", []) or [])
+    if not prompt_payloads and catalog_item is not None:
+        prompt_payloads = [catalog_item]
+
+    rendered: List[Dict[str, Any]] = []
+    for item in prompt_payloads:
+        payload = item.get("payload", {})
+        rendered.append(
+            {
+                "family_id": item["family_id"],
+                "name": item.get("text") or item.get("name", ""),
+                "strategy": item.get("strategy") or ", ".join(payload.get("brute_force_strategies", [])),
+                "complexity_notes": item.get("complexity_notes") or payload.get("complexity_notes", []),
+                "code_snippet": item.get("code_snippet") or payload.get("code_template", "").strip(),
+            }
+        )
+    return rendered
 
 
 def resolve_oracle_item_ids_by_family_ids(

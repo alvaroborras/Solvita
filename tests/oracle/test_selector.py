@@ -10,9 +10,28 @@ def test_selector_returns_structured_oracle_plan():
         problem_constraints={"n": "1e5"},
         acceptance_mode="safe",
     )
-    assert plan.primary_family_id.startswith("oracle.")
+    assert plan.primary_family_id == "oracle.dp.topdown"
+    assert plan.fallback_family_id == "oracle.enumeration.n_nested_loops"
     assert plan.acceptance_mode == "safe"
-    assert plan.prompt_payloads
+    assert [payload["family_id"] for payload in plan.prompt_payloads] == [
+        "oracle.dp.topdown",
+        "oracle.enumeration.n_nested_loops",
+    ]
+
+
+def test_selector_uses_enumeration_primary_for_non_dp_tags():
+    plan = build_rule_based_oracle_plan(
+        trainability_class="exact_single_answer",
+        problem_tags=["math"],
+        problem_constraints={"n": "1e5"},
+        acceptance_mode="safe",
+    )
+    assert plan.primary_family_id == "oracle.enumeration.n_nested_loops"
+    assert plan.fallback_family_id == "oracle.dp.topdown"
+    assert [payload["family_id"] for payload in plan.prompt_payloads] == [
+        "oracle.enumeration.n_nested_loops",
+        "oracle.dp.topdown",
+    ]
 
 
 def test_route_b_accepts_checker_bundle_not_expected_output():

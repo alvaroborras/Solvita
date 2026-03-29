@@ -10,6 +10,8 @@ from typing import Dict, Any, TYPE_CHECKING
 from loguru import logger
 
 from src.memory import MemoryClient, MemoryNamespace, Observation
+from src.memory.client import resolve_oracle_item_ids_by_family_ids
+from src.oracle.oracle_memory_db import OracleMemoryDB
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
@@ -50,7 +52,7 @@ def _infer_oracle_failure_type(state: Dict[str, Any]) -> str:
 
 def update_oracle_memory_node(state: "SolvitaState") -> Dict[str, Any]:
     """Settle rewards for oracle-agent memory items."""
-    item_ids = state.get("oracle_memory_item_ids", [])
+    item_ids = list(state.get("oracle_memory_item_ids", []))
 
     if not item_ids:
         logger.debug("[Node] update_oracle_memory: no item IDs to update")
@@ -88,6 +90,12 @@ def update_oracle_memory_node(state: "SolvitaState") -> Dict[str, Any]:
     if memory.featurizer:
         obs.feature_keys = memory.featurizer.extract_features(obs, MemoryNamespace.ORACLE)
 
+    selected_family_id = state.get("tests", {}).get("oracle_selected_family_id")
+    if selected_family_id:
+        resolved_item_ids = resolve_oracle_item_ids_by_family_ids(memory, [selected_family_id])
+        if resolved_item_ids:
+            item_ids = resolved_item_ids
+
     memory.log_event(
         obs,
         item_ids,
@@ -95,6 +103,20 @@ def update_oracle_memory_node(state: "SolvitaState") -> Dict[str, Any]:
         iteration=iteration,
         metadata=state.get("oracle_event_metadata", {}),
     )
+
+    data_dir = state.get("config", {}).get("trainable_memory", {}).get("data_dir")
+    if data_dir:
+        try:
+            oracle_db = OracleMemoryDB.from_data_dir(data_dir)
+            oracle_db.initialize()
+            oracle_db.insert_observation_from_state(
+                state=state,
+                reward=reward,
+                failure_type=failure_type,
+                iteration=iteration,
+            )
+        except Exception as exc:
+            logger.warning(f"[Node] Oracle normalized persistence failed: {exc}")
 
     return {
         "execution_log": [
