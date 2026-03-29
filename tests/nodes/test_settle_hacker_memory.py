@@ -90,3 +90,27 @@ def test_settle_hacker_sets_failure_type_only_on_break(base_state, monkeypatch):
     settle_hacker_memory(base_state)
     obs2 = mock_mem_instance.log_event.call_args[0][0]
     assert obs2.failure_type == "WA"
+
+
+def test_settle_hacker_penalizes_generation_failure_without_valid_verdicts(monkeypatch):
+    mock_mem = MagicMock()
+    mock_mem.featurizer = None
+    monkeypatch.setattr("src.nodes.settle_hacker_memory.MemoryClient", lambda **kw: mock_mem)
+
+    state = {
+        "hacker_memory_item_ids": ["id1"],
+        "sandbox_verdicts": [],
+        "compile_failures": 0,
+        "problem": {"description": "desc", "canonical": {}},
+        "config": {"trainable_memory": {"enabled": True, "data_dir": "data/memory"}},
+        "hack_round": 1,
+        "analyst_report": {},
+        "generator_route_used": "failed",
+        "hack_result": "GEN_FAILED",
+        "hack_failure_type": "NONE",
+        "generator_failure_kind": "validator_rejected",
+    }
+
+    result = settle_hacker_memory(state)
+
+    assert result["hacker_reward"] < 0.0

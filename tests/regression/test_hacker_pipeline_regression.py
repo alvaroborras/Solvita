@@ -86,6 +86,39 @@ def common_mocks(monkeypatch):
 class TestScenario1Break:
     """Full pipeline: Analyst → semantic Router → Execution → BREAK → Settlement."""
 
+    def test_hack_test_node_preserves_contract_after_runtime_refactor(self, base_state, common_mocks, monkeypatch):
+        monkeypatch.setattr(
+            "src.nodes.hack_test.generate_hack_candidate",
+            lambda state: {
+                "hack_round": 1,
+                "hacker_memory_item_ids": ["mem_id_1"],
+                "analyst_report": {"bug_class": "overflow", "confidence": "high"},
+                "generator_route_used": "semantic",
+                "generator_failure_kind": "",
+                "generator_failure_reason": "",
+                "generated_input": "5\n1 2 3 4 5\n",
+                "execution_log": ["ok"],
+                "compile_failures": 0,
+                "validator_rejection_reasons": [],
+            },
+        )
+        monkeypatch.setattr(
+            "src.nodes.hack_test.execute_hack_candidate",
+            lambda **kw: {
+                "hack_passed": False,
+                "hack_failures": [{"type": "WA", "input": "5\n1 2 3 4 5\n", "expected": "", "details": ""}],
+                "sandbox_verdicts": [{"verdict": VerdictStatus.VALID_AND_BREAK.value, "failure_type": FailureType.WA.value}],
+                "compile_failures": 0,
+                "tests": base_state["tests"],
+            },
+        )
+
+        result = hack_test_node(base_state)
+
+        assert result["hack_result"] == "BREAK"
+        assert result["generator_route_used"] == "semantic"
+        assert result["hack_failure_type"] == FailureType.WA.value
+
     def test_hack_test_returns_break_state(self, base_state, common_mocks, monkeypatch):
         monkeypatch.setattr(
             "src.nodes.hack_test.cascading_execution_router",

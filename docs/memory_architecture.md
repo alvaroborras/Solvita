@@ -111,6 +111,7 @@ solvita/
 | reward | REAL | Outcome reward signal |
 | problem_hash | TEXT | Hash for deduplication |
 | iteration | INTEGER | Workflow iteration number |
+| metadata_json | TEXT | Structured per-event metadata payload |
 
 ## Integration Points
 
@@ -132,6 +133,19 @@ solvita/
 - **Injection**: `generate_tests_node` uses `MemoryClient(namespace="test")` to inject test strategies
 - **Settlement**: test-memory settlement has been retired; active settlement paths are plan / solve / oracle / hacker.
 - **Payload**: `{constraints_patterns, generation_strategies, validator_pitfalls}`
+
+### Hacker Node
+
+- **Injection**: `hack_test_node` uses `MemoryClient(namespace="hack")` to inject adversarial strategies
+- **Settlement**: `settle_hacker_memory` logs structured reward events after each terminal hacker round
+- **Payload**: `{adversarial_patterns, edge_cases}`
+- **Metadata**: hacker settlement writes `route_used`, `hack_result`, `failure_type`, `generator_failure_kind`, `compile_failures`, and related training signals into event metadata
+
+### Offline Hacker Training
+
+- Formal trainer entrypoint: `scripts/train_hacker.py`
+- Candidate-level training records can be emitted as JSONL via `hacker_candidate_records_path`
+- `scripts/train_hacker_input.py` is legacy and should not be used as the formal trainer
 
 ## Reward Shaping
 

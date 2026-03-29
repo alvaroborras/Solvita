@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -10,6 +11,57 @@ from src.utils.python_execution import run_python
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 from src.utils.prompt_utils import compact_json_for_prompt, compact_list_for_prompt, truncate_for_prompt
 
+MAX_ANALYST_HISTORY_ENTRIES = 2
+MAX_ANALYST_HISTORY_CHARS = 6000
+MAX_CPP_PROBE_CHARS = 12000
+ANALYST_SYSTEM_PROMPT = """You are the Code Analyst controller for an adversarial hacker workflow.
+Return ONLY valid JSON.
+Do not include prose before or after the JSON.
+If you need a tool, output a tool-call JSON object only.
+If you are ready to conclude, output a final-report JSON object only."""
+
+
+def _format_history_for_prompt(history: List[str]) -> str:
+    if not history:
+        return "No actions taken yet."
+
+    history_text = "\n\n".join(history[-MAX_ANALYST_HISTORY_ENTRIES:])
+    if len(history_text) > MAX_ANALYST_HISTORY_CHARS:
+        history_text = "[... trimmed analyst history ...]\n" + history_text[-MAX_ANALYST_HISTORY_CHARS:]
+    return history_text
+
+
+def _extract_json_candidate(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if fenced_match:
+        return fenced_match.group(1).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end + 1].strip()
+        if candidate:
+            return candidate
+
+    return text
+
+
+def _analyst_llm_generate(llm: UnifiedLLMClient, prompt: str, *, temperature: float = 0.0) -> str:
+    generate_with_system = getattr(type(llm), "generate_with_system", None)
+    if callable(generate_with_system):
+        return llm.generate_with_system(ANALYST_SYSTEM_PROMPT, prompt, temperature=temperature)
+    return llm.generate(prompt, temperature=temperature)
+
+
 def parse_code_analyst_response(text: str) -> Tuple[str, Dict[str, Any]]:
     """
     Parses the LLM response to determine if it is a tool call or the final report.
@@ -18,14 +70,7 @@ def parse_code_analyst_response(text: str) -> Tuple[str, Dict[str, Any]]:
         (response_type, parsed_dict)
         where response_type is either "tool_call", "final_report", or "error".
     """
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    text = _extract_json_candidate(text)
         
     try:
         data = json.loads(text)
@@ -84,6 +129,11 @@ def execute_tool(tool_name: str, parameters: Dict[str, Any]) -> str:
         cpp_code = parameters.get("cpp_code", "")
         if not cpp_code:
             return "Error: Missing 'cpp_code' parameter."
+        if len(cpp_code) > MAX_CPP_PROBE_CHARS:
+            return (
+                "Error: C++ probe too large for analyst tool. "
+                f"Limit is {MAX_CPP_PROBE_CHARS} characters."
+            )
             
         with tempfile.TemporaryDirectory() as tmpdir:
             src_path = Path(tmpdir) / "probe.cpp"
@@ -108,8 +158,13 @@ def execute_tool(tool_name: str, parameters: Dict[str, Any]) -> str:
 def build_analyst_prompt(problem_desc: str, constraints: Dict[str, Any], target_code: str, history: List[str], memory_advice: str = "", compact: bool = False) -> str:
     problem_desc = truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
     constraints_json = compact_json_for_prompt(constraints, 2500 if not compact else 1200, "CONSTRAINTS")
-    history_items = compact_list_for_prompt(history, 6 if not compact else 3, 1800 if not compact else 600, "HISTORY")
-    history_text = "\n\n".join(history_items) if history_items else "No actions taken yet."
+    history_items = compact_list_for_prompt(
+        history[-MAX_ANALYST_HISTORY_ENTRIES:],
+        MAX_ANALYST_HISTORY_ENTRIES,
+        1800 if not compact else 600,
+        "HISTORY",
+    )
+    history_text = _format_history_for_prompt(history_items) if history_items else "No actions taken yet."
     target_code = truncate_for_prompt(target_code, 14000 if not compact else 6000, "TARGET_CODE")
     advice_section = ""
     if memory_advice:
@@ -230,8 +285,13 @@ def build_force_tool_prompt(
 ) -> str:
     problem_desc = truncate_for_prompt(problem_desc, 7000 if not compact else 3000, "PROBLEM_DESC")
     constraints_json = compact_json_for_prompt(constraints, 2500 if not compact else 1200, "CONSTRAINTS")
-    history_items = compact_list_for_prompt(history, 6 if not compact else 3, 1800 if not compact else 600, "HISTORY")
-    history_text = "\n\n".join(history_items) if history_items else "No actions taken yet."
+    history_items = compact_list_for_prompt(
+        history[-MAX_ANALYST_HISTORY_ENTRIES:],
+        MAX_ANALYST_HISTORY_ENTRIES,
+        1800 if not compact else 600,
+        "HISTORY",
+    )
+    history_text = _format_history_for_prompt(history_items) if history_items else "No actions taken yet."
     weak_report_json = compact_json_for_prompt(weak_report, 3000 if not compact else 1200, "WEAK_REPORT")
     target_code = truncate_for_prompt(target_code, 12000 if not compact else 5000, "TARGET_CODE")
     advice_section = ""
@@ -298,7 +358,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
     while round_num <= max_rounds:
         prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice, compact=prompt_compact)
         try:
-            response_text = llm.generate(prompt)
+            response_text = _analyst_llm_generate(llm, prompt)
         except PromptTooLongError:
             if prompt_compact:
                 raise
@@ -323,7 +383,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         compact=prompt_compact,
                     )
                     try:
-                        forced_response = llm.generate(force_prompt, temperature=0.0)
+                        forced_response = _analyst_llm_generate(llm, force_prompt, temperature=0.0)
                     except PromptTooLongError:
                         if prompt_compact:
                             raise
@@ -337,7 +397,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                             memory_advice=memory_advice,
                             compact=True,
                         )
-                        forced_response = llm.generate(force_prompt, temperature=0.0)
+                        forced_response = _analyst_llm_generate(llm, force_prompt, temperature=0.0)
                     logger.debug(f"[Code Analyst] Round {round_num} forced-tool response:\n{forced_response[:300]}...")
                     forced_type, forced_data = parse_code_analyst_response(forced_response)
                     if forced_type == "tool_call":
@@ -347,7 +407,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         history.append(f"Action: Tool '{tool_name}' invoked.\nOutput:\n{tool_output}")
                         has_tool_evidence = True
                         prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice, compact=prompt_compact)
-                        response_text = llm.generate(prompt)
+                        response_text = _analyst_llm_generate(llm, prompt)
                         logger.debug(f"[Code Analyst] Round {round_num} post-tool response:\n{response_text[:300]}...")
                         continue
                     history.append("Action: Forced tool validation failed.\nError: Analyst did not return a valid tool call.")
@@ -375,7 +435,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                     compact=prompt_compact,
                 )
                 try:
-                    repaired_response = llm.generate(repair_prompt, temperature=0.0)
+                    repaired_response = _analyst_llm_generate(llm, repair_prompt, temperature=0.0)
                 except PromptTooLongError:
                     if prompt_compact:
                         raise
@@ -388,7 +448,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         memory_advice=memory_advice,
                         compact=True,
                     )
-                    repaired_response = llm.generate(repair_prompt, temperature=0.0)
+                    repaired_response = _analyst_llm_generate(llm, repair_prompt, temperature=0.0)
                 logger.debug(f"[Code Analyst] Round {round_num} repair response:\n{repaired_response[:300]}...")
                 repaired_type, repaired_data = parse_code_analyst_response(repaired_response)
                 if repaired_type == "final_report":

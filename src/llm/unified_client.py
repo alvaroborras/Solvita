@@ -82,6 +82,7 @@ class UnifiedLLMClient:
         self.model: str = self._resolved["model"]
         self.temperature: float = self._resolved["temperature"]
         self.max_tokens: int = self._resolved["max_tokens"]
+        self.request_timeout: Optional[float] = self._resolved["request_timeout"]
 
         self._usage_accumulator = ensure_token_usage_accumulator(self.config)
         self._last_usage = {
@@ -183,6 +184,7 @@ class UnifiedLLMClient:
             "model": "",
             "temperature": 0.1,
             "max_tokens": 128000,
+            "request_timeout": 180,
         }
 
         # Layer 1: YAML file (lowest priority for base_url/api_key)
@@ -200,6 +202,7 @@ class UnifiedLLMClient:
             "model": "SOLVITA_MODEL",
             "temperature": "SOLVITA_TEMPERATURE",
             "max_tokens": "SOLVITA_MAX_TOKENS",
+            "request_timeout": "SOLVITA_REQUEST_TIMEOUT",
         }
         for key, env_key in env_map.items():
             val = os.environ.get(env_key)
@@ -212,6 +215,11 @@ class UnifiedLLMClient:
                 elif key == "max_tokens":
                     try:
                         resolved[key] = int(val)
+                    except ValueError:
+                        logger.warning(f"Invalid {env_key}: {val}")
+                elif key == "request_timeout":
+                    try:
+                        resolved[key] = float(val)
                     except ValueError:
                         logger.warning(f"Invalid {env_key}: {val}")
                 else:
@@ -298,6 +306,7 @@ class UnifiedLLMClient:
                 messages=messages,
                 temperature=kwargs.get("temperature", self.temperature),
                 max_tokens=kwargs.get("max_tokens", self.max_tokens),
+                timeout=kwargs.get("timeout", self.request_timeout),
             )
             if isinstance(response, str):
                 content = response
@@ -362,6 +371,8 @@ class UnifiedLLMClient:
             self.temperature = config["temperature"]
         if "max_tokens" in config:
             self.max_tokens = config["max_tokens"]
+        if "request_timeout" in config:
+            self.request_timeout = config["request_timeout"]
         if "base_url" in config or "api_key" in config:
             self.client = self._initialize_client()
 

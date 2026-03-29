@@ -200,11 +200,19 @@ python main.py --input problem.json --output solution.cpp
 
 See [docs/memory_architecture.md](docs/memory_architecture.md) for full details.
 
-The trainable memory uses a **contextual bandit** that learns which strategies work for which problem types. Each namespace (plan/solve/test) has:
+The trainable memory uses a **contextual bandit** that learns which strategies work for which problem types. Active namespaces include `plan`, `solve`, `oracle`, and `hack` (the legacy `test` settlement path has been retired). Each active namespace has:
 
 - **SQLite store** for items and events
 - **Sparse linear policy** with feature-item edge weights
 - **Event logging** for offline analysis and batch training
+
+Formal offline Hacker trainer:
+
+```bash
+python3 scripts/train_hacker.py --dataset data/solvita_train/solvita_train_tanh.jsonl --data-dir data/memory
+```
+
+`scripts/train_hacker_input.py` is retained only as a legacy auxiliary script and is not the formal trainer.
 
 ---
 
