@@ -1,0 +1,18 @@
+# Skill graph / solver network runtime defaults.
+# Merged into config["solver_network"] in create_initial_state (see src/graph/state.py).
+# Keys passed in the outer config["solver_network"] override these values.
+#
+# graph_dir is relative to the Solvita repository root unless you pass an absolute path.
+
+solver_network:
+  enabled: false
+  graph_dir: artifacts/solver_network/latest/graph
+  top_k_problems: 4
+  sample_k: 5
+  temperature: 1.0
+  include_skill_templates_in_augmentation: false
+  skill_selection_temperature: 0.2
+  skill_candidate_k: 20
+  min_llm_skills: 1
+  max_llm_skills: 5
+  skill_selection_planner_max_chars: 3500

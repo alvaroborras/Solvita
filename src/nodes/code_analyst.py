@@ -10,15 +10,16 @@ from src.llm.unified_client import PromptTooLongError
 from src.utils.python_execution import run_python
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 from src.utils.prompt_utils import compact_json_for_prompt, compact_list_for_prompt, truncate_for_prompt
+from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_template
 
 MAX_ANALYST_HISTORY_ENTRIES = 2
 MAX_ANALYST_HISTORY_CHARS = 6000
 MAX_CPP_PROBE_CHARS = 12000
-ANALYST_SYSTEM_PROMPT = """You are the Code Analyst controller for an adversarial hacker workflow.
-Return ONLY valid JSON.
-Do not include prose before or after the JSON.
-If you need a tool, output a tool-call JSON object only.
-If you are ready to conclude, output a final-report JSON object only."""
+
+
+def _analyst_system_prompt() -> str:
+    tpl = get_nested_template(load_prompt_templates(), "code_analyst.system")
+    return str(tpl).strip()
 
 
 def _format_history_for_prompt(history: List[str]) -> str:
@@ -58,7 +59,7 @@ def _extract_json_candidate(text: str) -> str:
 def _analyst_llm_generate(llm: UnifiedLLMClient, prompt: str, *, temperature: float = 0.0) -> str:
     generate_with_system = getattr(type(llm), "generate_with_system", None)
     if callable(generate_with_system):
-        return llm.generate_with_system(ANALYST_SYSTEM_PROMPT, prompt, temperature=temperature)
+        return llm.generate_with_system(_analyst_system_prompt(), prompt, temperature=temperature)
     return llm.generate(prompt, temperature=temperature)
 
 
@@ -169,55 +170,15 @@ def build_analyst_prompt(problem_desc: str, constraints: Dict[str, Any], target_
     advice_section = ""
     if memory_advice:
         advice_section = f"\nHACKER STRATEGY ADVICE:\n{truncate_for_prompt(memory_advice, 2500 if not compact else 1000, 'MEMORY_ADVICE')}\n"
-    
-    return f"""You are the Code Analyst, the strategy planner for an adversarial Hacker System.
-Your goal is to find bugs, logic flaws, or vulnerabilities (WA, TLE, RE, MLE) in the provided C++ target code.
 
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-CONSTRAINTS:
-{constraints_json}
-
-TARGET SOLUTION CODE (May contain bugs):
-```cpp
-{target_code}
-```
-{advice_section}
-
-AVAILABLE TOOLS:
-You can verify your hypothesis by writing short probe codes. Do not guess blindly if you can test it!
-Tool 1: `run_python`
-Use this to perform precise mathematical calculations (e.g., combinations, large numbers) to check constraints and overflows.
-Inputs: {{"tool": "run_python", "parameters": {{"script_code": "..."}}}}
-
-Tool 2: `run_cpp`
-Use this to compile and execute small C++ snippets to test specific runtime behaviors or replicate target logic.
-Inputs: {{"tool": "run_cpp", "parameters": {{"cpp_code": "..."}}}}
-
-RESPONSE FORMAT:
-You must return a valid JSON object. You have two choices:
-Choice A: Call a tool to gather information.
-{{
-    "tool": "run_python",
-    "parameters": {{"script_code": "import math\\nprint(math.comb(100, 50))"}}
-}}
-
-Choice B: Submit the Final Vulnerability Report (if you are confident).
-{{
-    "bug_class": "overflow|hash_collision|index_oob|tle|logic_branch|unknown",
-    "confidence": "high|medium|low",
-    "evidence": ["e.g. math.comb(100,50) overflows 2^63"],
-    "suggested_route": "anti_hash|semantic|stress",
-    "input_hypothesis": ["large_n", "degenerate_tree", "collision_string"]
-}}
-Note on routes: `anti_hash` if polynomial hash is used. `semantic` for most logical bugs. `stress` ONLY if entirely clueless.
-
-HISTORY OF YOUR ACTIONS & RESULTS:
-{history_text}
-
-Analyze the code, call tools if needed to verify, and output valid JSON.
-"""
+    return render_template(
+        "code_analyst.main",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_JSON=constraints_json,
+        TARGET_CODE=target_code,
+        ADVICE_SECTION=advice_section,
+        HISTORY_TEXT=history_text,
+    )
 
 
 def build_json_repair_prompt(
@@ -236,42 +197,14 @@ def build_json_repair_prompt(
     if memory_advice:
         advice_section = f"\nHACKER STRATEGY ADVICE:\n{truncate_for_prompt(memory_advice, 2500 if not compact else 1000, 'MEMORY_ADVICE')}\n"
 
-    return f"""Your previous reply was not valid JSON for the Code Analyst protocol.
-
-Rewrite the same intent as ONE valid JSON object.
-Allowed outputs:
-1. A tool call:
-{{
-  "tool": "run_python|run_cpp",
-  "parameters": {{...}}
-}}
-
-2. A final report:
-{{
-  "bug_class": "overflow|hash_collision|index_oob|tle|logic_branch|unknown",
-  "confidence": "high|medium|low",
-  "evidence": ["..."],
-  "suggested_route": "anti_hash|semantic|stress",
-  "input_hypothesis": ["..."]
-}}
-
-Previous reply:
-{previous_response}
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-CONSTRAINTS:
-{constraints_json}
-
-TARGET SOLUTION CODE:
-```cpp
-{target_code}
-```
-{advice_section}
-
-Return valid JSON only. Do not add any explanation, markdown, or commentary.
-"""
+    return render_template(
+        "code_analyst.json_repair",
+        PREVIOUS_RESPONSE=previous_response,
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_JSON=constraints_json,
+        TARGET_CODE=target_code,
+        ADVICE_SECTION=advice_section,
+    )
 
 
 def build_force_tool_prompt(
@@ -298,40 +231,15 @@ def build_force_tool_prompt(
     if memory_advice:
         advice_section = f"\nHACKER STRATEGY ADVICE:\n{truncate_for_prompt(memory_advice, 2500 if not compact else 1000, 'MEMORY_ADVICE')}\n"
 
-    return f"""Your current vulnerability report is too weak to submit as a final answer.
-
-You must call exactly one tool before you can submit a final report.
-Do not submit a final report yet.
-Return ONLY a tool call JSON object in one of these forms:
-{{
-  "tool": "run_python",
-  "parameters": {{"script_code": "..."}}
-}}
-or
-{{
-  "tool": "run_cpp",
-  "parameters": {{"cpp_code": "..."}}
-}}
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-CONSTRAINTS:
-{constraints_json}
-
-TARGET SOLUTION CODE:
-```cpp
-{target_code}
-```
-{advice_section}
-PREVIOUS WEAK REPORT:
-{weak_report_json}
-
-HISTORY OF ACTIONS:
-{history_text}
-
-Call one tool that will increase confidence in the bug class or input hypothesis.
-"""
+    return render_template(
+        "code_analyst.force_tool",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_JSON=constraints_json,
+        TARGET_CODE=target_code,
+        ADVICE_SECTION=advice_section,
+        WEAK_REPORT_JSON=weak_report_json,
+        HISTORY_TEXT=history_text,
+    )
 
 
 def should_force_tool_validation(report: Dict[str, Any], has_tool_evidence: bool) -> bool:

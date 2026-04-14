@@ -1,7 +1,7 @@
 """Update Plan Memory Node - Settle rewards for plan memory after evaluation.
 
 This node runs after unified_check so the outcome (success / failure / pass_rate)
-is known. It reads the item IDs that plan_solution_node stored in
+is known. It reads the item IDs that abstract_problem_node stored in
 state['plan']['memory_item_ids'] and sends a reward signal to the
 plan-agent trainable memory system.
 """

@@ -8,6 +8,9 @@
 data/memory/
 data/generated/
 
+# Large skill-graph exports (regenerate with scripts/export_solver_network_latest.py)
+artifacts/solver_network/
+
 # Python cache
 __pycache__/
 *.pyc

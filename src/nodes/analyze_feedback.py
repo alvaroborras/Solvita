@@ -10,6 +10,7 @@ from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
 from src.utils.json_utils import parse_json_response
 from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
+from src.utils.prompt_templates import render_template
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
@@ -129,23 +130,12 @@ def _build_compilation_error_prompt(code: str, errors: list[str], compact: bool 
     """Analyze compilation errors"""
     error_text = truncate_for_prompt('\n'.join(errors), 5000 if not compact else 2000, "COMPILATION_ERRORS")
     code = truncate_for_prompt(code, 12000 if not compact else 5000, "CODE")
-    
-    return f"""The following C++ code has compilation errors:
 
-Code:
-```cpp
-{code}
-```
-
-Compilation Errors:
-{error_text}
-
-Provide:
-1. Root cause of the errors
-2. Specific fixes needed
-3. Corrected code snippets
-
-    Be concise and actionable."""
+    return render_template(
+        "analyze_feedback.compilation",
+        CODE=code,
+        ERROR_TEXT=error_text,
+    )
 
 
 def _analyze_compilation_errors(llm: UnifiedLLMClient, code: str, errors: list[str]) -> Dict:
@@ -361,46 +351,19 @@ def _build_test_failure_prompt(
     code = truncate_for_prompt(code, 12000 if not compact else 5000, "CODE")
     failures_text = truncate_for_prompt(failures_text, 8000 if not compact else 2500, "FAILURES")
 
-    return f"""You are a competitive programming debugging expert. Analyze the following failures and provide CONCRETE fixes.
-
-## Problem Description
-{problem_desc}
-
-## Selected Approach
-Algorithm: {algorithm}
-Steps:
-{steps_text}
-
-## Current Status
-Iteration: {iteration}
-Pass Rate: {pass_rate:.1%}
-Total Failed: {len(failed_tests)}
-Error Pattern: {error_pattern}
-
-## Current Code
-```cpp
-{code}
-```
-
-## Representative Failures (most important cases to fix)
-{failures_text}
-{diagnostic_section}
-## Your Task
-1. Pick the SIMPLEST failure case above. Trace the code execution step-by-step with that input. Track key variables.
-2. Identify WHERE and WHY the code produces wrong output.
-3. Determine the root cause category: overflow, off-by-one, wrong formula, missing edge case, TLE, etc.
-4. Provide SPECIFIC code-level fixes (not vague suggestions).
-
-Return ONLY valid JSON (no markdown, no explanation outside JSON):
-{{
-    "analysis": "<detailed step-by-step trace showing where the bug is>",
-    "root_cause": "<one-line root cause>",
-    "error_pattern": "<category: overflow/off-by-one/wrong-formula/missing-edge-case/tle/other>",
-    "suggested_fixes": [
-        "<specific fix 1, e.g. 'Change line X: use long long instead of int'>",
-        "<specific fix 2, e.g. 'Add special case handling when n==1'>"
-    ]
-}}"""
+    return render_template(
+        "analyze_feedback.test_failure",
+        PROBLEM_DESC=problem_desc,
+        ALGORITHM=algorithm,
+        STEPS_TEXT=steps_text,
+        ITERATION=str(iteration),
+        PASS_RATE=f"{pass_rate:.1%}",
+        FAILED_COUNT=str(len(failed_tests)),
+        ERROR_PATTERN=error_pattern,
+        CODE=code,
+        FAILURES_TEXT=failures_text,
+        DIAGNOSTIC_SECTION=diagnostic_section,
+    )
 
 
 def _analyze_test_failures(
@@ -474,6 +437,7 @@ def _analyze_hack_failures(
     iteration: int
 ) -> Dict[str, Any]:
     """Analyze failures from the Adversarial Hack Phase"""
+
     def _build_hack_failure_prompt(compact: bool = False) -> str:
         failures_text = ""
         for i, fail in enumerate(hack_failures[:3]):  # Limit to top 3
@@ -501,36 +465,14 @@ def _analyze_hack_failures(
         steps_json = compact_json_for_prompt(steps, 2000 if not compact else 800, "STEPS")
         compact_failures = truncate_for_prompt(failures_text, 6000 if not compact else 2000, "HACK_FAILURES")
 
-        return f"""You are a debugging expert. The solution passed all basic tests but FAILED adversarial hack tests.
-
-Problem:
-{compact_problem_desc}
-
-Current Algorithm:
-{compact_algorithm}
-
-Implementation Steps:
-{steps_json}
-
-Code:
-```cpp
-{compact_code}
-```
-
-HACK FAILURES (The code logic is likely correct for simple cases but fails edge cases):
-{compact_failures}
-
-Task:
-1. Analyze why the code fails these specific hack cases.
-2. Identify the root cause (e.g. overflow, edge case, logic hole).
-3. Provide a fixed C++ solution.
-
-Return ONLY JSON:
-{{
-    "analysis": "<analysis of hack failures>",
-    "suggested_fixes": ["<fix 1>", "<fix 2>"]
-}}
-"""
+        return render_template(
+            "analyze_feedback.hack_failure",
+            PROBLEM_DESC=compact_problem_desc,
+            ALGORITHM=compact_algorithm,
+            STEPS_JSON=steps_json,
+            CODE=compact_code,
+            HACK_FAILURES_TEXT=compact_failures,
+        )
 
     response = _generate_feedback_with_retry(llm, _build_hack_failure_prompt)
     

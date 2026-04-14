@@ -6,6 +6,8 @@ Phase 0: Abstract — abstract_problem (canonical + whitelist tags + confidence)
           ↓ phase_transition_0 (clear messages)
 Phase 1: TestGen  — generate_tests
           ↓ phase_transition_1 (clear messages)
+Phase 1b: Solver plan (optional) — solver_skill_plan (when solver_network.enabled)
+          builds DAG + skill selection + solver_graph_augmentation_block; skipped on Hack→CodeGen loop
 Phase 2: CodeGen  — generate_code/compile → run_tests
                     → memory settlement → status_routing
           ↓ phase_transition_2 (clear messages)
@@ -22,6 +24,7 @@ from src.graph.state import SolvitaState, create_initial_state
 from src.nodes import (
     abstract_problem_node,
     generate_tests_node,
+    solver_skill_plan_node,
     generate_code_node,
     compile_code_node,
     run_tests_node,
@@ -180,10 +183,11 @@ def create_solvita_workflow():
 
     Normal path (no adversarial break):
         abstract_phase → phase_transition_0 → testgen_phase → phase_transition_1
-        → codegen_phase → phase_transition_2 → hacker_phase → END (final AC)
+        → solver_skill_plan → codegen_phase → phase_transition_2 → hacker_phase → END (final AC)
 
     Loop path (hack finds a bug):
         hacker_phase → phase_transition_3 → codegen_phase
+        (solver_skill_plan is not re-run; only first entry to codegen uses graph augmentation)
         (failed hack cases are appended into tests.generated_tests)
 
     When iteration >= max_iterations, ``hack_outcome_routing`` may return ``final_ac``.
@@ -199,6 +203,7 @@ def create_solvita_workflow():
     workflow.add_node("phase_transition_0", phase_transition_node)  # ABSTRACT→TESTGEN
     workflow.add_node("testgen_phase", testgen_sg)
     workflow.add_node("phase_transition_1", phase_transition_node)  # TESTGEN→CODEGEN
+    workflow.add_node("solver_skill_plan", solver_skill_plan_node)
     workflow.add_node("codegen_phase", codegen_sg)
     workflow.add_node("phase_transition_2", phase_transition_node)  # CODEGEN→HACKER
     workflow.add_node("hacker_phase", hacker_sg)
@@ -209,7 +214,8 @@ def create_solvita_workflow():
     workflow.add_edge("abstract_phase", "phase_transition_0")
     workflow.add_edge("phase_transition_0", "testgen_phase")
     workflow.add_edge("testgen_phase", "phase_transition_1")
-    workflow.add_edge("phase_transition_1", "codegen_phase")
+    workflow.add_edge("phase_transition_1", "solver_skill_plan")
+    workflow.add_edge("solver_skill_plan", "codegen_phase")
     workflow.add_edge("codegen_phase", "phase_transition_2")
     workflow.add_edge("phase_transition_2", "hacker_phase")
 

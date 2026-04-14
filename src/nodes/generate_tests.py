@@ -21,6 +21,7 @@ from src.oracle.oracle_memory_policy import recipe_bucket_from_template_name
 from src.oracle.types import OracleRoute
 from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
+from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_template
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState, TestData
@@ -410,50 +411,16 @@ def build_generator_prompt(problem_desc: str, constraints: Dict[str, Any], publi
     compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
     compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
     compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3 if not compact else 2, field_chars=400 if not compact else 180)
-    prompt = f"""You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
-
-Hard requirements:
-- Use testlib: #include "testlib.h"
-- Do NOT use non-standard headers like #include <bits/stdc++.h>
-- Call registerGen(argc, argv, 1)
-- Use rnd.next(...) for randomness (no std::random, no srand/rand)
-- Do not parse or set a random seed inside the program
-- The harness will run your generator many times with different seeds and expects multiple distinct valid outputs
-- Do NOT hardcode one fixed test case or ignore rnd.next(...)
-- Different seeds should usually lead to meaningfully different inputs, not the same bytes every time
-- Prefer generating from multiple structural families instead of a single canned example
-- Do not print any extra text
-- Prefer semantically targeted edge cases over generic large random data.
-- When exact certification is important, favor modest-size cases that still expose tricky logic.
-
-Minimal skeleton (illustrative only):
-#include "testlib.h"
-int main(int argc, char* argv[]) {{
-  registerGen(argc, argv, 1);
-  // Sample from the true input format and stay inside all constraints.
-  return 0;
-}}
-
-The program must produce ONE valid input instance that satisfies all constraints.
-
-Problem Description:
-{compact_problem_desc}
-
-Constraints:
-{compact_constraints}
-
-Public Tests:
-{compact_public_tests}
-{feedback_block}
-{advice_block}
-Return ONLY a valid JSON object. No other text, no markdown, no code fences.
-CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
-Schema:
-{{"generator_cpp": "#include ...\\nint main(){{...}}\\n"}}
-"""
+    prompt = render_template(
+        "generate_tests.generator",
+        PROBLEM_DESC=compact_problem_desc,
+        CONSTRAINTS=compact_constraints,
+        PUBLIC_TESTS=compact_public_tests,
+        FEEDBACK_BLOCK=feedback_block,
+        ADVICE_BLOCK=advice_block,
+    )
     _log_prompt_size("generator", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block, advice=advice_block)
     return prompt
-
 
 
 def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, compact: bool = False) -> str:
@@ -461,53 +428,15 @@ def build_validator_prompt(problem_desc: str, constraints: Dict[str, Any], publi
     compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
     compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
     compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3 if not compact else 2, field_chars=400 if not compact else 180)
-    prompt = f"""You are a validator agent. Write a C++17 program that reads one test case from stdin and validates it.
-
-Hard requirements:
-- Use testlib: #include "testlib.h"
-- Do NOT use non-standard headers like #include <bits/stdc++.h>
-- Call registerValidation(argc, argv)
-- Validate the INPUT ONLY. Do NOT read any answer token, candidate output, or expected output.
-- Stop immediately after consuming the valid input; then call inf.readEof()
-- Use only these testlib input APIs unless strictly necessary: inf.readInt, inf.readLong, inf.readToken, inf.readSpace, inf.readEoln, inf.readEof, ensuref
-- Do NOT use unsupported helpers such as peekChar or speculative stream-inspection APIs
-- Use ensuref(...) to report specific constraint violations
-- Include #include <unordered_set> if using unordered_set
-- Exit 0 on success, non-zero on failure
-- Do not print anything on success
-
-Minimal skeleton (illustrative only):
-#include "testlib.h"
-#include <unordered_set>
-int main(int argc, char* argv[]) {{
-  registerValidation(argc, argv);
-  int n = inf.readInt();
-  inf.readSpace();
-  int m = inf.readInt();
-  inf.readEoln();
-  ensuref(n >= 1, "n must be >= 1");
-  std::string s = inf.readToken();
-  inf.readEof();
-  return 0;
-}}
-
-Problem Description:
-{compact_problem_desc}
-
-Constraints:
-{compact_constraints}
-
-Public Tests:
-{compact_public_tests}
-{feedback_block}
-Return ONLY a valid JSON object. No other text, no markdown, no code fences.
-CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
-Schema:
-{{"validator_cpp": "#include ...\\nint main(){{...}}\\n"}}
-"""
+    prompt = render_template(
+        "generate_tests.validator",
+        PROBLEM_DESC=compact_problem_desc,
+        CONSTRAINTS=compact_constraints,
+        PUBLIC_TESTS=compact_public_tests,
+        FEEDBACK_BLOCK=feedback_block,
+    )
     _log_prompt_size("validator", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block)
     return prompt
-
 
 
 def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], feedback: str, compact: bool = False) -> str:
@@ -517,165 +446,25 @@ def build_checker_prompt(problem_desc: str, constraints: Dict[str, Any], public_
     compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
     compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
     compact_public_tests = _compact_public_tests_for_prompt(public_tests, max_tests=3 if not compact else 2, field_chars=400 if not compact else 180)
-    prompt = f"""You are a checker/verifier agent. Write a C++17 program that **independently verifies**
-whether a candidate output is correct for a given input — WITHOUT needing any reference answer.
-
-CRITICAL DESIGN PRINCIPLE:
-Verifying a solution is far easier than computing it. Your checker must independently
-determine correctness by re-deriving the answer or checking invariants, NOT by comparing
-against a reference. DO NOT read from the `ans` stream at all.
-
-Approach (choose one based on the problem):
-A) For problems with a unique answer: Compute the correct answer yourself using a simple
-   brute-force algorithm (even O(n^3) or O(n^4) is fine — checkers run on small data),
-   then compare against the candidate output.
-B) For problems with multiple valid answers: Read the candidate output and verify it
-   satisfies all problem constraints (e.g., is it a valid permutation? Does the graph
-   satisfy the required property? Is the value optimal?).
-
-Hard requirements:
-- Use testlib: #include "testlib.h"
-- Do NOT use non-standard headers like #include <bits/stdc++.h>
-- Call registerTestlibCmd(argc, argv)
-- Read input via inf (the test input)
-- Read candidate output via ouf (the output to verify)
-- DO NOT read from ans — your checker must work without any reference answer
-- Use quitf(_ok, "...") if the candidate output is correct
-- Use quitf(_wa, "...") with a specific error message if incorrect
-- Implement your own verification logic inside the checker
-- Do NOT intentionally reject large valid inputs just because a tiny brute-force checker would be slow
-- Never introduce empty objects unless the problem statement explicitly defines them
-
-Minimal skeleton (approach A — unique answer):
-#include "testlib.h"
-#include <vector>
-int main(int argc, char* argv[]) {{
-  registerTestlibCmd(argc, argv);
-  // 1. Read the input
-  int n = inf.readInt();
-  // ... read full input ...
-  
-  // 2. Compute the correct answer independently (brute force is OK)
-  int expected = brute_force_solve(n, ...);
-  
-  // 3. Read and verify the candidate output
-  int got = ouf.readInt();
-  if (got != expected) quitf(_wa, "expected %d, got %d", expected, got);
-  quitf(_ok, "ok");
-}}
-
-Minimal skeleton (approach B — multiple valid answers):
-#include "testlib.h"
-#include <vector>
-int main(int argc, char* argv[]) {{
-  registerTestlibCmd(argc, argv);
-  // 1. Read the input
-  int n = inf.readInt();
-  
-  // 2. Read the candidate output
-  int answer = ouf.readInt();
-  
-  // 3. Verify it satisfies the problem constraints
-  if (!is_valid(answer, ...)) quitf(_wa, "invalid answer");
-  quitf(_ok, "ok");
-}}
-
-Problem Description:
-{compact_problem_desc}
-
-Constraints:
-{compact_constraints}
-
-Public Tests:
-{compact_public_tests}
-{checker_advice_block}
-{feedback_block}
-Return ONLY a valid JSON object. No other text, no markdown, no code fences.
-CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
-Schema:
-{{"checker_cpp": "#include ...\\nint main(){{...}}\\n"}}
-"""
+    prompt = render_template(
+        "generate_tests.checker",
+        PROBLEM_DESC=compact_problem_desc,
+        CONSTRAINTS=compact_constraints,
+        PUBLIC_TESTS=compact_public_tests,
+        CHECKER_ADVICE_BLOCK=checker_advice_block,
+        FEEDBACK_BLOCK=feedback_block,
+    )
     _log_prompt_size("checker", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=compact_public_tests, feedback=feedback_block)
     return prompt
 
 
-
-def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1, compact: bool = False) -> str:
-    compact_problem_desc = _truncate_for_prompt(problem_desc, 8000 if not compact else 4000, "PROBLEM_DESC")
-    compact_constraints = _compact_json_for_prompt(constraints, 3000 if not compact else 1200, "CONSTRAINTS")
-    compact_templates = _truncate_for_prompt(templates_json, 6000 if not compact else 2500, "ORACLE_ADVICE")
-    compact_feedback = _truncate_for_prompt(feedback, 4000 if not compact else 1500, "SOLVER_FEEDBACK") if feedback else ""
-    feedback_block = f"\nPrevious attempt issues:\n{compact_feedback}\n" if compact_feedback else ""
-    solver_advice = _build_solver_advice(problem_desc)
-    solver_advice_block = f"\nProblem-specific guidance:\n{solver_advice}\n" if solver_advice else ""
-    
-    # Format public tests clearly
-    pt_block = ""
-    for i, pt in enumerate(public_tests[:3]):  # Limit further to save prompt space
-        inp = _truncate_for_prompt(pt.get('input', '').strip(), 400, 'PUBLIC_INPUT')
-        out = _truncate_for_prompt(pt.get('output', '').strip(), 400, 'PUBLIC_OUTPUT')
-        pt_block += f"\n--- Test {i} ---\nInput:\n{inp}\nExpected Output:\n{out}\n"
-    
-    trace_instruction = ""
-    if attempt >= 3:
-        trace_instruction = """
-NOTE: You have failed multiple times. Please add strategic debug prints to stderr using:
-std::cerr << "TRACE: [message] " << vars... << std::endl;
-WARNING: DO NOT print inside tight loops. If tracing a loop with many iterations, 
-only print every 10000th iteration (e.g., if(count % 10000 == 0)) or just at the start/end.
-"""
-
-    prompt = f"""You are a Brute-Force Oracle. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem using exhaustive / brute-force search.
-
-CRITICAL REQUIREMENTS:
-1. Your code MUST be a complete standalone program with #include, main(), cin/cout.
-2. Read input from stdin, write output to stdout, matching the exact I/O format shown in the public tests.
-3. Use a brute-force / exhaustive approach. Correctness is the ONLY goal — ignore performance.
-4. The program MUST compile with: g++ -std=c++17 -O2
-{trace_instruction}
-Problem Description:
-{compact_problem_desc}
-
-Constraints:
-{compact_constraints}
-
-Public Tests (your program MUST produce the exact expected output for these):
-{pt_block}
-
-Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
-{compact_templates}
-
-{feedback_block}
-Return ONLY a valid JSON object. No markdown, no explanation, no code fences.
-CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \\n. Tabs as \\t. Backslashes as \\\\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
-Schema:
-{{"selected_family_id": "<family_id from strategy reference>", "template_name": "<name of strategy>", "solver_cpp": "#include ...\\nint main(){{...}}\\n"}}
-"""
-    _log_prompt_size("solver", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=pt_block, templates=compact_templates, feedback=feedback_block)
-    return prompt
-
-
-
 def build_solver_stage_guidance(attempt: int) -> str:
+    root = load_prompt_templates()
     if attempt <= 1:
-        return """Attempt 1:
-- Write an independent reference solution.
-- Prefer a straightforward polynomial-time algorithm, direct simulation, or simple derivation.
-- Avoid factorial or exponential search unless the certification inputs are provably tiny.
-- Prefer simple reference logic over contest-specific tricks."""
+        return str(get_nested_template(root, "generate_tests.solver_stage.attempt_1")).strip()
     if attempt == 2:
-        return """Attempt 2:
-- The previous solver had correctness, runtime, or execution issues.
-- Keep correctness first, but the solver must run within the certification limits.
-- Do not use factorial or exponential search.
-- Upgrade to a more scalable but still simple reference algorithm if needed."""
-    return """Attempt 3+:
-- Write a robust reference solution that still remains easy to trust.
-- It must run within the certification limits and address the observed failure mode.
-- Do not use factorial or exponential search.
-- If necessary, add sparse debug prints to stderr using:
-  std::cerr << "TRACE: [message] " << vars... << std::endl;
-- Never print inside tight loops unless sampled."""
+        return str(get_nested_template(root, "generate_tests.solver_stage.attempt_2")).strip()
+    return str(get_nested_template(root, "generate_tests.solver_stage.attempt_3_plus")).strip()
 
 
 def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_tests: List[Dict[str, Any]], templates_json: str, feedback: str, attempt: int = 1, compact: bool = False) -> str:
@@ -695,41 +484,16 @@ def build_solver_prompt(problem_desc: str, constraints: Dict[str, Any], public_t
     solver_advice = _build_solver_advice(problem_desc)
     solver_advice_block = f"\nProblem-specific guidance:\n{solver_advice}\n" if solver_advice else ""
 
-    prompt = f"""You are an independent reference-solution author. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem.
-
-CRITICAL REQUIREMENTS:
-1. Your code MUST be a complete standalone program with #include, main(), cin/cout.
-2. Read input from stdin, write output to stdout, matching the exact I/O format shown in the public tests.
-3. Correctness is the first priority. Prefer a semantically exact small-scale reference solver over a brittle formula.
-4. The certification inputs are allowed to be modest; do NOT sacrifice correctness for aggressive large-constraint optimization.
-5. The program MUST compile with: g++ -std=c++17 -O2
-6. Keep the solver independent and trustworthy as a reference oracle.
-
-Attempt guidance:
-{stage_guidance}
-{solver_advice_block}
-
-Problem Description:
-{compact_problem_desc}
-
-Constraints:
-{compact_constraints}
-
-Public Tests (your program MUST produce the exact expected output for these):
-{pt_block}
-
-Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
-{compact_templates}
-
-{feedback_block}
-Return ONLY a JSON object. No markdown, no explanation.
-Schema:
-{{
-  "selected_family_id": "<family_id from the strategy reference>",
-  "template_name": "<name of the strategy you are using>",
-  "solver_cpp": "<complete C++17 source code>"
-}}
-"""
+    prompt = render_template(
+        "generate_tests.solver",
+        STAGE_GUIDANCE=stage_guidance,
+        SOLVER_ADVICE_BLOCK=solver_advice_block,
+        PROBLEM_DESC=compact_problem_desc,
+        CONSTRAINTS=compact_constraints,
+        PUBLIC_TESTS_BLOCK=pt_block,
+        TEMPLATES_JSON=compact_templates,
+        FEEDBACK_BLOCK=feedback_block,
+    )
     _log_prompt_size("solver", prompt, problem_desc=compact_problem_desc, constraints=compact_constraints, public_tests=pt_block, templates=compact_templates, feedback=feedback_block)
     return prompt
 

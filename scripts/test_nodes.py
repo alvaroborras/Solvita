@@ -1,5 +1,5 @@
 """
-测试 generate_tests / plan_solution / generate_code 三个节点的端到端脚本
+测试 generate_tests / abstract_problem / generate_code 三个节点的端到端脚本
 
 用法:
     # 完整模式：跑全部三个节点
@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.graph.state import create_initial_state, SolvitaState
 from src.nodes.generate_tests import generate_tests_node
-from src.nodes.plan_solution import plan_solution_node
+from src.nodes.abstract_problem import abstract_problem_node
 from src.nodes.generate_code import generate_code_node
 
 
@@ -148,39 +148,37 @@ def run_generate_tests(raw_problem: dict, config: dict) -> tuple[dict, dict]:
     return new_state, result
 
 
-def run_plan_solution(raw_problem: dict, config: dict) -> tuple[dict, dict]:
-    """跑 retrieve_knowledge + plan_solution (retrieve 是空实现，直接跳过)"""
-    print_separator("2. Running plan_solution_node")
+def run_abstract_problem(raw_problem: dict, config: dict) -> tuple[dict, dict]:
+    """Run abstract_problem_node on initial state."""
+    print_separator("2. Running abstract_problem_node")
     start = time.time()
 
     state = create_initial_state(raw_problem, config)
-    # retrieve_knowledge 是空实现，直接得到初始 state
-    result = plan_solution_node(state)
+    result = abstract_problem_node(state)
 
     elapsed = time.time() - start
     new_state = merge_state(state, result)
 
     print(f"  Duration: {elapsed:.1f}s")
     print(f"  LLM calls: {result.get('llm_calls', 0)}")
-    print_state_summary(new_state, "After plan_solution")
+    print_state_summary(new_state, "After abstract_problem")
 
     return new_state, result
 
 
-def run_plan_solution_from_state(state: dict, config: dict) -> tuple[dict, dict]:
-    """基于已有 state 跑 plan_solution，不重新创建初始 state"""
-    print_separator("2. Running plan_solution_node (from existing state)")
+def run_abstract_problem_from_state(state: dict, config: dict) -> tuple[dict, dict]:
+    """Run abstract_problem_node on existing state."""
+    print_separator("2. Running abstract_problem_node (from existing state)")
     start = time.time()
 
-    # retrieve_knowledge 是空实现，直接跑 plan_solution
-    result = plan_solution_node(state)
+    result = abstract_problem_node(state)
 
     elapsed = time.time() - start
     new_state = merge_state(state, result)
 
     print(f"  Duration: {elapsed:.1f}s")
     print(f"  LLM calls: {result.get('llm_calls', 0)}")
-    print_state_summary(new_state, "After plan_solution")
+    print_state_summary(new_state, "After abstract_problem")
 
     return new_state, result
 
@@ -194,11 +192,10 @@ def run_generate_code(raw_problem: dict, config: dict, pre_state: dict = None) -
         # 从 pre_state 继续
         state = pre_state
     else:
-        # 从初始 state 开始（需要先跑 retrieve_knowledge 和 plan_solution）
+        # From initial state, run abstract_problem first
         state = create_initial_state(raw_problem, config)
-        # skip retrieve_knowledge (empty)
-        plan_result = plan_solution_node(state)
-        state = merge_state(state, plan_result)
+        abs_result = abstract_problem_node(state)
+        state = merge_state(state, abs_result)
 
     result = generate_code_node(state)
 
@@ -220,13 +217,13 @@ def run_generate_code(raw_problem: dict, config: dict, pre_state: dict = None) -
 
 def run_full_pipeline(raw_problem: dict, config: dict) -> dict:
     """完整跑一遍三个节点"""
-    print_separator("Starting FULL pipeline: generate_tests → plan_solution → generate_code")
+    print_separator("Starting FULL pipeline: generate_tests → abstract_problem → generate_code")
 
     # Step 1: generate_tests
     state, _ = run_generate_tests(raw_problem, config)
 
-    # Step 2: plan_solution - pass state instead of raw_problem to preserve generate_tests result
-    state, _ = run_plan_solution_from_state(state, config)
+    # Step 2: abstract_problem - pass state instead of raw_problem to preserve generate_tests result
+    state, _ = run_abstract_problem_from_state(state, config)
 
     # Step 3: generate_code
     state, _ = run_generate_code(raw_problem, config, pre_state=state)
@@ -235,8 +232,8 @@ def run_full_pipeline(raw_problem: dict, config: dict) -> dict:
 
 
 def run_quick_mode(raw_problem: dict, config: dict) -> dict:
-    """快速模式：跳过 generate_tests，只测 plan + generate_code"""
-    print_separator("Starting QUICK mode: plan_solution → generate_code (skip generate_tests)")
+    """Quick mode: skip generate_tests, run abstract_problem + generate_code."""
+    print_separator("Starting QUICK mode: abstract_problem → generate_code (skip generate_tests)")
 
     # 模拟 generate_tests 的输出（只用 public_tests）
     public_tests = raw_problem.get("public_tests", [])
@@ -250,8 +247,8 @@ def run_quick_mode(raw_problem: dict, config: dict) -> dict:
         }
     }
 
-    # Step 1: plan_solution
-    state, _ = run_plan_solution(raw_problem, config)
+    # Step 1: abstract_problem
+    state, _ = run_abstract_problem(raw_problem, config)
     # merge mock tests
     state = merge_state(state, mock_tests_state)
 
@@ -263,7 +260,7 @@ def run_quick_mode(raw_problem: dict, config: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test generate_tests / plan_solution / generate_code nodes"
+        description="Test generate_tests / abstract_problem / generate_code nodes"
     )
     parser.add_argument("problem", nargs="?", help="Path to problem JSON file")
     parser.add_argument("--quick", action="store_true", help="Quick mode: skip generate_tests")

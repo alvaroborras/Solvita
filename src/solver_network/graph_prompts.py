@@ -18,6 +18,56 @@ def _q_raw_description(q: QNode) -> str:
     return ""
 
 
+def format_selected_skills_content_by_ids(
+    graph: SolvitaSkillGraph,
+    skill_ids: Sequence[str],
+    *,
+    max_skills: int = 15,
+    max_template_chars: int = 4000,
+    max_desc_chars: int = 1200,
+) -> str:
+    """
+    Load S-nodes by id and format title, description, and ``code_template`` for codegen.
+
+    Matches ``skill_graph_train.prompts.format_selected_skills_content_by_ids`` (training codegen).
+    """
+    lines: List[str] = []
+    n = 0
+    for sid in skill_ids:
+        if n >= max_skills:
+            break
+        sid = str(sid).strip()
+        if not sid:
+            continue
+        n += 1
+        s = graph.s_nodes.get(sid)
+        if s is None:
+            lines.append(f"### Skill `{sid}`")
+            lines.append("(Skill node not found in graph — id may be stale.)")
+            lines.append("")
+            continue
+        title = str(getattr(s, "title", "") or "").strip() or sid
+        desc = (getattr(s, "description", "") or "").strip()
+        if len(desc) > max_desc_chars:
+            desc = desc[:max_desc_chars] + "…"
+        tmpl = (getattr(s, "code_template", "") or "").strip()
+        if len(tmpl) > max_template_chars:
+            tmpl = tmpl[:max_template_chars] + "\n... (truncated)"
+        stags = getattr(s, "tags", None) or []
+        tag_s = ", ".join(str(t) for t in stags[:12]) if stags else ""
+        lines.append(f"### `{sid}` — **{title}**")
+        if tag_s:
+            lines.append(f"Tags: {tag_s}")
+        if desc:
+            lines.append(desc)
+        if tmpl:
+            lines.append("```cpp")
+            lines.extend(tmpl.splitlines()[:100])
+            lines.append("```")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def format_similar_q_nodes_for_codegen(q_nodes: List[QNode], *, max_items: int = 4) -> str:
     if not q_nodes:
         return "(none)"

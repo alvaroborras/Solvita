@@ -15,7 +15,13 @@ abstract_problem:
     Constraints JSON:
     <CONSTRAINTS_JSON>
 
-    Allowed algorithmic tags (choose only from this list; use snake_case labels as given):
+    Primary tags (level-1, coarse topics — prefer at least one when it fits):
+    <TAG_WHITELIST_LEVEL1>
+
+    Fine-grained tags (level-2 — optional; add when they precisely match the task):
+    <TAG_WHITELIST_LEVEL2>
+
+    Allowed tags reference (union of level-1 and level-2 vocabularies):
     <TAG_WHITELIST>
 
     Return JSON with this exact shape:
@@ -28,18 +34,90 @@ abstract_problem:
         "required_properties": [],
         "edge_cases": []
       },
-      "algorithmic_tags": ["subset of allowed tags"],
-      "algorithm_choice": "short name of approach",
-      "implementation_steps": ["step 1", "step 2"],
+      "algorithmic_tags_level1": ["primary tags from the level-1 list only"],
+      "algorithmic_tags_level2": ["optional fine-grained tags from the level-2 list only"],
       "abstract_confidence": 0.0,
       "abstract_trace": {"rationale": "why this abstraction fits", "warnings": []}
     }
 
     Rules:
     - canonical_problem must be self-contained and precise.
-    - algorithmic_tags must be filtered to the allowed list only; omit unknown tags.
+    - algorithmic_tags_level1 are the main coarse topic labels for this task; use only entries from the level-1 list above.
+    - algorithmic_tags_level2 are optional finer-grained labels; use only entries from the level-2 list above, and do not restate the same idea already covered by level-1.
+    - If a tag could fit both levels, put it in level-1 only and omit it from level-2.
     - abstract_confidence in [0,1] reflects how well the statement constraints are satisfied.
     - abstract_trace must briefly explain tagging and any ambiguity.
+
+# Skill + subproblem DAG selection (solver_network; llm_select_skills). Placeholders: see render_template keys.
+solver_skill_selection:
+  system: |
+    You output exactly one JSON object and nothing else.
+    Required keys: (1) "selected_skill_ids" (array of strings) — copy ids exactly from the candidate list;
+    (2) "subproblem_dag" (object) with "nodes" (array of {id, description}) and "edges" (array of {from_id, to_id}).
+    The DAG must be acyclic: edges mean dependency (from_id before to_id).
+    Use abstract algorithmic descriptions for nodes (not story fluff).
+    If no candidate skill applies, use [] for selected_skill_ids; you may still output a useful
+    subproblem_dag for the **current** problem (abstract nodes/edges), or use empty arrays if no decomposition helps.
+    No markdown fences, no commentary, no text before or after the JSON.
+
+  user: |
+    You are selecting algorithmic **skills** (reference snippets) for a competitive programming task, and you must
+    also output a **sub-problem DAG** that decomposes the **current** problem into abstract sub-goals.
+    Use the **problem summary**, the **activated graph context** (similar Q / M evidence), and the **candidate list**
+    (ρ ranks retrieval relevance).
+    Choose **between <MIN_SELECT> and <MAX_SELECT> (inclusive)** skills that genuinely help solve the current task.
+    If **no** candidate is relevant, return an empty list for skills and empty DAG nodes/edges. Otherwise prefer **at least**
+    <MIN_SELECT> skills when that many good fits exist in the list.
+
+    ## Problem summary
+
+    <PROBLEM_SUMMARY>
+
+    ## Activated graph context (top-Q similarity and linked M-nodes)
+    Structured evidence from the skill graph: similar problems (Q) and their logic pipelines (M).
+    Align skill choices with this retrieval context.
+
+    <ACTIVATED_GRAPH_CONTEXT>
+
+    ## Candidate skills (id, title, description, ρ)
+
+    <CANDIDATE_SKILLS_BLOCK>
+
+    ## Valid skill ids (copy exactly, one per line)
+    Your JSON strings must match one of these lines **verbatim** (including hyphens):
+
+    <VALID_SKILL_IDS_BLOCK>
+
+    ## Output format (strict)
+    Return **only** one JSON object and **nothing else** — no markdown fences, no commentary, no reasoning.
+    Required keys:
+      - "selected_skill_ids": string[] — ids copied verbatim from the candidate list.
+      - "subproblem_dag": { "nodes": [...], "edges": [...] }
+        - nodes: each item is { "id": string (e.g. P1), "description": string } — abstract algorithmic sub-goal, not story text.
+        - edges: each item is { "from_id": string, "to_id": string } — dependency (from_id must be solved before to_id). The graph must be a DAG (no cycles).
+    If selected_skill_ids is [], you may still output a meaningful subproblem_dag for this task,
+    or use empty nodes/edges only when no decomposition is useful.
+
+  # Optional short retry prompt (not wired by default); same JSON contract as system.
+  minimal_user: |
+    Output **only** one JSON object. No markdown fences, no reasoning text.
+    Include "selected_skill_ids" and "subproblem_dag" { "nodes": [...], "edges": [...] } (DAG, acyclic).
+    Choose <MIN_SELECT>–<MAX_SELECT> ids from the list below (or [] if none apply).
+
+    ## Task (short)
+
+    <PROBLEM_SUMMARY_SHORT>
+
+    ## Candidates (copy ids exactly from the bottom list)
+
+    <CANDIDATE_LINES_MINIMAL>
+
+    ## Valid skill ids (verbatim, one per line)
+
+    <VALID_SKILL_IDS_BLOCK>
+
+    Example:
+    {"selected_skill_ids":["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"],"subproblem_dag":{"nodes":[{"id":"P1","description":"Parse input and build data structure"}],"edges":[]}}
 
 generate_code:
   initial: |
@@ -47,6 +125,8 @@ generate_code:
 
     Problem:
     <PROBLEM_DESC>
+
+    <ABSTRACT_TAGS_LEVEL2_BLOCK>
 
     Algorithm to use:
     <ALGORITHM>
@@ -86,6 +166,8 @@ generate_code:
 
     Problem:
     <PROBLEM_DESC>
+
+    <ABSTRACT_TAGS_LEVEL2_BLOCK>
 
     Algorithm:
     <ALGORITHM>
@@ -139,3 +221,678 @@ generate_code:
     >>>>>>> REPLACE
 
     Generate the SEARCH/REPLACE edits now:
+
+  canonical_problem_block: |
+    Objective: <OBJECTIVE>
+    Inputs: <INPUTS_JSON>
+    Outputs: <OUTPUTS_JSON>
+    Constraints: <CONSTRAINTS_JSON>
+    Required Properties: <REQUIRED_PROPERTIES>
+
+  self_validation_header: |
+    Self-validation failed: <FAIL_COUNT> issues in <TOTAL_RUN>/<TOTAL_VERIFY> cases tested:
+
+  self_validation_footer: |
+    Please fix these issues.
+
+analyze_feedback:
+  compilation: |
+    The following C++ code has compilation errors:
+
+    Code:
+    ```cpp
+    <CODE>
+    ```
+
+    Compilation Errors:
+    <ERROR_TEXT>
+
+    Provide:
+    1. Root cause of the errors
+    2. Specific fixes needed
+    3. Corrected code snippets
+
+    Be concise and actionable.
+
+  test_failure: |
+    You are a competitive programming debugging expert. Analyze the following failures and provide CONCRETE fixes.
+
+    ## Problem Description
+    <PROBLEM_DESC>
+
+    ## Selected Approach
+    Algorithm: <ALGORITHM>
+    Steps:
+    <STEPS_TEXT>
+
+    ## Current Status
+    Iteration: <ITERATION>
+    Pass Rate: <PASS_RATE>
+    Total Failed: <FAILED_COUNT>
+    Error Pattern: <ERROR_PATTERN>
+
+    ## Current Code
+    ```cpp
+    <CODE>
+    ```
+
+    ## Representative Failures (most important cases to fix)
+    <FAILURES_TEXT>
+    <DIAGNOSTIC_SECTION>
+    ## Your Task
+    1. Pick the SIMPLEST failure case above. Trace the code execution step-by-step with that input. Track key variables.
+    2. Identify WHERE and WHY the code produces wrong output.
+    3. Determine the root cause category: overflow, off-by-one, wrong formula, missing edge case, TLE, etc.
+    4. Provide SPECIFIC code-level fixes (not vague suggestions).
+
+    Return ONLY valid JSON (no markdown, no explanation outside JSON):
+    {
+        "analysis": "<detailed step-by-step trace showing where the bug is>",
+        "root_cause": "<one-line root cause>",
+        "error_pattern": "<category: overflow/off-by-one/wrong-formula/missing-edge-case/tle/other>",
+        "suggested_fixes": [
+            "<specific fix 1, e.g. 'Change line X: use long long instead of int'>",
+            "<specific fix 2, e.g. 'Add special case handling when n==1'>"
+        ]
+    }
+
+  hack_failure: |
+    You are a debugging expert. The solution passed all basic tests but FAILED adversarial hack tests.
+
+    Problem:
+    <PROBLEM_DESC>
+
+    Current Algorithm:
+    <ALGORITHM>
+
+    Implementation Steps:
+    <STEPS_JSON>
+
+    Code:
+    ```cpp
+    <CODE>
+    ```
+
+    HACK FAILURES (The code logic is likely correct for simple cases but fails edge cases):
+    <HACK_FAILURES_TEXT>
+
+    Task:
+    1. Analyze why the code fails these specific hack cases.
+    2. Identify the root cause (e.g. overflow, edge case, logic hole).
+    3. Provide a fixed C++ solution.
+
+    Return ONLY JSON:
+    {
+        "analysis": "<analysis of hack failures>",
+        "suggested_fixes": ["<fix 1>", "<fix 2>"]
+    }
+
+code_analyst:
+  system: |
+    You are the Code Analyst controller for an adversarial hacker workflow.
+    Return ONLY valid JSON.
+    Do not include prose before or after the JSON.
+    If you need a tool, output a tool-call JSON object only.
+    If you are ready to conclude, output a final-report JSON object only.
+
+  main: |
+    You are the Code Analyst, the strategy planner for an adversarial Hacker System.
+    Your goal is to find bugs, logic flaws, or vulnerabilities (WA, TLE, RE, MLE) in the provided C++ target code.
+
+    PROBLEM DESCRIPTION:
+    <PROBLEM_DESC>
+
+    CONSTRAINTS:
+    <CONSTRAINTS_JSON>
+
+    TARGET SOLUTION CODE (May contain bugs):
+    ```cpp
+    <TARGET_CODE>
+    ```
+    <ADVICE_SECTION>
+
+    AVAILABLE TOOLS:
+    You can verify your hypothesis by writing short probe codes. Do not guess blindly if you can test it!
+    Tool 1: `run_python`
+    Use this to perform precise mathematical calculations (e.g., combinations, large numbers) to check constraints and overflows.
+    Inputs: {"tool": "run_python", "parameters": {"script_code": "..."}}
+
+    Tool 2: `run_cpp`
+    Use this to compile and execute small C++ snippets to test specific runtime behaviors or replicate target logic.
+    Inputs: {"tool": "run_cpp", "parameters": {"cpp_code": "..."}}
+
+    RESPONSE FORMAT:
+    You must return a valid JSON object. You have two choices:
+    Choice A: Call a tool to gather information.
+    {
+        "tool": "run_python",
+        "parameters": {"script_code": "import math\nprint(math.comb(100, 50))"}
+    }
+
+    Choice B: Submit the Final Vulnerability Report (if you are confident).
+    {
+        "bug_class": "overflow|hash_collision|index_oob|tle|logic_branch|unknown",
+        "confidence": "high|medium|low",
+        "evidence": ["e.g. math.comb(100,50) overflows 2^63"],
+        "suggested_route": "anti_hash|semantic|stress",
+        "input_hypothesis": ["large_n", "degenerate_tree", "collision_string"]
+    }
+    Note on routes: `anti_hash` if polynomial hash is used. `semantic` for most logical bugs. `stress` ONLY if entirely clueless.
+
+    HISTORY OF YOUR ACTIONS & RESULTS:
+    <HISTORY_TEXT>
+
+    Analyze the code, call tools if needed to verify, and output valid JSON.
+
+  json_repair: |
+    Your previous reply was not valid JSON for the Code Analyst protocol.
+
+    Rewrite the same intent as ONE valid JSON object.
+    Allowed outputs:
+    1. A tool call:
+    {
+      "tool": "run_python|run_cpp",
+      "parameters": {...}
+    }
+
+    2. A final report:
+    {
+      "bug_class": "overflow|hash_collision|index_oob|tle|logic_branch|unknown",
+      "confidence": "high|medium|low",
+      "evidence": ["..."],
+      "suggested_route": "anti_hash|semantic|stress",
+      "input_hypothesis": ["..."]
+    }
+
+    Previous reply:
+    <PREVIOUS_RESPONSE>
+
+    PROBLEM DESCRIPTION:
+    <PROBLEM_DESC>
+
+    CONSTRAINTS:
+    <CONSTRAINTS_JSON>
+
+    TARGET SOLUTION CODE:
+    ```cpp
+    <TARGET_CODE>
+    ```
+    <ADVICE_SECTION>
+
+    Return valid JSON only. Do not add any explanation, markdown, or commentary.
+
+  force_tool: |
+    Your current vulnerability report is too weak to submit as a final answer.
+
+    You must call exactly one tool before you can submit a final report.
+    Do not submit a final report yet.
+    Return ONLY a tool call JSON object in one of these forms:
+    {
+      "tool": "run_python",
+      "parameters": {"script_code": "..."}
+    }
+    or
+    {
+      "tool": "run_cpp",
+      "parameters": {"cpp_code": "..."}
+    }
+
+    PROBLEM DESCRIPTION:
+    <PROBLEM_DESC>
+
+    CONSTRAINTS:
+    <CONSTRAINTS_JSON>
+
+    TARGET SOLUTION CODE:
+    ```cpp
+    <TARGET_CODE>
+    ```
+    <ADVICE_SECTION>
+    PREVIOUS WEAK REPORT:
+    <WEAK_REPORT_JSON>
+
+    HISTORY OF ACTIONS:
+    <HISTORY_TEXT>
+
+    Call one tool that will increase confidence in the bug class or input hypothesis.
+
+generate_tests:
+  generator: |
+    You are a generator agent. Write a C++17 program that outputs exactly one valid test case to stdout.
+
+    Hard requirements:
+    - Use testlib: #include "testlib.h"
+    - Do NOT use non-standard headers like #include <bits/stdc++.h>
+    - Call registerGen(argc, argv, 1)
+    - Use rnd.next(...) for randomness (no std::random, no srand/rand)
+    - Do not parse or set a random seed inside the program
+    - The harness will run your generator many times with different seeds and expects multiple distinct valid outputs
+    - Do NOT hardcode one fixed test case or ignore rnd.next(...)
+    - Different seeds should usually lead to meaningfully different inputs, not the same bytes every time
+    - Prefer generating from multiple structural families instead of a single canned example
+    - Do not print any extra text
+    - Prefer semantically targeted edge cases over generic large random data.
+    - When exact certification is important, favor modest-size cases that still expose tricky logic.
+
+    Minimal skeleton (illustrative only):
+    #include "testlib.h"
+    int main(int argc, char* argv[]) {
+      registerGen(argc, argv, 1);
+      return 0;
+    }
+
+    The program must produce ONE valid input instance that satisfies all constraints.
+
+    Problem Description:
+    <PROBLEM_DESC>
+
+    Constraints:
+    <CONSTRAINTS>
+
+    Public Tests:
+    <PUBLIC_TESTS>
+    <FEEDBACK_BLOCK>
+    <ADVICE_BLOCK>
+    Return ONLY a valid JSON object. No other text, no markdown, no code fences.
+    CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \n. Tabs as \t. Backslashes as \\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
+    Schema:
+    {"generator_cpp": "#include ...\\nint main(){...}\\n"}
+
+  validator: |
+    You are a validator agent. Write a C++17 program that reads one test case from stdin and validates it.
+
+    Hard requirements:
+    - Use testlib: #include "testlib.h"
+    - Do NOT use non-standard headers like #include <bits/stdc++.h>
+    - Call registerValidation(argc, argv)
+    - Validate the INPUT ONLY. Do NOT read any answer token, candidate output, or expected output.
+    - Stop immediately after consuming the valid input; then call inf.readEof()
+    - Use only these testlib input APIs unless strictly necessary: inf.readInt, inf.readLong, inf.readToken, inf.readSpace, inf.readEoln, inf.readEof, ensuref
+    - Do NOT use unsupported helpers such as peekChar or speculative stream-inspection APIs
+    - Use ensuref(...) to report specific constraint violations
+    - Include #include <unordered_set> if using unordered_set
+    - Exit 0 on success, non-zero on failure
+    - Do not print anything on success
+
+    Minimal skeleton (illustrative only):
+    #include "testlib.h"
+    #include <unordered_set>
+    int main(int argc, char* argv[]) {
+      registerValidation(argc, argv);
+      int n = inf.readInt();
+      inf.readSpace();
+      int m = inf.readInt();
+      inf.readEoln();
+      ensuref(n >= 1, "n must be >= 1");
+      std::string s = inf.readToken();
+      inf.readEof();
+      return 0;
+    }
+
+    Problem Description:
+    <PROBLEM_DESC>
+
+    Constraints:
+    <CONSTRAINTS>
+
+    Public Tests:
+    <PUBLIC_TESTS>
+    <FEEDBACK_BLOCK>
+    Return ONLY a valid JSON object. No other text, no markdown, no code fences.
+    CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \n. Tabs as \t. Backslashes as \\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
+    Schema:
+    {"validator_cpp": "#include ...\\nint main(){...}\\n"}
+
+  checker: |
+    You are a checker/verifier agent. Write a C++17 program that **independently verifies**
+    whether a candidate output is correct for a given input — WITHOUT needing any reference answer.
+
+    CRITICAL DESIGN PRINCIPLE:
+    Verifying a solution is far easier than computing it. Your checker must independently
+    determine correctness by re-deriving the answer or checking invariants, NOT by comparing
+    against a reference. DO NOT read from the `ans` stream at all.
+
+    Approach (choose one based on the problem):
+    A) For problems with a unique answer: Compute the correct answer yourself using a simple
+       brute-force algorithm (even O(n^3) or O(n^4) is fine — checkers run on small data),
+       then compare against the candidate output.
+    B) For problems with multiple valid answers: Read the candidate output and verify it
+       satisfies all problem constraints (e.g., is it a valid permutation? Does the graph
+       satisfy the required property? Is the value optimal?).
+
+    Hard requirements:
+    - Use testlib: #include "testlib.h"
+    - Do NOT use non-standard headers like #include <bits/stdc++.h>
+    - Call registerTestlibCmd(argc, argv)
+    - Read input via inf (the test input)
+    - Read candidate output via ouf (the output to verify)
+    - DO NOT read from ans — your checker must work without any reference answer
+    - Use quitf(_ok, "...") if the candidate output is correct
+    - Use quitf(_wa, "...") with a specific error message if incorrect
+    - Implement your own verification logic inside the checker
+    - Do NOT intentionally reject large valid inputs just because a tiny brute-force checker would be slow
+    - Never introduce empty objects unless the problem statement explicitly defines them
+
+    Minimal skeleton (approach A — unique answer):
+    #include "testlib.h"
+    #include <vector>
+    int main(int argc, char* argv[]) {
+      registerTestlibCmd(argc, argv);
+      int n = inf.readInt();
+      int expected = brute_force_solve(n);
+      int got = ouf.readInt();
+      if (got != expected) quitf(_wa, "expected %d, got %d", expected, got);
+      quitf(_ok, "ok");
+    }
+
+    Minimal skeleton (approach B — multiple valid answers):
+    #include "testlib.h"
+    #include <vector>
+    int main(int argc, char* argv[]) {
+      registerTestlibCmd(argc, argv);
+      int n = inf.readInt();
+      int answer = ouf.readInt();
+      if (!is_valid(answer)) quitf(_wa, "invalid answer");
+      quitf(_ok, "ok");
+    }
+
+    Problem Description:
+    <PROBLEM_DESC>
+
+    Constraints:
+    <CONSTRAINTS>
+
+    Public Tests:
+    <PUBLIC_TESTS>
+    <CHECKER_ADVICE_BLOCK>
+    <FEEDBACK_BLOCK>
+    Return ONLY a valid JSON object. No other text, no markdown, no code fences.
+    CRITICAL JSON RULE: All newlines inside string values MUST be escaped as \n. Tabs as \t. Backslashes as \\. Do NOT include literal newline characters inside any JSON string value — this will break JSON parsing.
+    Schema:
+    {"checker_cpp": "#include ...\\nint main(){...}\\n"}
+
+  solver: |
+    You are an independent reference-solution author. Write a COMPLETE, COMPILABLE C++17 program that solves the following problem.
+
+    CRITICAL REQUIREMENTS:
+    1. Your code MUST be a complete standalone program with #include, main(), cin/cout.
+    2. Read input from stdin, write output to stdout, matching the exact I/O format shown in the public tests.
+    3. Correctness is the first priority. Prefer a semantically exact small-scale reference solver over a brittle formula.
+    4. The certification inputs are allowed to be modest; do NOT sacrifice correctness for aggressive large-constraint optimization.
+    5. The program MUST compile with: g++ -std=c++17 -O2
+    6. Keep the solver independent and trustworthy as a reference oracle.
+
+    Attempt guidance:
+    <STAGE_GUIDANCE>
+    <SOLVER_ADVICE_BLOCK>
+
+    Problem Description:
+    <PROBLEM_DESC>
+
+    Constraints:
+    <CONSTRAINTS>
+
+    Public Tests (your program MUST produce the exact expected output for these):
+    <PUBLIC_TESTS_BLOCK>
+
+    Algorithmic Strategy Reference (use for inspiration, do NOT copy verbatim):
+    <TEMPLATES_JSON>
+
+    <FEEDBACK_BLOCK>
+    Return ONLY a JSON object. No markdown, no explanation.
+    Schema:
+    {
+      "selected_family_id": "<family_id from the strategy reference>",
+      "template_name": "<name of the strategy you are using>",
+      "solver_cpp": "<complete C++17 source code>"
+    }
+
+  solver_stage:
+    attempt_1: |
+      Attempt 1:
+      - Write an independent reference solution.
+      - Prefer a straightforward polynomial-time algorithm, direct simulation, or simple derivation.
+      - Avoid factorial or exponential search unless the certification inputs are provably tiny.
+      - Prefer simple reference logic over contest-specific tricks.
+    attempt_2: |
+      Attempt 2:
+      - The previous solver had correctness, runtime, or execution issues.
+      - Keep correctness first, but the solver must run within the certification limits.
+      - Do not use factorial or exponential search.
+      - Upgrade to a more scalable but still simple reference algorithm if needed.
+    attempt_3_plus: |
+      Attempt 3+:
+      - Write a robust reference solution that still remains easy to trust.
+      - It must run within the certification limits and address the observed failure mode.
+      - Do not use factorial or exponential search.
+      - If necessary, add sparse debug prints to stderr using:
+        std::cerr << "TRACE: [message] " << vars... << std::endl;
+      - Never print inside tight loops unless sampled.
+
+hacker_generators:
+  semantic:
+    generator: |
+      You are the Semantic Generator, a specialized C++ coder for an adversarial Hacker System.
+      Your job is to write a standalone C++ program that generates a single, highly-targeted test case designed to trigger the specific vulnerability described by the Code Analyst.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+      <ADVICE_SECTION>
+      CONSTRAINTS (The output of your C++ generator MUST satisfy ALL of these):
+      <CONSTRAINTS_TEXT>
+      <PREVIOUS_ISSUES_SECTION>
+      <PREVIOUS_INPUT_SECTION>
+
+      VULNERABILITY REPORT (from Code Analyst):
+      <REPORT_JSON>
+
+      INSTRUCTIONS FOR C++ GENERATOR:
+      1. Write a complete, compilable C++17 program (`int main() {...}`).
+      2. The program must print EXACTLY ONE valid test case to standard output (`std::cout`).
+      3. VALIDITY-FIRST: the generated input MUST satisfy all format and validator constraints before you try to make it adversarial.
+      4. Focus on producing the input data structures matching the `input_hypothesis` in the report.
+      5. If the previous attempt was rejected, fix those exact issues before changing anything else.
+      6. DO NOT use uninitialized variables or undefined behavior in your generator.
+      7. If you need randomness, you MAY use `<random>` (`std::mt19937`), but since this is the Semantic Generator, deterministic construction of the edge case is preferred when possible.
+
+      CRITICAL FORMATTING RULES:
+      1. Return ONLY the C++ code.
+      2. DO NOT wrap the code in markdown blocks (e.g., ```cpp ... ```).
+      3. The very first line should be `#include <...>` or similar valid C++.
+
+      Write the C++ generator code now:
+
+    checklist: |
+      You are repairing a C++ Semantic Generator after a failed attack-input attempt.
+      Analyze the failure and produce a compact JSON checklist before patching the code.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+
+      INPUT VALIDITY CONSTRAINTS:
+      <CONSTRAINTS_TEXT>
+      <ADVICE_SECTION>
+      LATEST FAILURE TYPE: <FAILURE_KIND>
+      LATEST FAILURE REASON:
+      <FAILURE_REASON>
+      <ISSUES_SECTION>
+      <INPUT_SECTION>
+      VULNERABILITY REPORT:
+      <REPORT_JSON>
+
+      PREVIOUS GENERATOR CODE:
+      <LAST_GENERATOR_CODE>
+
+      CHECKLIST RULES:
+      1. VALIDITY BEFORE ATTACK: first restore validator-accepted input, then preserve adversarial intent.
+      2. `must_fix` must focus on the concrete compile/runtime/validator issue from the latest failure.
+      3. `do_not_regress` must list already-required legality properties that must remain true.
+      4. `attack_goal` must keep the attack aligned with the analyst report instead of collapsing into trivial valid input.
+      5. Be failure-type aware:
+         - compile_failed -> prioritize syntax/API/build repairs
+         - validator_rejected -> prioritize legality/format repairs
+         - runtime_error -> prioritize execution safety
+         - empty_output -> prioritize guaranteed emission of one valid case
+
+      Return ONLY valid JSON with exactly this schema:
+      {
+        "must_fix": ["..."],
+        "do_not_regress": ["..."],
+        "attack_goal": ["..."]
+      }
+
+    patch: |
+      You are applying a minimal patch to a C++ Semantic Generator.
+      You must patch the existing generator with minimal SEARCH/REPLACE edits instead of rewriting it from scratch.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+
+      INPUT VALIDITY CONSTRAINTS:
+      <CONSTRAINTS_TEXT>
+      <ADVICE_SECTION>
+      LATEST FAILURE TYPE: <FAILURE_KIND>
+      LATEST FAILURE REASON:
+      <FAILURE_REASON>
+      <INPUT_SECTION>
+      VULNERABILITY REPORT:
+      <REPORT_JSON>
+
+      REPAIR CHECKLIST:
+      <CHECKLIST_JSON>
+
+      CURRENT GENERATOR CODE:
+      <LAST_GENERATOR_CODE>
+
+      PATCH RULES:
+      1. VALIDITY-FIRST: fix the latest failure before any attack refinement.
+      2. Preserve already-correct code whenever possible.
+      3. Keep the attack goal from the checklist after legality is restored.
+      4. Output only SEARCH/REPLACE blocks.
+      5. Each SEARCH block must match the current generator code exactly once.
+      6. Make the patch minimal and surgical. Do NOT replace the whole file.
+
+      Required patch format:
+      <PATCH_FORMAT>
+
+  stress:
+    generator: |
+      You are the Stress Test Generator, a specialized C++ coder for an adversarial Hacker System.
+      Your job is to write a standalone C++ program (`int main()`) that acts as a high-throughput Fuzzer.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+
+      CONSTRAINTS (The output of your C++ fuzzer MUST strictly satisfy these boundaries):
+      <CONSTRAINTS_TEXT>
+
+      INSTRUCTIONS FOR C++ FUZZER:
+      1. Write a complete, compilable C++17 program.
+      2. VALIDITY-FIRST: the generated input MUST pass the problem validator and explicitly enforce all structural constraints in code.
+      3. The program must print EXACTLY ONE valid test case to standard output, but this test case should be as LARGE and COMPLEX as the constraints allow.
+      4. You MUST use `<random>` and `std::mt19937_64` initialized with a random device or fixed seed.
+      5. Scale up the generation loop to approach the maximum `N`, `M`, or `K` allowed.
+      6. Emphasize boundary values (e.g. generating values alternating between min and max allowed).
+      7. Optimize the generator for speed using `\n` instead of `std::endl` and fast I/O (`std::ios_base::sync_with_stdio(false);`).
+
+      CRITICAL FORMATTING RULES:
+      1. Return ONLY the C++ code.
+      2. DO NOT wrap the code in markdown blocks (e.g., ```cpp ... ```).
+      3. The very first line should be `#include <...>` or similar valid C++.
+
+      Write the C++ Stress Test Generator code now:
+
+    checklist: |
+      You are repairing a C++ Stress Test Generator after a failed attempt.
+      Analyze the failure and produce a compact JSON checklist before patching the code.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+
+      INPUT VALIDITY CONSTRAINTS:
+      <CONSTRAINTS_TEXT>
+
+      LATEST FAILURE TYPE: <FAILURE_KIND>
+      LATEST FAILURE REASON:
+      <FAILURE_REASON>
+      <ISSUES_SECTION>
+      <INPUT_SECTION>
+      PREVIOUS GENERATOR CODE:
+      <LAST_GENERATOR_CODE>
+
+      CHECKLIST RULES:
+      1. VALIDITY BEFORE ATTACK: first restore validator-accepted input, then keep the case large and boundary-heavy.
+      2. `must_fix` must target the concrete compile/runtime/validator failure from the latest attempt.
+      3. `do_not_regress` must preserve constraints already satisfied by the generator.
+      4. `attack_goal` must keep the output large, high-throughput, and stress-oriented after repairs.
+      5. Be failure-type aware:
+         - compile_failed -> prioritize syntax/API/build repairs
+         - validator_rejected -> prioritize legality/format repairs
+         - runtime_error -> prioritize execution safety
+         - empty_output -> prioritize guaranteed emission of one valid case
+
+      Return ONLY valid JSON with exactly this schema:
+      {
+        "must_fix": ["..."],
+        "do_not_regress": ["..."],
+        "attack_goal": ["..."]
+      }
+
+    patch: |
+      You are applying a minimal patch to a C++ Stress Test Generator.
+      You must patch the existing generator with minimal SEARCH/REPLACE edits instead of rewriting it from scratch.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+
+      INPUT VALIDITY CONSTRAINTS:
+      <CONSTRAINTS_TEXT>
+
+      LATEST FAILURE TYPE: <FAILURE_KIND>
+      LATEST FAILURE REASON:
+      <FAILURE_REASON>
+      <INPUT_SECTION>
+      REPAIR CHECKLIST:
+      <CHECKLIST_JSON>
+
+      CURRENT GENERATOR CODE:
+      <LAST_GENERATOR_CODE>
+
+      PATCH RULES:
+      1. VALIDITY-FIRST: fix the latest failure before increasing attack pressure.
+      2. Preserve already-correct large-case generation logic when possible.
+      3. Keep the generator large, randomized, and boundary-oriented after the repair.
+      4. Output only SEARCH/REPLACE blocks.
+      5. Each SEARCH block must match the current generator code exactly once.
+      6. Make the patch minimal and surgical. Do NOT replace the whole file.
+
+      Required patch format:
+      <PATCH_FORMAT>
+
+  anti_hash:
+    generator: |
+      You are the Anti-Hash Generator, the cryptography/math specialist for an adversarial Hacker System.
+      Your job is to read the Code Analyst's report identifying a polynomial rolling hash susceptibility, and write a standalone C++ program to generate colliding strings.
+
+      PROBLEM DESCRIPTION:
+      <PROBLEM_DESC>
+
+      CONSTRAINTS (Output MUST SATISFY ALL string/length constraints):
+      <CONSTRAINTS_TEXT>
+
+      VULNERABILITY REPORT (from Code Analyst):
+      <REPORT_JSON>
+
+      INSTRUCTIONS FOR C++ GENERATOR:
+      1. Write a complete, compilable C++17 program (`int main()`).
+      2. VALIDITY-FIRST: the generated collision input MUST pass the problem validator and satisfy all structural constraints.
+      3. Implement a collision derivation algorithm (e.g., Thue-Morse sequence, Birthday attack, or specific moduli exploitation) matching the `input_hypothesis`.
+      4. Output EXACTLY the string(s) needed to trigger the collision to standard out.
+      5. Keep the target constraints in mind. If max length is `N=10^5`, the collision strings must not exceed this length.
+
+      CRITICAL FORMATTING RULES:
+      1. Return ONLY the C++ code.
+      2. DO NOT wrap the code in markdown blocks (e.g., ```cpp ... ```).
+      3. The very first line should be `#include <...>` or similar valid C++.
+
+      Write the C++ Collision Generator code now:

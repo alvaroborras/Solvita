@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, NamedTuple, Optional, TYPE_CHECKING
 
 import yaml
 from loguru import logger
@@ -26,22 +26,79 @@ if TYPE_CHECKING:
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 
-def load_tag_whitelist(config: Dict[str, Any]) -> List[str]:
-    """Load allowed tags (lowercase) from config path or default ``config/tag_whitelist.yaml``."""
+class TagWhitelistBundle(NamedTuple):
+    """Merged allow-list plus Q-node level-1 / level-2 vocabularies for prompting."""
+
+    merged: List[str]
+    tags_level1: List[str]
+    tags_level2: List[str]
+
+
+def _normalize_whitelist_token(raw: str) -> str:
+    s = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in s:
+        s = s.replace("__", "_")
+    return s.strip("_")
+
+
+def load_tag_whitelist_bundle(config: Dict[str, Any]) -> TagWhitelistBundle:
+    """
+    Load tags from ``config/tag_whitelist.yaml`` (or ``tag_whitelist_path`` override).
+
+    Accepts legacy flat ``tags`` and/or ``tags_level1`` + ``tags_level2`` (solver-network Q fields).
+    ``merged`` is the sorted union of level-1 and level-2 vocab (prompt reference only).
+    """
     override = (config.get("tag_whitelist_path") or "").strip()
     path = Path(override) if override else CONFIG_DIR / "tag_whitelist.yaml"
     if not path.is_file():
         logger.warning("[Abstract] tag whitelist file missing at %s; using empty whitelist", path)
-        return []
+        return TagWhitelistBundle(merged=[], tags_level1=[], tags_level2=[])
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    tags = data.get("tags") or []
-    out: List[str] = []
-    for t in tags:
-        s = str(t).strip().lower()
-        if s:
-            out.append(s)
-    return out
+
+    def collect(seq: Any) -> List[str]:
+        out: List[str] = []
+        if not isinstance(seq, list):
+            return out
+        for t in seq:
+            s = _normalize_whitelist_token(str(t))
+            if s:
+                out.append(s)
+        return out
+
+    legacy = collect(data.get("tags"))
+    l1 = collect(data.get("tags_level1"))
+    l2 = collect(data.get("tags_level2"))
+
+    seen: set[str] = set()
+    merged_list: List[str] = []
+    for bucket in (legacy, l1, l2):
+        for s in bucket:
+            if s not in seen:
+                seen.add(s)
+                merged_list.append(s)
+    merged_list.sort()
+
+    # Dedupe level lists while preserving file order for prompts
+    def uniq(seq: List[str]) -> List[str]:
+        s2: set[str] = set()
+        out2: List[str] = []
+        for x in seq:
+            if x not in s2:
+                s2.add(x)
+                out2.append(x)
+        return out2
+
+    return TagWhitelistBundle(
+        merged=merged_list,
+        tags_level1=uniq(l1),
+        tags_level2=uniq(l2),
+    )
+
+
+def load_tag_whitelist(config: Dict[str, Any]) -> List[str]:
+    """Backward-compatible: merged allow-list only."""
+    return load_tag_whitelist_bundle(config).merged
 
 
 def _filter_tags(raw_tags: Any, whitelist: List[str]) -> List[str]:
@@ -52,17 +109,58 @@ def _filter_tags(raw_tags: Any, whitelist: List[str]) -> List[str]:
     if not isinstance(raw_tags, list):
         return result
     for t in raw_tags:
-        key = str(t).strip().lower().replace(" ", "_")
+        key = _normalize_whitelist_token(str(t))
         if key in allow and key not in result:
             result.append(key)
     return result
+
+
+def _parse_algorithmic_tags_from_llm(
+    parsed: Optional[Dict[str, Any]],
+    bundle: TagWhitelistBundle,
+) -> tuple[List[str], List[str]]:
+    """
+    Parse level-1 / level-2 tag lists from LLM JSON.
+
+    Prefer ``algorithmic_tags_level1`` / ``algorithmic_tags_level2``. If absent, accept legacy
+    ``algorithmic_tags`` and route each token into level-1 or level-2 by whitelist membership.
+    """
+    if not parsed or not isinstance(parsed, dict):
+        return [], []
+
+    allow1 = set(bundle.tags_level1)
+    allow2 = set(bundle.tags_level2)
+
+    raw_l1 = parsed.get("algorithmic_tags_level1")
+    raw_l2 = parsed.get("algorithmic_tags_level2")
+    if raw_l1 is not None or raw_l2 is not None:
+        return (
+            _filter_tags(raw_l1 or [], bundle.tags_level1),
+            _filter_tags(raw_l2 or [], bundle.tags_level2),
+        )
+
+    legacy = parsed.get("algorithmic_tags")
+    if not isinstance(legacy, list) or not legacy:
+        return [], []
+
+    out1: List[str] = []
+    out2: List[str] = []
+    for t in legacy:
+        key = _normalize_whitelist_token(str(t))
+        if not key:
+            continue
+        if key in allow1 and key not in out1:
+            out1.append(key)
+        elif key in allow2 and key not in out2:
+            out2.append(key)
+    return out1, out2
 
 
 def _build_abstract_messages(
     problem_desc: str,
     problem_types: List[str],
     constraints: Dict[str, Any],
-    tag_whitelist: List[str],
+    tag_bundle: TagWhitelistBundle,
     advice: str,
     templates: Dict[str, Any],
     compact: bool,
@@ -78,7 +176,17 @@ def _build_abstract_messages(
     compact_problem_desc = truncate_for_prompt(problem_desc, desc_chars, "PROBLEM_DESC")
     compact_constraints = compact_json_for_prompt(constraints, constraint_chars, "CONSTRAINTS")
     types_s = ", ".join(problem_types[:8]) if problem_types else "Not specified"
-    whitelist_s = ", ".join(tag_whitelist) if tag_whitelist else "(empty — emit algorithmic_tags: [])"
+    merged = tag_bundle.merged
+    l1 = tag_bundle.tags_level1
+    l2 = tag_bundle.tags_level2
+    if compact:
+        whitelist_s = ", ".join(merged[:120]) + (" …" if len(merged) > 120 else "")
+        wl1_s = ", ".join(l1[:40]) + (" …" if len(l1) > 40 else "")
+        wl2_s = ", ".join(l2[:80]) + (" …" if len(l2) > 80 else "")
+    else:
+        whitelist_s = ", ".join(merged) if merged else "(empty — emit algorithmic_tags: [])"
+        wl1_s = ", ".join(l1) if l1 else "(none)"
+        wl2_s = ", ".join(l2) if l2 else "(none)"
     advice_block = ""
     if advice:
         advice_block = truncate_for_prompt(advice, advice_chars, "PLAN_MEMORY_ADVICE")
@@ -90,6 +198,8 @@ def _build_abstract_messages(
             "PROBLEM_TYPES": types_s,
             "CONSTRAINTS_JSON": compact_constraints,
             "TAG_WHITELIST": whitelist_s,
+            "TAG_WHITELIST_LEVEL1": wl1_s,
+            "TAG_WHITELIST_LEVEL2": wl2_s,
         },
     )
     if advice_block:
@@ -100,13 +210,13 @@ def _build_abstract_messages(
 def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Produce canonical problem data, whitelist-filtered tags, confidence, and trace.
-    Also fills plan.algorithm_choice and plan.implementation_steps for codegen.
+    Does not set algorithm choice or implementation steps; those come from ``solver_skill_plan_node`` when enabled.
     """
     logger.info("[Node] Abstract problem (canonical + tags)")
 
     cfg = state["config"]
     templates = load_prompt_templates()
-    tag_whitelist = load_tag_whitelist(cfg)
+    tag_bundle = load_tag_whitelist_bundle(cfg)
 
     llm = UnifiedLLMClient(cfg)
     problem_desc = state["problem"].get("description", "")
@@ -148,7 +258,7 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
             problem_desc,
             problem_types,
             constraints,
-            tag_whitelist,
+            tag_bundle,
             advice.strip() if advice else "",
             templates,
             compact=prompt_compact,
@@ -173,13 +283,8 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
                 logger.warning("[Abstract] JSON parse failed twice; using fallbacks")
 
     canonical_problem: Dict[str, Any] = {}
-    algorithmic_tags: List[str] = []
-    algorithm_choice = "Structured implementation from canonical"
-    implementation_steps = [
-        "Derive the solution from the canonical objective and constraints.",
-        "Implement carefully with respect to limits.",
-        "Validate edge cases listed in canonical_problem.edge_cases.",
-    ]
+    tags_level1: List[str] = []
+    tags_level2: List[str] = []
     abstract_confidence = 0.35
     abstract_trace: Dict[str, Any] = {
         "source": "llm",
@@ -190,12 +295,7 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
         canonical_problem = parsed.get("canonical_problem") or {}
         if not isinstance(canonical_problem, dict):
             canonical_problem = {}
-        raw_tags = parsed.get("algorithmic_tags", [])
-        algorithmic_tags = _filter_tags(raw_tags, tag_whitelist)
-        algorithm_choice = str(parsed.get("algorithm_choice") or algorithm_choice).strip() or algorithm_choice
-        steps = parsed.get("implementation_steps")
-        if isinstance(steps, list) and steps:
-            implementation_steps = [str(s) for s in steps if str(s).strip()]
+        tags_level1, tags_level2 = _parse_algorithmic_tags_from_llm(parsed, tag_bundle)
         try:
             abstract_confidence = float(parsed.get("abstract_confidence", abstract_confidence))
         except (TypeError, ValueError):
@@ -215,30 +315,35 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
 
     plan = {
         "solution_plan": {
-            "algorithm_choice": algorithm_choice,
-            "implementation_steps": implementation_steps,
             "abstract_only": True,
         },
-        "algorithm_choice": algorithm_choice,
-        "implementation_steps": implementation_steps,
+        "algorithm_choice": "",
+        "implementation_steps": [],
         "memory_item_ids": memory_item_ids,
         "memory_advice": advice.strip() if advice else "",
     }
 
-    if algorithmic_tags:
+    if tags_level1 or tags_level2:
         canonical_problem = dict(canonical_problem)
-        canonical_problem["tags"] = algorithmic_tags
+        if tags_level1:
+            canonical_problem["tags"] = tags_level1
+        if tags_level2:
+            canonical_problem["tags_level2"] = tags_level2
 
     return {
         "problem": {
             "canonical": canonical_problem,
-            "tags_selected": algorithmic_tags,
+            "tags_selected": tags_level1,
+            "tags_level2_selected": tags_level2,
             "abstract_confidence": abstract_confidence,
             "abstract_trace": abstract_trace,
         },
         "plan": plan,
         "execution_log": [
-            f"Abstract problem: confidence={abstract_confidence:.2f}, tags={algorithmic_tags}",
+            (
+                f"Abstract problem: confidence={abstract_confidence:.2f}, "
+                f"tags_l1={tags_level1}, tags_l2={tags_level2}"
+            ),
             f"  Memory items injected: {len(memory_item_ids)}",
         ],
         "llm_calls": llm_calls,

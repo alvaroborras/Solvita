@@ -10,6 +10,7 @@ import yaml
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 _DEFAULT_PATH = CONFIG_DIR / "prompt_template.yaml"
 
+
 _cache: Optional[Dict[str, Any]] = None
 _cache_path: Optional[Path] = None
 
@@ -57,3 +58,22 @@ def render_placeholders(template: str, mapping: Dict[str, str]) -> str:
     for k, v in mapping.items():
         out = out.replace(f"<{k}>", str(v))
     return out
+
+
+def render_template(template_key: str, mapping: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
+    """
+    Load ``prompt_template.yaml``, resolve dotted ``template_key`` (e.g. ``abstract_problem.user``),
+    and fill ``<PLACEHOLDER>`` tokens. Mapping and kwargs keys are normalized to UPPER_CASE.
+    """
+    root = load_prompt_templates()
+    tpl = get_nested_template(root, template_key)
+    if not isinstance(tpl, str):
+        raise KeyError(f"Template {template_key!r} must be a string")
+    merged: Dict[str, str] = {}
+    if mapping:
+        for k, v in mapping.items():
+            key = k.upper() if isinstance(k, str) else str(k)
+            merged[key] = "" if v is None else str(v)
+    for k, v in kwargs.items():
+        merged[str(k).upper()] = "" if v is None else str(v)
+    return render_placeholders(tpl, merged)

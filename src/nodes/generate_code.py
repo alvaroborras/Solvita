@@ -19,8 +19,19 @@ from src.utils.patch_utils import parse_search_replace_blocks, apply_search_repl
 from src.memory import MemoryClient, MemoryNamespace
 from src.utils.problem_utils import extract_problem_code
 from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
-from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_placeholders
+from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_placeholders, render_template
 from src.solver_network.adapter import build_solver_network_block
+
+
+def _format_abstract_tags_level2_block(tags: List[str]) -> str:
+    """Optional fine-grained tags from abstract_problem (prompt-only; not for skill-graph Jaccard)."""
+    if not tags:
+        return ""
+    return (
+        "Fine-grained tag hints (optional; not used for retrieval):\n"
+        + ", ".join(tags)
+        + "\n"
+    )
 
 
 def _build_initial_prompt(
@@ -33,6 +44,7 @@ def _build_initial_prompt(
     memory_advice: str = "",
     compact: bool = False,
     solver_graph_block: str = "",
+    abstract_tags_level2_block: str = "",
 ) -> str:
     """Build prompt for initial code generation (no previous code)."""
     desc_chars = 10000 if not compact else 5000
@@ -85,6 +97,7 @@ def _build_initial_prompt(
         tpl,
         {
             "PROBLEM_DESC": problem_desc,
+            "ABSTRACT_TAGS_LEVEL2_BLOCK": abstract_tags_level2_block,
             "ALGORITHM": algorithm,
             "STEPS": steps_block,
             "CONSTRAINTS_BLOCK": constraints_block,
@@ -106,6 +119,7 @@ def _build_patch_prompt(
     feedback_text: str,
     memory_advice: str = "",
     compact: bool = False,
+    abstract_tags_level2_block: str = "",
 ) -> str:
     """Build prompt for patching existing code using SEARCH/REPLACE."""
     prev_code = truncate_for_prompt(prev_code, 16000 if not compact else 8000, "PREV_CODE")
@@ -154,6 +168,7 @@ def _build_patch_prompt(
         tpl,
         {
             "PROBLEM_DESC": problem_desc,
+            "ABSTRACT_TAGS_LEVEL2_BLOCK": abstract_tags_level2_block,
             "ALGORITHM": algorithm,
             "STEPS": steps_block,
             "PREV_CODE": prev_code,
@@ -315,14 +330,17 @@ def _format_self_validation_feedback(failures: List[Dict], total_run: int, total
 
     Picks up to 3 representative failures (one per error type) to keep prompt concise.
     """
-    lines = [f"Self-validation failed: {len(failures)} issues in {total_run}/{total_verify} cases tested:"]
+    header = render_template(
+        "generate_code.self_validation_header",
+        FAIL_COUNT=str(len(failures)),
+        TOTAL_RUN=str(total_run),
+        TOTAL_VERIFY=str(total_verify),
+    ).rstrip()
 
-    # Categorize failures
     compile_errors = [f for f in failures if f.get("type") == "compile_error"]
     runtime_errors = [f for f in failures if f.get("type") == "runtime_error"]
     wrong_answers = [f for f in failures if f.get("type") == "wrong_answer"]
 
-    # Pick representative failures (up to 3 total)
     picked = []
     if compile_errors:
         picked.append(compile_errors[0])
@@ -331,23 +349,24 @@ def _format_self_validation_feedback(failures: List[Dict], total_run: int, total
     if wrong_answers:
         picked.extend(wrong_answers[:2])
 
+    detail_lines: List[str] = []
     for f in picked[:3]:
         if f.get("type") == "compile_error":
-            lines.append(f"  Compilation error:\n    {f.get('message', '?')[:500]}")
+            detail_lines.append(f"  Compilation error:\n    {f.get('message', '?')[:500]}")
         elif f.get("type") == "runtime_error":
-            lines.append(f"  Runtime error on test {f.get('id', '?')}:")
-            lines.append(f"    Error: {f.get('message', '?')}")
+            detail_lines.append(f"  Runtime error on test {f.get('id', '?')}:")
+            detail_lines.append(f"    Error: {f.get('message', '?')}")
         elif f.get("type") == "wrong_answer":
-            lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
+            detail_lines.append(f"  Wrong answer on test {f.get('id', '?')}:")
             inp = f.get('input', '?')[:100]
             expected = f.get('expected', '?')[:100]
             actual = f.get('actual', '?')[:100]
-            lines.append(f"    Input:    {inp}")
-            lines.append(f"    Expected: {expected}")
-            lines.append(f"    Actual:   {actual}")
+            detail_lines.append(f"    Input:    {inp}")
+            detail_lines.append(f"    Expected: {expected}")
+            detail_lines.append(f"    Actual:   {actual}")
 
-    lines.append("Please fix these issues.")
-    return "\n".join(lines)
+    footer = "\n" + render_template("generate_code.self_validation_footer").strip()
+    return header + "\n\n" + "\n".join(detail_lines) + footer
 
 
 def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
@@ -377,11 +396,14 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     # Prefer canonical problem representation if available
     canonical = state["problem"].get("canonical", {})
     if canonical:
-        problem_desc = f"""Objective: {canonical.get('objective', '')}
-Inputs: {json.dumps(canonical.get('inputs', {}), indent=2)}
-Outputs: {json.dumps(canonical.get('outputs', {}), indent=2)}
-Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}
-Required Properties: {canonical.get('required_properties', [])}"""
+        problem_desc = render_template(
+            "generate_code.canonical_problem_block",
+            OBJECTIVE=str(canonical.get("objective", "")),
+            INPUTS_JSON=json.dumps(canonical.get("inputs", {}), indent=2),
+            OUTPUTS_JSON=json.dumps(canonical.get("outputs", {}), indent=2),
+            CONSTRAINTS_JSON=json.dumps(canonical.get("constraints", {}), indent=2),
+            REQUIRED_PROPERTIES=str(canonical.get("required_properties", [])),
+        )
     else:
         problem_desc = state["problem"].get("description", "")
 
@@ -391,7 +413,11 @@ Required Properties: {canonical.get('required_properties', [])}"""
     public_tests = state["problem"].get("public_tests", [])
     generated_tests = state.get("tests", {}).get("generated_tests", [])
     iteration = state.get("iteration", 0)
-    
+
+    raw_l2 = state["problem"].get("tags_level2_selected") or []
+    tags_l2_list = [str(x) for x in raw_l2] if isinstance(raw_l2, list) else []
+    abstract_tags_level2_block = _format_abstract_tags_level2_block(tags_l2_list)
+
     # Initialize solve memory
     memory = MemoryClient(
         namespace=MemoryNamespace.SOLVE,
@@ -451,6 +477,7 @@ Required Properties: {canonical.get('required_properties', [])}"""
                 constraints, public_tests, generated_tests,
                 memory_advice=memory_advice,
                 solver_graph_block=solver_graph_block,
+                abstract_tags_level2_block=abstract_tags_level2_block,
             )
             llm_calls += 1
             code = sanitize_cpp(code)
@@ -505,6 +532,7 @@ Required Properties: {canonical.get('required_properties', [])}"""
                 suggested_fixes,
                 feedback_text,
                 memory_advice=memory_advice,
+                abstract_tags_level2_block=abstract_tags_level2_block,
             )
             llm_calls += 1
             

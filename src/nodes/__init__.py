@@ -8,12 +8,12 @@ def __getattr__(name: str):
     if name == "abstract_problem_node":
         from .abstract_problem import abstract_problem_node
         return abstract_problem_node
-    elif name == "plan_solution_node":
-        from .plan_solution import plan_solution_node
-        return plan_solution_node
     elif name == "generate_tests_node":
         from .generate_tests import generate_tests_node
         return generate_tests_node
+    elif name == "solver_skill_plan_node":
+        from .solver_skill_plan import solver_skill_plan_node
+        return solver_skill_plan_node
     elif name == "generate_code_node":
         from .generate_code import generate_code_node
         return generate_code_node
@@ -73,8 +73,8 @@ def __getattr__(name: str):
 
 __all__ = [
     "abstract_problem_node",
-    "plan_solution_node",
     "generate_tests_node",
+    "solver_skill_plan_node",
     "generate_code_node",
     "compile_code_node",
     "run_tests_node",

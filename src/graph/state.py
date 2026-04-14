@@ -5,7 +5,10 @@ Every field accessed via ``state[key]`` or ``state.get(key)`` in any node
 MUST be declared here.
 """
 
+from pathlib import Path
 from typing import TypedDict, List, Dict, Any, Optional, Annotated
+
+import yaml
 from operator import add
 from langgraph.graph.message import add_messages
 
@@ -26,28 +29,37 @@ def merge_dict(left: Dict, right: Dict) -> Dict:
 # ========== Nested Data Structures ==========
 
 class ProblemData(TypedDict, total=False):
-    """Problem-related data from parse_problem_node"""
+    """Problem payload: raw description, constraints, tests, abstract canonical + tags."""
     description: str
-    types: List[str]
+    types: List[str]  # reserved (not read by current pipeline)
     constraints: Dict[str, Any]
     public_tests: List[Dict]
-    retrieved_knowledge: List[Dict]
+    retrieved_knowledge: List[Dict]  # reserved (not wired in current nodes)
     # Canonical problem representation (populated by abstract_problem_node)
     canonical: Dict[str, Any]
-    # Whitelist-filtered algorithmic tags from abstract_problem_node
+    # Level-1 (primary) tags from abstract_problem_node — used for skill-graph Jaccard / PlannerInput
     tags_selected: List[str]
+    # Level-2 (fine-grained) tags — prompt hints only; not fed to similarity_tags / Jaccard
+    tags_level2_selected: List[str]
     abstract_confidence: float
     abstract_trace: Dict[str, Any]
 
 
 class PlanData(TypedDict, total=False):
-    """Solution planning data (abstract_problem_node or legacy plan_solution_node)"""
+    """Solution planning: abstract (tags/canonical) + optional solver_skill_plan (DAG/skills)."""
+    # Filled by abstract_problem_node; not consumed by codegen today (kept for tracing / future use)
     solution_plan: Dict[str, Any]
     algorithm_choice: str
     implementation_steps: List[str]
-    # Trainable memory fields (populated by plan_solution_node)
+    # Trainable memory fields (populated by abstract_problem_node)
     memory_item_ids: List[str]
     memory_advice: str
+    # Preformatted skill-graph markdown for first codegen (solver_skill_plan_node when enabled)
+    solver_graph_augmentation_block: str
+    skill_selection_skill_ids: List[str]
+    skill_selection_subproblem_dag: Dict[str, Any]
+    # Redundant with text inside solver_graph_augmentation_block; useful for logging / UI
+    skill_selection_skills_content_md: str
 
 
 class SolutionData(TypedDict, total=False):
@@ -116,8 +128,8 @@ class SolvitaState(TypedDict):
     problem: Annotated[ProblemData, merge_dict]
     plan: Annotated[PlanData, merge_dict]
     solution: Annotated[SolutionData, merge_dict]
-    oracle_solution: Optional[Dict[str, Any]]
-    buggy_solution: Optional[Dict[str, Any]]
+    oracle_solution: Optional[Dict[str, Any]]  # reserved (training / external runners)
+    buggy_solution: Optional[Dict[str, Any]]  # reserved (training / external runners)
     tests: Annotated[TestData, merge_dict]
     feedback: Annotated[FeedbackData, merge_dict]
     oracle_event_metadata: Annotated[Dict[str, Any], merge_dict]
@@ -141,7 +153,7 @@ class SolvitaState(TypedDict):
     oracle_memory_item_ids: List[str]
     analyst_report: Dict[str, Any]
     validator_rejection_reasons: List[str]
-    # T3.2 v2 Hacker state contract fields (hacker-system.md §4.1)
+    # T3.2 v2 Hacker state contract (hacker routing / generator metadata)
     hack_result: str            # "BREAK" | "SAFE" | "GEN_FAILED"
     generator_route_used: str   # "anti_hash" | "semantic" | "stress" | "failed"
     hack_failure_type: str      # "WA" | "RE" | "TLE" | "MLE" | "NONE"
@@ -149,6 +161,7 @@ class SolvitaState(TypedDict):
     generator_failure_reason: str
 
     # -- Phase routing (set by phase_transition_node) --
+    # solver_skill_plan runs after TESTGEN transition while current_phase is already CODEGEN
     current_phase: str  # "ABSTRACT" | "TESTGEN" | "CODEGEN" | "HACKER"
 
     # One-shot skill-graph injection for first initial codegen only
@@ -162,20 +175,75 @@ class SolvitaState(TypedDict):
     token_usage_source: str
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_graph_dir(repo_root: Path, graph_dir: str) -> str:
+    """Turn ``graph_dir`` into an absolute path; relative paths are under ``repo_root``."""
+    if not graph_dir or not isinstance(graph_dir, str):
+        return ""
+    gd = graph_dir.strip()
+    if not gd:
+        return ""
+    p = Path(gd)
+    if p.is_absolute():
+        return str(p.resolve())
+    return str((repo_root / p).resolve())
+
+
+def _fallback_solver_network_defaults(repo_root: Path) -> Dict[str, Any]:
+    """Used when ``config/solver_network.yaml`` is missing."""
+    return {
+        "enabled": False,
+        "graph_dir": _resolve_graph_dir(
+            repo_root, "artifacts/solver_network/latest/graph"
+        ),
+        "top_k_problems": 4,
+        "sample_k": 5,
+        "temperature": 1.0,
+        "include_skill_templates_in_augmentation": False,
+        "skill_selection_temperature": 0.2,
+        "skill_candidate_k": 20,
+        "min_llm_skills": 1,
+        "max_llm_skills": 5,
+        "skill_selection_planner_max_chars": 3500,
+    }
+
+
+def _load_solver_network_defaults() -> Dict[str, Any]:
+    """Load ``config/solver_network.yaml`` and resolve ``graph_dir``."""
+    repo_root = _REPO_ROOT
+    path = repo_root / "config" / "solver_network.yaml"
+    if not path.is_file():
+        return _fallback_solver_network_defaults(repo_root)
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    sn = data.get("solver_network")
+    if not isinstance(sn, dict):
+        return _fallback_solver_network_defaults(repo_root)
+    out: Dict[str, Any] = dict(sn)
+    gd = out.get("graph_dir", "")
+    if isinstance(gd, str) and gd.strip():
+        out["graph_dir"] = _resolve_graph_dir(repo_root, gd)
+    else:
+        out["graph_dir"] = ""
+    return out
+
+
 def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Apply defaults for nested runtime knobs (mutates a copy)."""
     cfg = dict(config)
     sn = cfg.get("solver_network")
     if not isinstance(sn, dict):
         sn = {}
-    cfg["solver_network"] = {
-        "enabled": False,
-        "graph_dir": "",
-        "top_k_problems": 4,
-        "sample_k": 5,
-        "temperature": 1.0,
-        **sn,
-    }
+    base = _load_solver_network_defaults()
+    merged: Dict[str, Any] = {**base, **sn}
+    ug = merged.get("graph_dir", "")
+    if isinstance(ug, str) and ug.strip():
+        merged["graph_dir"] = _resolve_graph_dir(_REPO_ROOT, ug)
+    else:
+        merged["graph_dir"] = ""
+    cfg["solver_network"] = merged
     return cfg
 
 
@@ -210,6 +278,7 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             retrieved_knowledge=[],
             canonical={},
             tags_selected=[],
+            tags_level2_selected=[],
             abstract_confidence=0.0,
             abstract_trace={},
         ),
@@ -219,6 +288,10 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             implementation_steps=[],
             memory_item_ids=[],
             memory_advice="",
+            solver_graph_augmentation_block="",
+            skill_selection_skill_ids=[],
+            skill_selection_subproblem_dag={},
+            skill_selection_skills_content_md="",
         ),
         solution=SolutionData(
             code="",

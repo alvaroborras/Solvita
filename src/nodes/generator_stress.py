@@ -9,6 +9,7 @@ from src.nodes.generator_common import (
     render_input_validity_constraints,
     render_repair_checklist,
 )
+from src.utils.prompt_templates import render_template
 
 SEARCH_MARKER = "<" * 7 + " SEARCH"
 SEPARATOR_MARKER = "=" * 7
@@ -22,31 +23,11 @@ def build_stress_generator_prompt(
     """
     Constructs the prompt instructing the LLM to write a high-throughput C++ Fuzzer.
     """
-    return f"""You are the Stress Test Generator, a specialized C++ coder for an adversarial Hacker System.
-Your job is to write a standalone C++ program (`int main()`) that acts as a high-throughput Fuzzer.
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-CONSTRAINTS (The output of your C++ fuzzer MUST strictly satisfy these boundaries):
-{constraints_text}
-
-INSTRUCTIONS FOR C++ FUZZER:
-1. Write a complete, compilable C++17 program.
-2. VALIDITY-FIRST: the generated input MUST pass the problem validator and explicitly enforce all structural constraints in code.
-3. The program must print EXACTLY ONE valid test case to standard output, but this test case should be as LARGE and COMPLEX as the constraints allow.
-4. You MUST use `<random>` and `std::mt19937_64` initialized with a random device or fixed seed.
-5. Scale up the generation loop to approach the maximum `N`, `M`, or `K` allowed.
-6. Emphasize boundary values (e.g. generating values alternating between min and max allowed).
-7. Optimize the generator for speed using `\\n` instead of `std::endl` and fast I/O (`std::ios_base::sync_with_stdio(false);`).
-
-CRITICAL FORMATTING RULES:
-1. Return ONLY the C++ code.
-2. DO NOT wrap the code in markdown blocks (e.g., ```cpp ... ```).
-3. The very first line should be `#include <...>` or similar valid C++.
-
-Write the C++ Stress Test Generator code now:
-"""
+    return render_template(
+        "hacker_generators.stress.generator",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_TEXT=constraints_text,
+    )
 
 
 def build_stress_checklist_prompt(
@@ -61,41 +42,16 @@ def build_stress_checklist_prompt(
     issues_section = f"\nACCUMULATED PREVIOUS ATTEMPT ISSUES:\n{previous_attempt_issues}\n" if previous_attempt_issues else ""
     input_section = f"\nPREVIOUS GENERATED INPUT (truncated):\n{previous_generated_input}\n" if previous_generated_input else ""
 
-    return f"""You are repairing a C++ Stress Test Generator after a failed attempt.
-Analyze the failure and produce a compact JSON checklist before patching the code.
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-INPUT VALIDITY CONSTRAINTS:
-{constraints_text}
-
-LATEST FAILURE TYPE: {failure_kind or "unknown"}
-LATEST FAILURE REASON:
-{failure_reason or "unknown"}
-{issues_section}
-{input_section}
-PREVIOUS GENERATOR CODE:
-{last_generator_code}
-
-CHECKLIST RULES:
-1. VALIDITY BEFORE ATTACK: first restore validator-accepted input, then keep the case large and boundary-heavy.
-2. `must_fix` must target the concrete compile/runtime/validator failure from the latest attempt.
-3. `do_not_regress` must preserve constraints already satisfied by the generator.
-4. `attack_goal` must keep the output large, high-throughput, and stress-oriented after repairs.
-5. Be failure-type aware:
-   - compile_failed -> prioritize syntax/API/build repairs
-   - validator_rejected -> prioritize legality/format repairs
-   - runtime_error -> prioritize execution safety
-   - empty_output -> prioritize guaranteed emission of one valid case
-
-Return ONLY valid JSON with exactly this schema:
-{{
-  "must_fix": ["..."],
-  "do_not_regress": ["..."],
-  "attack_goal": ["..."]
-}}
-"""
+    return render_template(
+        "hacker_generators.stress.checklist",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_TEXT=constraints_text,
+        FAILURE_KIND=failure_kind or "unknown",
+        FAILURE_REASON=failure_reason or "unknown",
+        ISSUES_SECTION=issues_section,
+        INPUT_SECTION=input_section,
+        LAST_GENERATOR_CODE=last_generator_code,
+    )
 
 
 def build_stress_patch_prompt(
@@ -119,36 +75,17 @@ def build_stress_patch_prompt(
         ]
     )
 
-    return f"""You are applying a minimal patch to a C++ Stress Test Generator.
-You must patch the existing generator with minimal SEARCH/REPLACE edits instead of rewriting it from scratch.
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-INPUT VALIDITY CONSTRAINTS:
-{constraints_text}
-
-LATEST FAILURE TYPE: {failure_kind or "unknown"}
-LATEST FAILURE REASON:
-{failure_reason or "unknown"}
-{input_section}
-REPAIR CHECKLIST:
-{checklist_json}
-
-CURRENT GENERATOR CODE:
-{last_generator_code}
-
-PATCH RULES:
-1. VALIDITY-FIRST: fix the latest failure before increasing attack pressure.
-2. Preserve already-correct large-case generation logic when possible.
-3. Keep the generator large, randomized, and boundary-oriented after the repair.
-4. Output only SEARCH/REPLACE blocks.
-5. Each SEARCH block must match the current generator code exactly once.
-6. Make the patch minimal and surgical. Do NOT replace the whole file.
-
-Required patch format:
-{patch_format}
-"""
+    return render_template(
+        "hacker_generators.stress.patch",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_TEXT=constraints_text,
+        FAILURE_KIND=failure_kind or "unknown",
+        FAILURE_REASON=failure_reason or "unknown",
+        INPUT_SECTION=input_section,
+        CHECKLIST_JSON=checklist_json,
+        LAST_GENERATOR_CODE=last_generator_code,
+        PATCH_FORMAT=patch_format,
+    )
 
 
 def generate_stress_test_program(

@@ -10,6 +10,7 @@ from src.nodes.generator_common import (
     render_input_validity_constraints,
     render_repair_checklist,
 )
+from src.utils.prompt_templates import render_template
 
 SEARCH_MARKER = "<" * 7 + " SEARCH"
 SEPARATOR_MARKER = "=" * 7
@@ -39,36 +40,15 @@ def build_semantic_generator_prompt(
     if previous_generated_input:
         previous_input_section = f"\nPREVIOUS GENERATED INPUT (truncated):\n{previous_generated_input}\n"
 
-    return f"""You are the Semantic Generator, a specialized C++ coder for an adversarial Hacker System.
-Your job is to write a standalone C++ program that generates a single, highly-targeted test case designed to trigger the specific vulnerability described by the Code Analyst.
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-{advice_section}
-CONSTRAINTS (The output of your C++ generator MUST satisfy ALL of these):
-{constraints_text}
-{previous_issues_section}
-{previous_input_section}
-
-VULNERABILITY REPORT (from Code Analyst):
-{report_json}
-
-INSTRUCTIONS FOR C++ GENERATOR:
-1. Write a complete, compilable C++17 program (`int main() {{...}}`).
-2. The program must print EXACTLY ONE valid test case to standard output (`std::cout`).
-3. VALIDITY-FIRST: the generated input MUST satisfy all format and validator constraints before you try to make it adversarial.
-4. Focus on producing the input data structures matching the `input_hypothesis` in the report.
-5. If the previous attempt was rejected, fix those exact issues before changing anything else.
-6. DO NOT use uninitialized variables or undefined behavior in your generator.
-7. If you need randomness, you MAY use `<random>` (`std::mt19937`), but since this is the Semantic Generator, deterministic construction of the edge case is preferred when possible.
-
-CRITICAL FORMATTING RULES:
-1. Return ONLY the C++ code.
-2. DO NOT wrap the code in markdown blocks (e.g., ```cpp ... ```).
-3. The very first line should be `#include <...>` or similar valid C++.
-
-Write the C++ generator code now:
-"""
+    return render_template(
+        "hacker_generators.semantic.generator",
+        PROBLEM_DESC=problem_desc,
+        ADVICE_SECTION=advice_section,
+        CONSTRAINTS_TEXT=constraints_text,
+        PREVIOUS_ISSUES_SECTION=previous_issues_section,
+        PREVIOUS_INPUT_SECTION=previous_input_section,
+        REPORT_JSON=report_json,
+    )
 
 
 def build_semantic_checklist_prompt(
@@ -87,44 +67,18 @@ def build_semantic_checklist_prompt(
     issues_section = f"\nACCUMULATED PREVIOUS ATTEMPT ISSUES:\n{previous_attempt_issues}\n" if previous_attempt_issues else ""
     input_section = f"\nPREVIOUS GENERATED INPUT (truncated):\n{previous_generated_input}\n" if previous_generated_input else ""
 
-    return f"""You are repairing a C++ Semantic Generator after a failed attack-input attempt.
-Analyze the failure and produce a compact JSON checklist before patching the code.
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-INPUT VALIDITY CONSTRAINTS:
-{constraints_text}
-{advice_section}
-LATEST FAILURE TYPE: {failure_kind or "unknown"}
-LATEST FAILURE REASON:
-{failure_reason or "unknown"}
-{issues_section}
-{input_section}
-VULNERABILITY REPORT:
-{report_json}
-
-PREVIOUS GENERATOR CODE:
-{last_generator_code}
-
-CHECKLIST RULES:
-1. VALIDITY BEFORE ATTACK: first restore validator-accepted input, then preserve adversarial intent.
-2. `must_fix` must focus on the concrete compile/runtime/validator issue from the latest failure.
-3. `do_not_regress` must list already-required legality properties that must remain true.
-4. `attack_goal` must keep the attack aligned with the analyst report instead of collapsing into trivial valid input.
-5. Be failure-type aware:
-   - compile_failed -> prioritize syntax/API/build repairs
-   - validator_rejected -> prioritize legality/format repairs
-   - runtime_error -> prioritize execution safety
-   - empty_output -> prioritize guaranteed emission of one valid case
-
-Return ONLY valid JSON with exactly this schema:
-{{
-  "must_fix": ["..."],
-  "do_not_regress": ["..."],
-  "attack_goal": ["..."]
-}}
-"""
+    return render_template(
+        "hacker_generators.semantic.checklist",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_TEXT=constraints_text,
+        ADVICE_SECTION=advice_section,
+        FAILURE_KIND=failure_kind or "unknown",
+        FAILURE_REASON=failure_reason or "unknown",
+        ISSUES_SECTION=issues_section,
+        INPUT_SECTION=input_section,
+        REPORT_JSON=report_json,
+        LAST_GENERATOR_CODE=last_generator_code,
+    )
 
 
 def build_semantic_patch_prompt(
@@ -152,39 +106,19 @@ def build_semantic_patch_prompt(
         ]
     )
 
-    return f"""You are applying a minimal patch to a C++ Semantic Generator.
-You must patch the existing generator with minimal SEARCH/REPLACE edits instead of rewriting it from scratch.
-
-PROBLEM DESCRIPTION:
-{problem_desc}
-
-INPUT VALIDITY CONSTRAINTS:
-{constraints_text}
-{advice_section}
-LATEST FAILURE TYPE: {failure_kind or "unknown"}
-LATEST FAILURE REASON:
-{failure_reason or "unknown"}
-{input_section}
-VULNERABILITY REPORT:
-{report_json}
-
-REPAIR CHECKLIST:
-{checklist_json}
-
-CURRENT GENERATOR CODE:
-{last_generator_code}
-
-PATCH RULES:
-1. VALIDITY-FIRST: fix the latest failure before any attack refinement.
-2. Preserve already-correct code whenever possible.
-3. Keep the attack goal from the checklist after legality is restored.
-4. Output only SEARCH/REPLACE blocks.
-5. Each SEARCH block must match the current generator code exactly once.
-6. Make the patch minimal and surgical. Do NOT replace the whole file.
-
-Required patch format:
-{patch_format}
-"""
+    return render_template(
+        "hacker_generators.semantic.patch",
+        PROBLEM_DESC=problem_desc,
+        CONSTRAINTS_TEXT=constraints_text,
+        ADVICE_SECTION=advice_section,
+        FAILURE_KIND=failure_kind or "unknown",
+        FAILURE_REASON=failure_reason or "unknown",
+        INPUT_SECTION=input_section,
+        REPORT_JSON=report_json,
+        CHECKLIST_JSON=checklist_json,
+        LAST_GENERATOR_CODE=last_generator_code,
+        PATCH_FORMAT=patch_format,
+    )
 
 
 def generate_semantic_test_program(

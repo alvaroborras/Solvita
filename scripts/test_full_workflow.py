@@ -33,7 +33,7 @@ from pprint import pprint
 from src.graph.state import create_initial_state, merge_dict
 from src.graph.workflow import run_workflow
 from src.nodes import (
-    plan_solution_node,
+    abstract_problem_node,
     generate_tests_node,
     generate_code_node,
     compile_code_node,
@@ -110,11 +110,11 @@ def run_step_mode(raw_problem: dict, config: dict, skip_gen_tests: bool = False)
     # 1. Initialize State
     state = create_initial_state(raw_problem, config)
     
-    # 2. Plan Solution (FIRST - generates canonical problem + plan)
+    # 2. Abstract Problem (FIRST - generates canonical problem + plan fields)
     start = time.time()
-    res = plan_solution_node(state)
+    res = abstract_problem_node(state)
     state = manual_merge_state(state, res)
-    print_step_info("plan_solution", res, time.time() - start)
+    print_step_info("abstract_problem", res, time.time() - start)
 
     # 3. Generate Tests (parallel with code in workflow, sequential here)
     if skip_gen_tests:
