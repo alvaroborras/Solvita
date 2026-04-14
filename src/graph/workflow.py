@@ -1,24 +1,26 @@
 """LangGraph Workflow Definition for Solvita Agent
 
-Workflow overview (三阶段子图架构 + Hack→CodeGen 回环)
-========================================================
+Workflow overview (Abstract → TestGen → CodeGen → Hacker + Hack→CodeGen loop)
+============================================================================
+Phase 0: Abstract — abstract_problem (canonical + whitelist tags + confidence)
+          ↓ phase_transition_0 (clear messages)
 Phase 1: TestGen  — generate_tests
-          ↓ phase_transition_1 (清空 messages)
-Phase 2: CodeGen  — plan_solution → generate_code/compile → run_tests
+          ↓ phase_transition_1 (clear messages)
+Phase 2: CodeGen  — generate_code/compile → run_tests
                     → memory settlement → status_routing
-          ↓ phase_transition_2 (清空 messages)
-Phase 3: Hacker   — hack_test (≤3 retry) → update_hacker_memory
+          ↓ phase_transition_2 (clear messages)
+Phase 3: Hacker   — hack_test (≤3 retry) → settle_hacker_memory
           ↓ hack_outcome_routing:
-              "loop_codegen" → phase_transition_3 → 回 Phase 2
-              "final_ac"     → END (解法绝对强健)
+              "loop_codegen" → phase_transition_3 → back to CodeGen
+              "final_ac"     → END
 
-回环保护:  iteration 每轮 CodeGen 自增，超过 max_iterations 终止整个流程。
+Iteration budget: iteration increments per codegen repair round; max_iterations stops the run.
 """
 
 from langgraph.graph import StateGraph, END
 from src.graph.state import SolvitaState, create_initial_state
 from src.nodes import (
-    plan_solution_node,
+    abstract_problem_node,
     generate_tests_node,
     generate_code_node,
     compile_code_node,
@@ -55,6 +57,18 @@ def terminal_hack_failure_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================
+# Phase 0: Abstract Subgraph
+# ============================================================
+def create_abstract_subgraph():
+    """Phase 0 — canonical problem + tag selection."""
+    g = StateGraph(SolvitaState)
+    g.add_node("abstract_problem", abstract_problem_node)
+    g.set_entry_point("abstract_problem")
+    g.add_edge("abstract_problem", END)
+    return g.compile()
+
+
+# ============================================================
 # Phase 1: TestGen Subgraph
 # ============================================================
 
@@ -75,7 +89,6 @@ def create_codegen_subgraph():
     """Phase 2 — 正向代码生成 + 内部重试子图"""
     g = StateGraph(SolvitaState)
 
-    g.add_node("plan_solution", plan_solution_node)
     g.add_node("generate_code", generate_code_node)
     g.add_node("compile_code", compile_code_node)
     g.add_node("join_ready", join_ready_node)
@@ -87,9 +100,8 @@ def create_codegen_subgraph():
     g.add_node("update_oracle_memory", update_oracle_memory_node)
     g.add_node("analyze_feedback", analyze_feedback_node)
 
-    g.set_entry_point("plan_solution")
+    g.set_entry_point("generate_code")
 
-    g.add_edge("plan_solution", "generate_code")
     g.add_edge("generate_code", "compile_code")
 
     g.add_conditional_edges(
@@ -164,27 +176,27 @@ def create_hacker_subgraph():
 
 def create_solvita_workflow():
     """
-    顶层 Orchestrator 图：三 Phase 子图 + Hack→CodeGen 回环。
+    Top-level orchestrator: Abstract → TestGen → CodeGen → Hacker, with Hack→CodeGen loop.
 
-    正常路径（Hacker 无法找到 Bug）：
-        testgen_phase → phase_transition_1
-        → codegen_phase → phase_transition_2
-        → hacker_phase → END (Final AC)
+    Normal path (no adversarial break):
+        abstract_phase → phase_transition_0 → testgen_phase → phase_transition_1
+        → codegen_phase → phase_transition_2 → hacker_phase → END (final AC)
 
-    回环路径（Hacker 发现 Bug）：
+    Loop path (hack finds a bug):
         hacker_phase → phase_transition_3 → codegen_phase
-        （Hack 失败的测试用例已被 hack_test_node 追加进 tests.generated_tests）
+        (failed hack cases are appended into tests.generated_tests)
 
-    熔断保护：iteration >= max_iterations 时，hack_outcome_routing 也返回 final_ac。
+    When iteration >= max_iterations, ``hack_outcome_routing`` may return ``final_ac``.
     """
     workflow = StateGraph(SolvitaState)
 
-    # 编译三个子图
+    abstract_sg = create_abstract_subgraph()
     testgen_sg = create_testgen_subgraph()
     codegen_sg = create_codegen_subgraph()
     hacker_sg = create_hacker_subgraph()
 
-    # 注册节点
+    workflow.add_node("abstract_phase", abstract_sg)
+    workflow.add_node("phase_transition_0", phase_transition_node)  # ABSTRACT→TESTGEN
     workflow.add_node("testgen_phase", testgen_sg)
     workflow.add_node("phase_transition_1", phase_transition_node)  # TESTGEN→CODEGEN
     workflow.add_node("codegen_phase", codegen_sg)
@@ -193,8 +205,9 @@ def create_solvita_workflow():
     workflow.add_node("phase_transition_3", phase_transition_node)  # HACKER→CODEGEN（回环）
     workflow.add_node("terminal_hack_failure", terminal_hack_failure_node)
 
-    # 正向路径
-    workflow.set_entry_point("testgen_phase")
+    workflow.set_entry_point("abstract_phase")
+    workflow.add_edge("abstract_phase", "phase_transition_0")
+    workflow.add_edge("phase_transition_0", "testgen_phase")
     workflow.add_edge("testgen_phase", "phase_transition_1")
     workflow.add_edge("phase_transition_1", "codegen_phase")
     workflow.add_edge("codegen_phase", "phase_transition_2")
@@ -216,7 +229,7 @@ def create_solvita_workflow():
     workflow.add_edge("terminal_hack_failure", END)
 
     compiled = workflow.compile()
-    logger.info("Solvita Orchestrator workflow compiled (3-phase + Hack→CodeGen loop)")
+    logger.info("Solvita Orchestrator workflow compiled (Abstract→TestGen→CodeGen→Hacker + loop)")
     return compiled
 
 
@@ -243,7 +256,7 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     ensure_token_usage_accumulator(config)
 
     logger.info("=" * 60)
-    logger.info("Starting Solvita Workflow (3-Phase + Hack→CodeGen Loop)")
+    logger.info("Starting Solvita Workflow (Abstract → TestGen → CodeGen → Hacker + loop)")
     logger.info("=" * 60)
 
     initial_state = create_initial_state(raw_problem, config)

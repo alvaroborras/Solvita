@@ -19,6 +19,8 @@ from src.utils.patch_utils import parse_search_replace_blocks, apply_search_repl
 from src.memory import MemoryClient, MemoryNamespace
 from src.utils.problem_utils import extract_problem_code
 from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
+from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_placeholders
+from src.solver_network.adapter import build_solver_network_block
 
 
 def _build_initial_prompt(
@@ -30,6 +32,7 @@ def _build_initial_prompt(
     generated_tests: List[Dict],
     memory_advice: str = "",
     compact: bool = False,
+    solver_graph_block: str = "",
 ) -> str:
     """Build prompt for initial code generation (no previous code)."""
     desc_chars = 10000 if not compact else 5000
@@ -37,8 +40,7 @@ def _build_initial_prompt(
     generated_chars = 300 if not compact else 150
     public_chars = 400 if not compact else 180
     problem_desc = truncate_for_prompt(problem_desc, desc_chars, "PROBLEM_DESC")
-    
-    # Format public tests
+
     public_block = ""
     if public_tests:
         parts = []
@@ -50,12 +52,10 @@ def _build_initial_prompt(
             parts.append(f"    Output:\n{_indent(sample_output, 6)}")
         public_block = "Public test cases:\n" + "\n".join(parts)
 
-    # Format constraints
     constraints_block = ""
     if constraints:
         constraints_block = f"Constraints:\n  {compact_json_for_prompt(constraints, constraint_chars, 'CONSTRAINTS')}"
 
-    # Format generated test inputs (first 3, input only)
     gen_block = ""
     if generated_tests:
         samples = generated_tests[:3]
@@ -70,40 +70,30 @@ def _build_initial_prompt(
             + "\n".join(parts)
         )
 
-    advice_section = f"\n{memory_advice}\n" if memory_advice else ""
-    
-    return f"""Generate a complete C++ solution for this competitive programming problem:
+    memory_block = f"\n{memory_advice}\n" if memory_advice else ""
+    solver_section = ""
+    if (solver_graph_block or "").strip():
+        solver_section = solver_graph_block.strip() + "\n\n"
 
-Problem: {problem_desc}
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.initial")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.initial must be a string template")
 
-Algorithm to use: {algorithm}
-
-Implementation steps:
-{chr(10).join(steps)}
-
-{constraints_block}
-
-{public_block}
-
-{gen_block}
-{advice_section}
-
-Requirements:
-- Use standard C++ (C++17)
-- Do NOT use non-standard headers like #include <bits/stdc++.h>
-- Include all necessary headers
-- Implement fast I/O
-- Handle all edge cases
-- Optimize for BOTH time and space complexity
-- Before coding, do an internal resource audit using the stated constraints
-- Every major container or table must have a size that is defensible under the maximum input bounds
-- Avoid any implementation whose memory or time scales as the product of two large unconstrained dimensions unless you can prove it is safe
-- Do not allocate dense matrices / DP tables / adjacency tables over max-sized dimensions by default
-- If the provided algorithm sketch would lead to an unsafe implementation, adapt the implementation strategy instead of following the sketch literally
-- Prefer streaming, aggregated counting, rolling-state, sparse, or compressed representations when full tables would be too large
-- The final code must be realistic for competitive-programming limits, not just mathematically plausible
-
-Generate ONLY the complete C++ code, no explanations."""
+    steps_block = "\n".join(steps)
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "ALGORITHM": algorithm,
+            "STEPS": steps_block,
+            "CONSTRAINTS_BLOCK": constraints_block,
+            "PUBLIC_BLOCK": public_block,
+            "GEN_BLOCK": gen_block,
+            "SOLVER_GRAPH_BLOCK": solver_section,
+            "MEMORY_ADVICE": memory_block,
+        },
+    )
 
 
 def _build_patch_prompt(
@@ -121,14 +111,12 @@ def _build_patch_prompt(
     prev_code = truncate_for_prompt(prev_code, 16000 if not compact else 8000, "PREV_CODE")
     problem_desc = truncate_for_prompt(problem_desc, 9000 if not compact else 4500, "PROBLEM_DESC")
     feedback_text = truncate_for_prompt(feedback_text, 5000 if not compact else 2000, "FEEDBACK_TEXT")
-    
-    # Format specific failures (up to 10)
+
     failures_block = ""
     if specific_failures:
         parts = ["The following test cases are FAILING:"]
         for i, fail in enumerate(specific_failures[:10]):
             parts.append(f"\nFailure {i+1} ({fail.get('type', 'Unknown Error')}):")
-            # Truncate input if too long
             inp = str(fail.get('input', ''))
             if len(inp) > (300 if not compact else 150):
                 inp = inp[:(300 if not compact else 150)] + "...(truncated)"
@@ -150,67 +138,31 @@ def _build_patch_prompt(
                 parts.append(f"  Details:\n{_indent(details, 4)}")
         failures_block = "\n".join(parts)
 
-    # Format suggested fixes
     fixes_block = ""
     if suggested_fixes:
         fixes_block = "Suggested Fixes:\n" + "\n".join([f"- {fix}" for fix in suggested_fixes])
-    
-    advice_section = f"\n{memory_advice}\n" if memory_advice else ""
-    
-    return f"""You are debugging a C++ solution that is FAILING tests. Your task is to generate SEARCH/REPLACE edits to fix the bugs.
 
-Problem: {problem_desc}
+    memory_block = f"\n{memory_advice}\n" if memory_advice else ""
 
-Algorithm: {algorithm}
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.patch")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.patch must be a string template")
 
-Implementation steps:
-{chr(10).join(steps)}
-
-## Current Code (BUGGY):
-```cpp
-{prev_code}
-```
-
-## Test Failures:
-{failures_block}
-
-{feedback_text}
-
-{fixes_block}
-{advice_section}
-
-## Your Task:
-Analyze the failures and generate *SEARCH/REPLACE* edits to fix the bugs.
-
-Every *SEARCH/REPLACE* edit must use this EXACT format:
-<<<<<<< SEARCH
-<exact contiguous code snippet from the current code>
-=======
-<replacement code with the fix>
->>>>>>> REPLACE
-
-**CRITICAL RULES:**
-1. The SEARCH block must match the current code EXACTLY (including whitespace, indentation)
-2. The SEARCH block must appear EXACTLY ONCE in the code
-3. You can have multiple SEARCH/REPLACE blocks to fix multiple issues
-4. Preserve proper indentation in the REPLACE block
-5. Make minimal, surgical changes - only fix what's broken
-6. Re-check BOTH time and space complexity before proposing edits
-7. Replace unsafe data structures if the current implementation appears to allocate memory proportional to a dangerous product of input dimensions
-8. Do not preserve an existing approach just because it matches the plan if it is not implementable within the stated limits
-
-Example:
-<<<<<<< SEARCH
-    for (int i = 1; i <= n; i++) {{
-        sum += arr[i];
-    }}
-=======
-    for (int i = 0; i < n; i++) {{
-        sum += arr[i];
-    }}
->>>>>>> REPLACE
-
-Generate the SEARCH/REPLACE edits now:"""
+    steps_block = "\n".join(steps)
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "ALGORITHM": algorithm,
+            "STEPS": steps_block,
+            "PREV_CODE": prev_code,
+            "FAILURES_BLOCK": failures_block,
+            "FEEDBACK_TEXT": feedback_text,
+            "FIXES_BLOCK": fixes_block,
+            "MEMORY_ADVICE": memory_block,
+        },
+    )
 
 
 def _generate_with_compact_retry(
@@ -478,6 +430,14 @@ Required Properties: {canonical.get('required_properties', [])}"""
     
     # Determine if this is initial generation or patch iteration
     is_initial = (iteration == 0 or not prev_code)
+
+    solver_graph_block = ""
+    solver_state_update: Dict[str, Any] = {}
+    if is_initial:
+        sn = state["config"].get("solver_network") or {}
+        if sn.get("enabled") and not state.get("solver_network_oneshot_spent"):
+            solver_graph_block = build_solver_network_block(state, state["config"])
+            solver_state_update["solver_network_oneshot_spent"] = True
     
     if is_initial:
         # First time: generate complete code
@@ -490,6 +450,7 @@ Required Properties: {canonical.get('required_properties', [])}"""
                 problem_desc, algorithm, steps,
                 constraints, public_tests, generated_tests,
                 memory_advice=memory_advice,
+                solver_graph_block=solver_graph_block,
             )
             llm_calls += 1
             code = sanitize_cpp(code)
@@ -618,7 +579,7 @@ Required Properties: {canonical.get('required_properties', [])}"""
         "memory_item_ids": memory_item_ids,
     }
 
-    return {
+    out: Dict[str, Any] = {
         "solution": solution,
         "execution_log": [
             f"Generated C++ code (v{solution['version']}), {llm_calls} LLM call(s)",
@@ -628,3 +589,6 @@ Required Properties: {canonical.get('required_properties', [])}"""
         ],
         "llm_calls": llm_calls,
     }
+    if solver_state_update:
+        out.update(solver_state_update)
+    return out

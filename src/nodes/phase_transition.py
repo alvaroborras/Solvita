@@ -17,7 +17,9 @@ if TYPE_CHECKING:
     from src.graph.state import SolvitaState
 
 def _next_phase(state: "SolvitaState") -> str:
-    current = state.get("current_phase", "TESTGEN")
+    current = state.get("current_phase", "ABSTRACT")
+    if current == "ABSTRACT":
+        return "TESTGEN"
     if current == "TESTGEN":
         return "CODEGEN"
     if current == "CODEGEN":
@@ -35,7 +37,7 @@ def phase_transition_node(state: "SolvitaState") -> Dict[str, Any]:
     LangGraph 的 add_messages reducer 在接收到空列表时会清空历史，
     因此直接返回 ``"messages": []`` 即可实现硬性清空。
     """
-    current = state.get("current_phase", "TESTGEN")
+    current = state.get("current_phase", "ABSTRACT")
     next_phase = _next_phase(state)
 
     update: Dict[str, Any] = {

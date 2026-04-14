@@ -12,6 +12,7 @@ data/generated/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # Cursor
 .cursor/

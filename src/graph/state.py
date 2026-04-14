@@ -32,12 +32,16 @@ class ProblemData(TypedDict, total=False):
     constraints: Dict[str, Any]
     public_tests: List[Dict]
     retrieved_knowledge: List[Dict]
-    # Canonical problem representation (populated by plan_solution_node)
+    # Canonical problem representation (populated by abstract_problem_node)
     canonical: Dict[str, Any]
+    # Whitelist-filtered algorithmic tags from abstract_problem_node
+    tags_selected: List[str]
+    abstract_confidence: float
+    abstract_trace: Dict[str, Any]
 
 
 class PlanData(TypedDict, total=False):
-    """Solution planning data from plan_solution_node"""
+    """Solution planning data (abstract_problem_node or legacy plan_solution_node)"""
     solution_plan: Dict[str, Any]
     algorithm_choice: str
     implementation_steps: List[str]
@@ -145,7 +149,10 @@ class SolvitaState(TypedDict):
     generator_failure_reason: str
 
     # -- Phase routing (set by phase_transition_node) --
-    current_phase: str  # "TESTGEN" | "CODEGEN" | "HACKER"
+    current_phase: str  # "ABSTRACT" | "TESTGEN" | "CODEGEN" | "HACKER"
+
+    # One-shot skill-graph injection for first initial codegen only
+    solver_network_oneshot_spent: bool
 
     # -- Metadata --
     execution_log: Annotated[List[str], add]
@@ -153,6 +160,23 @@ class SolvitaState(TypedDict):
     prompt_tokens: int
     completion_tokens: int
     token_usage_source: str
+
+
+def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply defaults for nested runtime knobs (mutates a copy)."""
+    cfg = dict(config)
+    sn = cfg.get("solver_network")
+    if not isinstance(sn, dict):
+        sn = {}
+    cfg["solver_network"] = {
+        "enabled": False,
+        "graph_dir": "",
+        "top_k_problems": 4,
+        "sample_k": 5,
+        "temperature": 1.0,
+        **sn,
+    }
+    return cfg
 
 
 def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) -> SolvitaState:
@@ -168,6 +192,7 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             "public_tests": [{"input": str, "output": str}, ...]
         }
     """
+    config = _merge_runtime_config(config)
     return SolvitaState(
         # Input
         raw_problem=raw_problem,
@@ -184,6 +209,9 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             public_tests=raw_problem.get("public_tests", []),
             retrieved_knowledge=[],
             canonical={},
+            tags_selected=[],
+            abstract_confidence=0.0,
+            abstract_trace={},
         ),
         plan=PlanData(
             solution_plan={},
@@ -263,7 +291,9 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         hack_failure_type="",
         generator_failure_kind="",
         generator_failure_reason="",
-        current_phase="TESTGEN",
+        current_phase="ABSTRACT",
+
+        solver_network_oneshot_spent=False,
 
         # Metadata
         execution_log=[],

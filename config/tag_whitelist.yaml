@@ -1,0 +1,33 @@
+# Allowed algorithmic tags emitted by abstract_problem_node (case-insensitive match).
+tags:
+  - greedy
+  - sorting
+  - binary_search
+  - two_pointers
+  - sliding_window
+  - prefix_sums
+  - difference_array
+  - dynamic_programming
+  - graph
+  - shortest_paths
+  - trees
+  - dsu
+  - segment_tree
+  - fenwick_tree
+  - strings
+  - hashing
+  - math
+  - number_theory
+  - combinatorics
+  - geometry
+  - bit_manipulation
+  - stack
+  - queue
+  - heap
+  - dfs
+  - bfs
+  - backtracking
+  - constructive
+  - simulation
+  - data_structures
+  - implementation

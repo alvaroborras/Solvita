@@ -5,7 +5,10 @@
 # which in turn may import from workflow (via graph/__init__.py)
 
 def __getattr__(name: str):
-    if name == "plan_solution_node":
+    if name == "abstract_problem_node":
+        from .abstract_problem import abstract_problem_node
+        return abstract_problem_node
+    elif name == "plan_solution_node":
         from .plan_solution import plan_solution_node
         return plan_solution_node
     elif name == "generate_tests_node":
@@ -69,6 +72,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "abstract_problem_node",
     "plan_solution_node",
     "generate_tests_node",
     "generate_code_node",

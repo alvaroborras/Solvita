@@ -31,6 +31,21 @@ def test_prepare_executable_returns_existing_binary_path_on_windows(tmp_path, mo
         assert exe_path.suffix == ".exe"
 
 
+def test_phase_transition_advances_abstract_to_testgen():
+    result = phase_transition_node(
+        {
+            "current_phase": "ABSTRACT",
+            "hack_passed": True,
+            "iteration": 0,
+            "hack_round": 0,
+            "messages": [{"role": "assistant", "content": "stale"}],
+        }
+    )
+
+    assert result["current_phase"] == "TESTGEN"
+    assert result["messages"] == []
+
+
 def test_phase_transition_loops_hacker_failures_back_to_codegen():
     result = phase_transition_node(
         {

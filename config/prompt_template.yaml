@@ -1,0 +1,141 @@
+# Namespaced keys used by nodes (e.g. abstract_problem.system).
+# Placeholders use <KEY> and are filled by render_placeholders().
+
+abstract_problem:
+  system: |
+    You extract a precise canonical formulation and algorithmic tags for a competitive programming task.
+    Respond with a single JSON object only. No markdown fences.
+
+  user: |
+    Original problem:
+    <PROBLEM_DESC>
+
+    Known problem types (hints): <PROBLEM_TYPES>
+
+    Constraints JSON:
+    <CONSTRAINTS_JSON>
+
+    Allowed algorithmic tags (choose only from this list; use snake_case labels as given):
+    <TAG_WHITELIST>
+
+    Return JSON with this exact shape:
+    {
+      "canonical_problem": {
+        "objective": "string",
+        "inputs": {},
+        "outputs": {},
+        "constraints": {"normalized": {}, "derived": []},
+        "required_properties": [],
+        "edge_cases": []
+      },
+      "algorithmic_tags": ["subset of allowed tags"],
+      "algorithm_choice": "short name of approach",
+      "implementation_steps": ["step 1", "step 2"],
+      "abstract_confidence": 0.0,
+      "abstract_trace": {"rationale": "why this abstraction fits", "warnings": []}
+    }
+
+    Rules:
+    - canonical_problem must be self-contained and precise.
+    - algorithmic_tags must be filtered to the allowed list only; omit unknown tags.
+    - abstract_confidence in [0,1] reflects how well the statement constraints are satisfied.
+    - abstract_trace must briefly explain tagging and any ambiguity.
+
+generate_code:
+  initial: |
+    Generate a complete C++ solution for this competitive programming problem:
+
+    Problem:
+    <PROBLEM_DESC>
+
+    Algorithm to use:
+    <ALGORITHM>
+
+    Implementation steps:
+    <STEPS>
+
+    <CONSTRAINTS_BLOCK>
+
+    <PUBLIC_BLOCK>
+
+    <GEN_BLOCK>
+
+    <SOLVER_GRAPH_BLOCK>
+
+    <MEMORY_ADVICE>
+
+    Requirements:
+    - Use standard C++ (C++17)
+    - Do NOT use non-standard headers like #include <bits/stdc++.h>
+    - Include all necessary headers
+    - Implement fast I/O
+    - Handle all edge cases
+    - Optimize for BOTH time and space complexity
+    - Before coding, do an internal resource audit using the stated constraints
+    - Every major container or table must have a size that is defensible under the maximum input bounds
+    - Avoid any implementation whose memory or time scales as the product of two large unconstrained dimensions unless you can prove it is safe
+    - Do not allocate dense matrices / DP tables / adjacency tables over max-sized dimensions by default
+    - If the provided algorithm sketch would lead to an unsafe implementation, adapt the implementation strategy instead of following the sketch literally
+    - Prefer streaming, aggregated counting, rolling-state, sparse, or compressed representations when full tables would be too large
+    - The final code must be realistic for competitive-programming limits, not just mathematically plausible
+
+    Generate ONLY the complete C++ code, no explanations.
+
+  patch: |
+    You are debugging a C++ solution that is FAILING tests. Your task is to generate SEARCH/REPLACE edits to fix the bugs.
+
+    Problem:
+    <PROBLEM_DESC>
+
+    Algorithm:
+    <ALGORITHM>
+
+    Implementation steps:
+    <STEPS>
+
+    ## Current Code (BUGGY):
+    ```cpp
+    <PREV_CODE>
+    ```
+
+    ## Test Failures:
+    <FAILURES_BLOCK>
+
+    <FEEDBACK_TEXT>
+
+    <FIXES_BLOCK>
+
+    <MEMORY_ADVICE>
+
+    ## Your Task:
+    Analyze the failures and generate *SEARCH/REPLACE* edits to fix the bugs.
+
+    Every *SEARCH/REPLACE* edit must use this EXACT format:
+    <<<<<<< SEARCH
+    <exact contiguous code snippet from the current code>
+    =======
+    <replacement code with the fix>
+    >>>>>>> REPLACE
+
+    **CRITICAL RULES:**
+    1. The SEARCH block must match the current code EXACTLY (including whitespace, indentation)
+    2. The SEARCH block must appear EXACTLY ONCE in the code
+    3. You can have multiple SEARCH/REPLACE blocks to fix multiple issues
+    4. Preserve proper indentation in the REPLACE block
+    5. Make minimal, surgical changes - only fix what's broken
+    6. Re-check BOTH time and space complexity before proposing edits
+    7. Replace unsafe data structures if the current implementation appears to allocate memory proportional to a dangerous product of input dimensions
+    8. Do not preserve an existing approach just because it matches the plan if it is not implementable within the stated limits
+
+    Example:
+    <<<<<<< SEARCH
+        for (int i = 1; i <= n; i++) {
+            sum += arr[i];
+        }
+    =======
+        for (int i = 0; i < n; i++) {
+            sum += arr[i];
+        }
+    >>>>>>> REPLACE
+
+    Generate the SEARCH/REPLACE edits now:
