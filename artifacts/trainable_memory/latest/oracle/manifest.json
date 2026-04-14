@@ -1,0 +1,27 @@
+{
+  "module": "oracle",
+  "exported_at_utc": "2026-04-14T15:15:20.681591+00:00",
+  "source_paths": {
+    "db": "<workspace>/.worktrees/oracle-redesign/data/memory_full/oracle/memory.db",
+    "policy": "<workspace>/.worktrees/oracle-redesign/data/memory_full/oracle/policy.json",
+    "checkpoint": "<workspace>/.worktrees/oracle-redesign/data/checkpoints_oracle_memory_full/oracle_checkpoint.json"
+  },
+  "artifacts": {
+    "memory_db_gz": {
+      "path": "artifacts/trainable_memory/latest/oracle/memory.db.gz",
+      "size_bytes": 37966942,
+      "sha256": "7617734c4e470a5c40c86de93ccbc4619b5c024d6f7e98d57de44a6e71284ae4"
+    },
+    "policy_json": {
+      "path": "artifacts/trainable_memory/latest/oracle/policy.json",
+      "size_bytes": 928,
+      "sha256": "39e91f9b503980fb55e6fc878150db4ae0400376ea25dff3a393c9fd1264486c"
+    },
+    "checkpoint_json": {
+      "path": "artifacts/trainable_memory/latest/oracle/oracle_checkpoint.json",
+      "size_bytes": 120818,
+      "sha256": "26fdcee52f082871b18de6bb9913feaa691b2e0fb82baee66ea86f428b35eabf"
+    }
+  },
+  "notes": "memory.db is exported as a compressed snapshot to keep the tracked artifact within standard Git-hosting file-size limits."
+}
