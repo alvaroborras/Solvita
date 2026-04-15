@@ -300,14 +300,31 @@ class UnifiedLLMClient:
             return ""
 
         model = kwargs.get("model", self.model)
+        request_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "timeout": kwargs.get("timeout", self.request_timeout),
+        }
+        passthrough_keys = (
+            "response_format",
+            "seed",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "stop",
+            "logit_bias",
+            "n",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        )
+        for key in passthrough_keys:
+            if key in kwargs and kwargs[key] is not None:
+                request_kwargs[key] = kwargs[key]
         try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=kwargs.get("temperature", self.temperature),
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
-                timeout=kwargs.get("timeout", self.request_timeout),
-            )
+            response = self.client.chat.completions.create(**request_kwargs)
             if isinstance(response, str):
                 content = response
                 prompt_tokens = estimate_message_tokens(messages, model=model)
