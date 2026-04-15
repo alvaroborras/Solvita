@@ -6,6 +6,10 @@
 
 trainable_memory:
   enabled: false
+  # Namespace-level switches (effective only when enabled=true).
+  # Set to false to fully disable a specific memory namespace network.
+  hacker_enabled: true
+  oracle_enabled: true
   data_dir: artifacts/trainable_memory
   plan_top_k: 3
   solve_top_k: 3

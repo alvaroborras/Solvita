@@ -83,7 +83,13 @@ class MemoryClient:
         
         self.namespace = namespace
         self.config = config or {}
-        self.enabled = self.config.get("trainable_memory", {}).get("enabled", False)
+        tm_cfg = self.config.get("trainable_memory", {})
+        self.enabled = tm_cfg.get("enabled", False)
+        # Allow independent namespace switches for hacker/oracle memory networks.
+        if self.namespace == MemoryNamespace.HACK:
+            self.enabled = self.enabled and bool(tm_cfg.get("hacker_enabled", True))
+        elif self.namespace == MemoryNamespace.ORACLE:
+            self.enabled = self.enabled and bool(tm_cfg.get("oracle_enabled", True))
         self.top_k = self.config.get("trainable_memory", {}).get(f"{namespace.value}_top_k", 3)
         self.data_dir = Path(
             self.config.get("trainable_memory", {}).get("data_dir", "data/memory")

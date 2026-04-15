@@ -234,6 +234,8 @@ def _fallback_trainable_memory_defaults(repo_root: Path) -> Dict[str, Any]:
     """Used when ``config/trainable_memory.yaml`` is missing."""
     return {
         "enabled": False,
+        "hacker_enabled": True,
+        "oracle_enabled": True,
         "data_dir": _resolve_repo_path(repo_root, "artifacts/trainable_memory"),
         "plan_top_k": 3,
         "solve_top_k": 3,
