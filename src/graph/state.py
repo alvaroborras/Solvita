@@ -178,24 +178,24 @@ class SolvitaState(TypedDict):
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _resolve_graph_dir(repo_root: Path, graph_dir: str) -> str:
-    """Turn ``graph_dir`` into an absolute path; relative paths are under ``repo_root``."""
-    if not graph_dir or not isinstance(graph_dir, str):
+def _resolve_repo_path(repo_root: Path, raw_path: str) -> str:
+    """Resolve a repo-relative or absolute path to an absolute path string."""
+    if not raw_path or not isinstance(raw_path, str):
         return ""
-    gd = graph_dir.strip()
-    if not gd:
+    p = raw_path.strip()
+    if not p:
         return ""
-    p = Path(gd)
-    if p.is_absolute():
-        return str(p.resolve())
-    return str((repo_root / p).resolve())
+    path = Path(p)
+    if path.is_absolute():
+        return str(path.resolve())
+    return str((repo_root / path).resolve())
 
 
 def _fallback_solver_network_defaults(repo_root: Path) -> Dict[str, Any]:
     """Used when ``config/solver_network.yaml`` is missing."""
     return {
         "enabled": False,
-        "graph_dir": _resolve_graph_dir(
+        "graph_dir": _resolve_repo_path(
             repo_root, "artifacts/solver_network/latest/graph"
         ),
         "top_k_problems": 4,
@@ -224,9 +224,44 @@ def _load_solver_network_defaults() -> Dict[str, Any]:
     out: Dict[str, Any] = dict(sn)
     gd = out.get("graph_dir", "")
     if isinstance(gd, str) and gd.strip():
-        out["graph_dir"] = _resolve_graph_dir(repo_root, gd)
+        out["graph_dir"] = _resolve_repo_path(repo_root, gd)
     else:
         out["graph_dir"] = ""
+    return out
+
+
+def _fallback_trainable_memory_defaults(repo_root: Path) -> Dict[str, Any]:
+    """Used when ``config/trainable_memory.yaml`` is missing."""
+    return {
+        "enabled": False,
+        "data_dir": _resolve_repo_path(repo_root, "artifacts/trainable_memory"),
+        "plan_top_k": 3,
+        "solve_top_k": 3,
+        "test_top_k": 3,
+        "hack_top_k": 3,
+        "oracle_top_k": 3,
+        "oracle_memory_mode": "off",
+        "oracle_memory_snapshot_id": "",
+    }
+
+
+def _load_trainable_memory_defaults() -> Dict[str, Any]:
+    """Load ``config/trainable_memory.yaml`` and resolve ``data_dir``."""
+    repo_root = _REPO_ROOT
+    path = repo_root / "config" / "trainable_memory.yaml"
+    if not path.is_file():
+        return _fallback_trainable_memory_defaults(repo_root)
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    tm = data.get("trainable_memory")
+    if not isinstance(tm, dict):
+        return _fallback_trainable_memory_defaults(repo_root)
+    out: Dict[str, Any] = dict(tm)
+    dd = out.get("data_dir", "")
+    if isinstance(dd, str) and dd.strip():
+        out["data_dir"] = _resolve_repo_path(repo_root, dd)
+    else:
+        out["data_dir"] = ""
     return out
 
 
@@ -240,10 +275,22 @@ def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     merged: Dict[str, Any] = {**base, **sn}
     ug = merged.get("graph_dir", "")
     if isinstance(ug, str) and ug.strip():
-        merged["graph_dir"] = _resolve_graph_dir(_REPO_ROOT, ug)
+        merged["graph_dir"] = _resolve_repo_path(_REPO_ROOT, ug)
     else:
         merged["graph_dir"] = ""
     cfg["solver_network"] = merged
+
+    tm = cfg.get("trainable_memory")
+    if not isinstance(tm, dict):
+        tm = {}
+    tm_base = _load_trainable_memory_defaults()
+    tm_merged: Dict[str, Any] = {**tm_base, **tm}
+    udd = tm_merged.get("data_dir", "")
+    if isinstance(udd, str) and udd.strip():
+        tm_merged["data_dir"] = _resolve_repo_path(_REPO_ROOT, udd)
+    else:
+        tm_merged["data_dir"] = ""
+    cfg["trainable_memory"] = tm_merged
     return cfg
 
 

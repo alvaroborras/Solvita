@@ -62,23 +62,27 @@ Post-success adversarial phase that stress-tests solutions to find edge-case bug
 
 ```mermaid
 graph TD
-    A[Problem Input] --> B[Plan Solution]
-    B -->|parallel| C[Generate Tests]
-    B -->|parallel| D[Generate Code]
-    D --> E[Compile Code]
-    E -->|success| F[Run Tests]
-    E -->|failed| I
-    C --> F
-    F --> G[Unified Check]
-    G --> H1[Update Plan Memory]
-    H1 --> H2[Update Solve Memory]
-    H2 -->|success| HT[Hack Test]
-    H2 -->|continue| I[Analyze Feedback]
-    H2 -->|max iterations| Z[END]
-    HT -->|hack again| HT
-    HT -->|hack failed| I
-    HT -->|all clear| Z
-    I --> D
+    A[Problem Input] --> B[Abstract Problem]
+    B --> C[Phase Transition]
+    C --> D[Generate Tests]
+    D --> E[Phase Transition]
+    E --> F[Solver Skill Plan Optional]
+    F --> G[Generate Code]
+    G --> H[Compile Code]
+    H -->|success| I[Run Tests]
+    H -->|failed| N[Analyze Feedback]
+    I --> J[Unified Check]
+    J --> K1[Update Plan Memory]
+    K1 --> K2[Update Solve Memory]
+    K2 --> K3[Update Oracle Memory]
+    K3 -->|continue| N
+    K3 -->|success| L[Phase Transition]
+    K3 -->|max iterations| Z[END]
+    N --> G
+    L --> M[Hack Test]
+    M -->|all clear| Z
+    M -->|bug found| O[Phase Transition]
+    O --> G
 ```
 
 ---
@@ -88,7 +92,11 @@ graph TD
 ```
 solvita/
 ├── config/
-│   └── models.yaml.example     # LLM configuration template
+│   ├── models.yaml             # LLM + embedding backend configuration
+│   ├── solver_network.yaml     # Skill-graph runtime defaults and toggles
+│   ├── trainable_memory.yaml   # Trainable memory runtime defaults and toggles
+│   ├── prompt_template.yaml    # Prompt templates used by nodes
+│   └── tag_whitelist.yaml      # Allowed algorithmic tags for abstract node
 ├── src/
 │   ├── graph/
 │   │   ├── state.py            # SolvitaState TypedDict
@@ -104,7 +112,8 @@ solvita/
 │   │   ├── skill_loader.py     # C++ skill snippets from skills/*.md
 │   │   └── seeds/              # Initial strategy templates
 │   ├── nodes/
-│   │   ├── plan_solution.py    # Problem analysis + canonical repr
+│   │   ├── abstract_problem.py # Canonical abstraction + level-1/2 tags
+│   │   ├── solver_skill_plan.py# Optional skill-graph rollout + LLM DAG/skills
 │   │   ├── generate_code.py    # Code gen with SEARCH/REPLACE patching
 │   │   ├── generate_tests.py   # Test suite generation
 │   │   ├── compile_code.py     # Sandboxed compilation
@@ -115,14 +124,18 @@ solvita/
 │   │   ├── update_plan_memory.py
 │   │   ├── update_solve_memory.py
 │   │   └── routing.py          # Conditional edge logic
+│   ├── solver_network/
+│   │   ├── planner_input.py
+│   │   ├── llm_skill_selection.py
+│   │   └── adapter.py
+│   ├── skill_graph_train/      # Offline skill-graph training pipeline package
 │   └── utils/
 │       ├── cpp_execution.py    # rlimit-sandboxed compile/run
 │       └── patch_utils.py      # SEARCH/REPLACE block parser
 ├── skills/                     # C++ algorithm snippets (*.md)
-├── data/memory/                # SQLite databases + policy weights
-│   ├── plan/  (memory.db, policy.json)
-│   ├── solve/ (memory.db, policy.json)
-│   └── test/  (memory.db, policy.json)
+├── artifacts/
+│   ├── solver_network/latest/graph/
+│   └── trainable_memory/latest/
 ├── tests/
 ├── main.py                     # CLI entry point
 └── requirements.txt
@@ -151,7 +164,6 @@ pip install -r requirements.txt
 # 3. Configure LLM credentials (choose one method)
 
 # Option A: config file
-cp config/models.yaml.example config/models.yaml
 # Edit config/models.yaml with your base_url + api_key (+ optional llm.roles per node)
 
 # Option B: environment variables
@@ -159,6 +171,53 @@ export SOLVITA_BASE_URL="https://api.openai.com/v1"
 export SOLVITA_API_KEY="sk-..."
 export SOLVITA_MODEL="gpt-4"
 ```
+
+### Embedding Backend Configuration (Skill Graph Similarity)
+
+`skill_graph/question_similarity.py` now supports two embedding backends, configured in `config/models.yaml`:
+
+```yaml
+embedding:
+  provider: "azure_openai"         # or "sentence_transformers"
+  model: "text-embedding-3-small"  # or local HF model id
+```
+
+#### Option 1: Azure OpenAI embeddings
+
+```yaml
+embedding:
+  provider: "azure_openai"
+  model: "text-embedding-3-small"
+  azure:
+    base_url: "https://<azure-endpoint>"
+    tenant_id: "..."
+    scope: "..."
+    api_version: "2025-04-01-preview"
+```
+
+#### Option 2: Local sentence-transformers embeddings
+
+```yaml
+embedding:
+  provider: "sentence_transformers"
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  sentence_transformers:
+    device: "cpu"   # or "cuda"
+```
+
+Install local embedding dependency when using `sentence_transformers`:
+
+```bash
+pip install sentence-transformers
+```
+
+> Note: the first run with a local model may take significantly longer due to model download and initialization. This is expected.
+
+Environment variables still override YAML values:
+- `SOLVITA_EMBEDDING_PROVIDER`
+- `SOLVITA_EMBEDDING_MODEL`
+- `SOLVITA_ST_DEVICE`
+- `SOLVITA_EMBEDDING_AZURE_BASE_URL`, `SOLVITA_EMBEDDING_AZURE_TENANT_ID`, `SOLVITA_EMBEDDING_AZURE_SCOPE`, `SOLVITA_EMBEDDING_AZURE_API_VERSION`
 
 ---
 
@@ -180,7 +239,8 @@ result = run_workflow(
     },
     config={
         "max_iterations": 5,
-        "trainable_memory": {"enabled": True, "data_dir": "data/memory"},
+        "solver_network": {"enabled": True},
+        "trainable_memory": {"enabled": True},
     },
 )
 
@@ -193,6 +253,12 @@ print(f"Pass rate: {result['tests']['pass_rate']:.1%}")
 ```bash
 python main.py --input problem.json --output solution.cpp
 ```
+
+By default, runtime nested configs are loaded from:
+- `config/solver_network.yaml`
+- `config/trainable_memory.yaml`
+
+You can still override any nested key at call time via `run_workflow(..., config=...)`.
 
 ---
 

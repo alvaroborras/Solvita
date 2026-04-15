@@ -1,0 +1,16 @@
+# Trainable memory runtime defaults.
+# Merged into config["trainable_memory"] in create_initial_state (see src/graph/state.py).
+# Keys passed in the outer config["trainable_memory"] override these values.
+#
+# data_dir is relative to the Solvita repository root unless you pass an absolute path.
+
+trainable_memory:
+  enabled: false
+  data_dir: artifacts/trainable_memory
+  plan_top_k: 3
+  solve_top_k: 3
+  test_top_k: 3
+  hack_top_k: 3
+  oracle_top_k: 3
+  oracle_memory_mode: "off"
+  oracle_memory_snapshot_id: ""

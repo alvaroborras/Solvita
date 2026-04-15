@@ -264,7 +264,18 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
             compact=prompt_compact,
         )
         try:
-            response = llm.generate_with_system(system_msg, user_msg)
+            try:
+                response = llm.generate_with_system(
+                    system_msg,
+                    user_msg,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as e:
+                logger.warning(
+                    "[Abstract] response_format=json_object failed (%s), retrying without",
+                    e,
+                )
+                response = llm.generate_with_system(system_msg, user_msg)
         except PromptTooLongError:
             if prompt_compact:
                 raise

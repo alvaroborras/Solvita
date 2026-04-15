@@ -3,25 +3,40 @@
 
 llm:
   # Required: OpenAI-compatible endpoint and key
-  base_url: "http://14.103.68.46/v1"
-  api_key: "sk-<redacted>"
+  base_url: "https://<gateway-host>/v1"
+  api_key: "sk-REDACTED"
 
   # Default model for all nodes (can be overridden by roles below)
-  model: "gpt-5.2"
+  model: "gpt-5"
   temperature: 0.1
-  max_tokens: 8192
+  max_tokens: 16384
 
   # Optional per-role overrides to match previous behavior
   roles:
     code:
-      model: "gpt-5.2"
+      model: "gpt-5"
     generator:
-      model: "claude-opus-4-5-20251101"
+      model: "gpt-5.2"
     validator:
-      model: "gpt-5.2"
+      model: "gpt-5"
     checker:
-      model: "gpt-5.2"
+      model: "gpt-5"
     output:
-      model: "gpt-5.2"
+      model: "gpt-5"
     hacker:
       model: "claude-opus-4-6"
+
+# Embedding backend for semantic similarity in skill_graph/question_similarity.py.
+# Priority: environment variables > this YAML > hardcoded defaults.
+embedding:
+  # "azure_openai" or "sentence_transformers"
+  provider: "azure_openai"
+  model: "text-embedding-3-small"
+  cache_size: 32768
+  azure:
+    base_url: "https://<azure-endpoint>"
+    tenant_id: "<azure-tenant>"
+    scope: "api://<azure-scope>/.default"
+    api_version: "2025-04-01-preview"
+  sentence_transformers:
+    device: "cpu"

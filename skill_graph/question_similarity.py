@@ -27,10 +27,11 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import TYPE_CHECKING, Iterable, List
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable, List
 
 import numpy as np
+import yaml
 
 from .blocks import FunctionBlock
 from .nodes import QNode, SNode
@@ -40,16 +41,134 @@ if TYPE_CHECKING:
     from .inference import PlannerInput
 
 # ---------------------------------------------------------------------------
-# OpenAI embedding client (lazy singleton, thread-safe)
+# Embedding backend config and lazy clients
 # ---------------------------------------------------------------------------
 _EMB_CLIENT = None
+_ST_MODEL = None
 _EMB_LOCK = threading.Lock()
-_EMB_MODEL = os.environ.get("SOLVITA_EMBEDDING_MODEL", "text-embedding-3-small")
-_EMB_CACHE_SIZE = int(os.environ.get("SOLVITA_EMBEDDING_CACHE_SIZE", "32768"))
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _models_yaml_path() -> Path:
+    config_root = os.environ.get("SOLVITA_CONFIG_PATH", "")
+    if config_root:
+        p = Path(config_root).expanduser().resolve()
+        return p / "models.yaml"
+    return _repo_root() / "config" / "models.yaml"
+
+
+def _embedding_section_from_models_yaml() -> dict[str, Any]:
+    path = _models_yaml_path()
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    emb = data.get("embedding")
+    return emb if isinstance(emb, dict) else {}
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    provider: str
+    model: str
+    cache_size: int
+    azure_base_url: str
+    azure_tenant_id: str
+    azure_scope: str
+    azure_api_version: str
+    st_device: str
+
+
+def resolve_embedding_config() -> EmbeddingConfig:
+    """Resolve embedding backend configuration from env vars and models.yaml."""
+    emb = _embedding_section_from_models_yaml()
+
+    provider = str(
+        os.environ.get("SOLVITA_EMBEDDING_PROVIDER")
+        or emb.get("provider")
+        or "azure_openai"
+    ).strip().lower()
+
+    model = str(
+        os.environ.get("SOLVITA_EMBEDDING_MODEL")
+        or emb.get("model")
+        or "text-embedding-3-small"
+    ).strip()
+
+    cache_size_raw = (
+        os.environ.get("SOLVITA_EMBEDDING_CACHE_SIZE")
+        or emb.get("cache_size")
+        or 32768
+    )
+    try:
+        cache_size = max(1024, int(cache_size_raw))
+    except (TypeError, ValueError):
+        cache_size = 32768
+
+    azure = emb.get("azure") if isinstance(emb.get("azure"), dict) else {}
+    azure_base_url = str(
+        os.environ.get("SOLVITA_EMBEDDING_AZURE_BASE_URL")
+        or os.environ.get("SOLVITA_BASE_URL")
+        or azure.get("base_url")
+        or "https://<azure-endpoint>"
+    ).strip()
+    azure_tenant_id = str(
+        os.environ.get("SOLVITA_EMBEDDING_AZURE_TENANT_ID")
+        or azure.get("tenant_id")
+        or "<azure-tenant>"
+    ).strip()
+    azure_scope = str(
+        os.environ.get("SOLVITA_EMBEDDING_AZURE_SCOPE")
+        or azure.get("scope")
+        or "api://<azure-scope>/.default"
+    ).strip()
+    azure_api_version = str(
+        os.environ.get("SOLVITA_EMBEDDING_AZURE_API_VERSION")
+        or azure.get("api_version")
+        or "2025-04-01-preview"
+    ).strip()
+
+    st = (
+        emb.get("sentence_transformers")
+        if isinstance(emb.get("sentence_transformers"), dict)
+        else {}
+    )
+    st_device = str(
+        os.environ.get("SOLVITA_ST_DEVICE")
+        or st.get("device")
+        or "cpu"
+    ).strip()
+
+    return EmbeddingConfig(
+        provider=provider,
+        model=model,
+        cache_size=cache_size,
+        azure_base_url=azure_base_url,
+        azure_tenant_id=azure_tenant_id,
+        azure_scope=azure_scope,
+        azure_api_version=azure_api_version,
+        st_device=st_device,
+    )
+
+
+def resolve_embedding_model() -> str:
+    """Backward-compatible helper: return resolved embedding model name."""
+    return resolve_embedding_config().model
+
+
+_EMB_CONFIG = resolve_embedding_config()
+_EMB_MODEL = _EMB_CONFIG.model
+_EMB_CACHE_SIZE = _EMB_CONFIG.cache_size
 
 
 def _get_embedding_client():
-    """Return a shared OpenAI client configured for the Azure endpoint."""
+    """Return a shared Azure OpenAI embedding client."""
     global _EMB_CLIENT
     if _EMB_CLIENT is not None:
         return _EMB_CLIENT
@@ -59,24 +178,38 @@ def _get_embedding_client():
         import openai
         from azure.identity import AzureCliCredential, get_bearer_token_provider
 
-        tenant_id = "<azure-tenant>"
-        scope = "api://<azure-scope>/.default"
-        credential = AzureCliCredential(tenant_id=tenant_id)
-        token_provider = get_bearer_token_provider(credential, scope)
+        credential = AzureCliCredential(tenant_id=_EMB_CONFIG.azure_tenant_id)
+        token_provider = get_bearer_token_provider(credential, _EMB_CONFIG.azure_scope)
 
-        base_url = os.environ.get(
-            "SOLVITA_BASE_URL", "https://<azure-endpoint>"
-        )
-        base_url = base_url.rstrip("/") + "/"
+        base_url = _EMB_CONFIG.azure_base_url.rstrip("/") + "/"
         if not base_url.endswith("openai/"):
             base_url = base_url + "openai/"
 
         _EMB_CLIENT = openai.AzureOpenAI(
-            api_version="2025-04-01-preview",
+            api_version=_EMB_CONFIG.azure_api_version,
             base_url=base_url,
             azure_ad_token_provider=token_provider,
         )
         return _EMB_CLIENT
+
+
+def _get_sentence_transformer_model():
+    """Return a shared SentenceTransformer model."""
+    global _ST_MODEL
+    if _ST_MODEL is not None:
+        return _ST_MODEL
+    with _EMB_LOCK:
+        if _ST_MODEL is not None:
+            return _ST_MODEL
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "sentence-transformers backend requested, but package is not installed. "
+                "Install with: pip install sentence-transformers"
+            ) from exc
+        _ST_MODEL = SentenceTransformer(_EMB_MODEL, device=_EMB_CONFIG.st_device)
+        return _ST_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -87,12 +220,24 @@ _EMB_CACHE_LOCK = threading.Lock()
 
 
 def _embed_text(text: str) -> np.ndarray:
-    """Embed a single text string via OpenAI API. Results are dict-cached."""
+    """Embed a single text string with the configured backend; results are dict-cached."""
     if text in _EMB_CACHE:
         return _EMB_CACHE[text]
-    client = _get_embedding_client()
-    resp = client.embeddings.create(model=_EMB_MODEL, input=text)
-    vec = np.asarray(resp.data[0].embedding, dtype=np.float64)
+    if _EMB_CONFIG.provider == "sentence_transformers":
+        model = _get_sentence_transformer_model()
+        vec = np.asarray(
+            model.encode([text], convert_to_numpy=True, normalize_embeddings=False)[0],
+            dtype=np.float64,
+        )
+    elif _EMB_CONFIG.provider == "azure_openai":
+        client = _get_embedding_client()
+        resp = client.embeddings.create(model=_EMB_MODEL, input=text)
+        vec = np.asarray(resp.data[0].embedding, dtype=np.float64)
+    else:
+        raise ValueError(
+            f"Unsupported embedding provider: {_EMB_CONFIG.provider!r}. "
+            "Use 'azure_openai' or 'sentence_transformers'."
+        )
     with _EMB_CACHE_LOCK:
         _EMB_CACHE[text] = vec
     return vec
@@ -104,8 +249,24 @@ def warmup_embedding_cache(texts: List[str], batch_size: int = 256) -> int:
     to_embed = [t for t in unique_texts if t not in _EMB_CACHE]
     if not to_embed:
         return 0
-    client = _get_embedding_client()
     embedded = 0
+    if _EMB_CONFIG.provider == "sentence_transformers":
+        model = _get_sentence_transformer_model()
+        for i in range(0, len(to_embed), batch_size):
+            batch = to_embed[i : i + batch_size]
+            embs = model.encode(
+                batch,
+                convert_to_numpy=True,
+                normalize_embeddings=False,
+                batch_size=max(8, int(batch_size)),
+            )
+            with _EMB_CACHE_LOCK:
+                for j, txt in enumerate(batch):
+                    _EMB_CACHE[txt] = np.asarray(embs[j], dtype=np.float64)
+                    embedded += 1
+        return embedded
+
+    client = _get_embedding_client()
     for i in range(0, len(to_embed), batch_size):
         batch = to_embed[i: i + batch_size]
         resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
@@ -183,21 +344,35 @@ def encode_l2_normalized_batch(
     batch_size: int = 64,
 ) -> np.ndarray:
     """
-    批量句向量并按行 L2 归一化，使用 OpenAI embedding API。
+    Batch-encode text embeddings and L2-normalize rows using configured backend.
 
     空串会替换为 ``[empty]``，避免无效输入。
     """
     if not texts:
         return np.zeros((0, 0), dtype=np.float64)
     safe = [t if (t or "").strip() else "[empty]" for t in texts]
-    client = _get_embedding_client()
     bs = int(os.environ.get("SOLVITA_ST_ENCODE_BATCH", str(batch_size)))
     all_embs = []
-    for i in range(0, len(safe), max(8, bs)):
-        batch = safe[i : i + max(8, bs)]
-        resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
-        for d in sorted(resp.data, key=lambda x: x.index):
-            all_embs.append(d.embedding)
+    eff_bs = max(8, bs)
+    if _EMB_CONFIG.provider == "sentence_transformers":
+        model = _get_sentence_transformer_model()
+        for i in range(0, len(safe), eff_bs):
+            batch = safe[i : i + eff_bs]
+            embs = model.encode(
+                batch,
+                convert_to_numpy=True,
+                normalize_embeddings=False,
+                batch_size=eff_bs,
+            )
+            for row in embs:
+                all_embs.append(row)
+    else:
+        client = _get_embedding_client()
+        for i in range(0, len(safe), eff_bs):
+            batch = safe[i : i + eff_bs]
+            resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
+            for d in sorted(resp.data, key=lambda x: x.index):
+                all_embs.append(d.embedding)
     arr = np.asarray(all_embs, dtype=np.float64)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-12)
