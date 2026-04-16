@@ -37,7 +37,7 @@ def test_validate_manifest_row_rejects_missing_problem_id():
 def test_benchmark_result_computes_pass_rate():
     result = BenchmarkResult(
         problem_id="cc_001",
-        mode="gpt52_single_pass",
+        mode="single_pass",
         status="success",
         compile_success=True,
         passed_tests=8,
@@ -54,7 +54,7 @@ def test_benchmark_result_rejects_negative_test_counts():
     with pytest.raises(ValueError, match="non-negative"):
         BenchmarkResult(
             problem_id="cc_001",
-            mode="gpt52_single_pass",
+            mode="single_pass",
             status="error",
             compile_success=False,
             passed_tests=-1,

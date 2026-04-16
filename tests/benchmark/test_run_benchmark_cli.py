@@ -33,7 +33,7 @@ def test_run_benchmark_supports_bench_all(monkeypatch, tmp_path: Path):
 
     requested_benches = []
 
-    def _fake_build_payloads_from_hf(bench_name: str, limit):
+    def _fake_build_payloads_from_hf(bench_name: str, limit, apps_difficulty=None):
         requested_benches.append((bench_name, limit))
         return [
             {

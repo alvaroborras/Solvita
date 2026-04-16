@@ -57,7 +57,7 @@ def summarize_results(rows: Iterable[Any]) -> Dict[str, Any]:
     ties = 0
     for _, pair in by_problem.items():
         pipeline = pair.get("solvita_pipeline")
-        single = pair.get("gpt52_single_pass")
+        single = pair.get("single_pass") or pair.get("gpt52_single_pass")
         if not pipeline or not single:
             continue
         p_rate = float(pipeline.get("pass_rate", 0.0))
@@ -73,7 +73,7 @@ def summarize_results(rows: Iterable[Any]) -> Dict[str, Any]:
         "modes": mode_summary,
         "head_to_head": {
             "wins_pipeline": wins_pipeline,
-            "wins_gpt52_single_pass": wins_gpt52,
+            "wins_single_pass": wins_gpt52,
             "ties": ties,
         },
         "total_rows": len(row_dicts),
@@ -110,7 +110,7 @@ def render_markdown_report(summary: Dict[str, Any]) -> str:
             "## Head-to-Head",
             "",
             f"- wins_pipeline: {h2h.get('wins_pipeline', 0)}",
-            f"- wins_gpt52_single_pass: {h2h.get('wins_gpt52_single_pass', 0)}",
+            f"- wins_single_pass: {h2h.get('wins_single_pass', 0)}",
             f"- ties: {h2h.get('ties', 0)}",
             "",
         ]

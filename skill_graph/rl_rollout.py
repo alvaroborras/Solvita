@@ -24,7 +24,11 @@ from .path_scoring import (
     compute_rho_and_best_paths,
     softmax_skill_distribution,
 )
-from .question_similarity import QuestionSimilarityWeights, sim_planner_to_qnode
+from .question_similarity import (
+    QuestionSimilarityWeights,
+    sim_planner_to_qnode,
+    warmup_embedding_cache,
+)
 from .types import NodeId
 
 logger = logging.getLogger(__name__)
@@ -193,6 +197,16 @@ def compute_rollout_context(
     供 **LLM 从 top-ρ 候选中自选 skill** 的流程在采样前复用同一套图分数。
     """
     w = similarity_weights or QuestionSimilarityWeights()
+
+    # Batch-embed all Q-node texts upfront to avoid 9k+ individual API calls.
+    q_texts = [
+        (getattr(q, "abstract_description", None) or "")
+        for q in graph.q_nodes.values()
+    ]
+    warmed = warmup_embedding_cache(q_texts)
+    if warmed:
+        logger.info("Warmed embedding cache with %d Q-node texts", warmed)
+
     scored: List[Tuple[QNode, float]] = []
     for q in graph.q_nodes.values():
         sim = sim_planner_to_qnode(planner, q, weights=w)

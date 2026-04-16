@@ -12,17 +12,19 @@ from pathlib import Path
 from typing import Any, Dict, List
 from uuid import uuid4
 
+from loguru import logger
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.benchmark.dataset import load_benchmark_manifest
-from src.benchmark.modes.gpt52_single_pass import run_gpt52_single_pass_case
+from src.benchmark.modes.single_pass import run_single_pass_case
 from src.benchmark.modes.pipeline import run_pipeline_benchmark_case
 from src.benchmark.reporting import write_summary_outputs
 
 
 MODE_RUNNERS = {
     "solvita_pipeline": run_pipeline_benchmark_case,
-    "gpt52_single_pass": run_gpt52_single_pass_case,
+    "single_pass": run_single_pass_case,
 }
 
 BENCH_TO_MANIFEST_NAME = {
@@ -45,10 +47,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modes",
         nargs="+",
-        default=["solvita_pipeline", "gpt52_single_pass"],
+        default=["solvita_pipeline", "single_pass"],
         choices=sorted(MODE_RUNNERS.keys()),
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--apps-difficulty",
+        type=str,
+        default=None,
+        choices=["introductory", "interview", "competition"],
+        help="Filter APPS dataset by difficulty level.",
+    )
     parser.add_argument("--config-path", type=str, default="config/models.yaml")
     parser.add_argument(
         "--max-workers",
@@ -71,6 +80,42 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("benchmark/manifests"),
         help="Directory for local benchmark caches/artifacts.",
+    )
+    parser.add_argument(
+        "--solver-network",
+        action="store_true",
+        default=False,
+        help="Enable solver_network for pipeline mode.",
+    )
+    parser.add_argument(
+        "--trainable-memory",
+        action="store_true",
+        default=False,
+        help="Enable trainable_memory for pipeline mode.",
+    )
+    parser.add_argument(
+        "--tm-hacker",
+        action="store_true",
+        default=None,
+        help="Enable hacker sub-network within trainable_memory (implies --trainable-memory).",
+    )
+    parser.add_argument(
+        "--tm-oracle",
+        action="store_true",
+        default=None,
+        help="Enable oracle sub-network within trainable_memory (implies --trainable-memory).",
+    )
+    parser.add_argument(
+        "--no-tm-hacker",
+        action="store_true",
+        default=False,
+        help="Disable hacker sub-network within trainable_memory.",
+    )
+    parser.add_argument(
+        "--no-tm-oracle",
+        action="store_true",
+        default=False,
+        help="Disable oracle sub-network within trainable_memory.",
     )
     return parser.parse_args()
 
@@ -145,6 +190,10 @@ def _run_single_manifest(
     config_path: str,
     max_workers: int,
     limit: int | None = None,
+    solver_network: bool = False,
+    trainable_memory: bool = False,
+    tm_hacker_enabled: bool | None = None,
+    tm_oracle_enabled: bool | None = None,
 ) -> Dict[str, Any]:
     items = load_benchmark_manifest(manifest)
     if limit is not None:
@@ -152,14 +201,52 @@ def _run_single_manifest(
     output_dir.mkdir(parents=True, exist_ok=True)
     results_path = output_dir / "results.jsonl"
 
+    tm_config: Dict[str, Any] = {"enabled": trainable_memory}
+    if tm_hacker_enabled is not None:
+        tm_config["hacker_enabled"] = tm_hacker_enabled
+    if tm_oracle_enabled is not None:
+        tm_config["oracle_enabled"] = tm_oracle_enabled
+
     config = {
         "config_path": config_path,
         "benchmark_output_dir": str(output_dir),
+        "solver_network": {"enabled": solver_network},
+        "trainable_memory": tm_config,
     }
     rows: List[Dict[str, Any]] = []
     worker_count = max(1, int(max_workers))
 
-    with results_path.open("w", encoding="utf-8") as fh:
+    # Resume support: skip problems already in results.jsonl
+    completed_ids: set[str] = set()
+    if results_path.exists():
+        for line in results_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                completed_ids.add(json.loads(line)["problem_id"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    if completed_ids:
+        before = len(items)
+        items = [it for it in items if it.problem_id not in completed_ids]
+        logger.info("[Resume] Skipping {}/{} already-completed problems", before - len(items), before)
+    if not items:
+        logger.info("[Resume] All problems already completed, nothing to do.")
+        if results_path.exists():
+            for line in results_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        else:
+            results_path.touch()
+        write_summary_outputs(output_dir, rows)
+        return {"results_path": str(results_path), "total": len(rows)}
+
+    with results_path.open("a", encoding="utf-8") as fh:
         if worker_count == 1 or len(items) <= 1:
             for item in items:
                 for row in _run_problem_modes(item, modes, config):
@@ -174,16 +261,55 @@ def _run_single_manifest(
                     for item in items
                 }
                 for future in as_completed(future_to_problem):
-                    for row in future.result():
+                    problem_id = future_to_problem[future]
+                    try:
+                        result_rows = future.result()
+                    except Exception as exc:
+                        logger.error(
+                            "[Benchmark] Worker crashed for {}: {}", problem_id, exc,
+                        )
+                        result_rows = [
+                            {
+                                "problem_id": problem_id,
+                                "mode": m,
+                                "status": "error",
+                                "compile_success": False,
+                                "passed_tests": 0,
+                                "total_tests": 0,
+                                "pass_rate": 0.0,
+                                "elapsed_total_s": 0.0,
+                                "llm_infer_s": 0.0,
+                                "prompt_tokens": 0,
+                                "completion_tokens": 0,
+                                "token_usage_source": None,
+                                "error": f"Worker process crashed: {exc}",
+                                "hack_result": None,
+                                "hack_passed": None,
+                                "generator_failure_kind": None,
+                                "generator_failure_reason": None,
+                                "workflow_log_path": None,
+                            }
+                            for m in modes
+                        ]
+                    for row in result_rows:
                         rows.append(row)
                         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                         fh.flush()
 
-    summary = write_summary_outputs(output_dir, rows)
+    # For summary, read ALL rows (resumed + new) from the results file
+    all_rows: List[Dict[str, Any]] = []
+    for line in results_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                all_rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    summary = write_summary_outputs(output_dir, all_rows)
     return {
         "manifest": str(manifest),
         "output_dir": str(output_dir),
-        "rows": len(rows),
+        "rows": len(all_rows),
         "summary": summary,
     }
 
@@ -276,7 +402,7 @@ def _build_raw_problem(bench: str, row: Dict[str, Any], public_tests: List[Dict[
     }
 
 
-def _build_payloads_from_hf(bench_name: str, limit: int | None) -> List[Dict[str, Any]]:
+def _build_payloads_from_hf(bench_name: str, limit: int | None, apps_difficulty: str | None = None) -> List[Dict[str, Any]]:
     source = BENCH_TO_HF_SOURCE[bench_name]
     if bench_name == "apps":
         try:
@@ -302,19 +428,48 @@ def _build_payloads_from_hf(bench_name: str, limit: int | None) -> List[Dict[str
 
         rows_iter = _apps_rows()
     else:
-        try:
-            from datasets import load_dataset
-        except ImportError as exc:
-            raise SystemExit("Missing dependency 'datasets'. Install it to use --bench mode.") from exc
-        load_kwargs: Dict[str, Any] = {"split": source["split"], "streaming": True}
-        if "name" in source:
-            load_kwargs["name"] = source["name"]
-        rows_iter = load_dataset(source["dataset"], **load_kwargs)
+        if bench_name == "aethercode":
+            # aethercode has nested parquet fields (list<struct>) that crash
+            # pandas/HF datasets conversion. Read with pyarrow directly.
+            import glob as _glob
+            import pyarrow.parquet as _pq
+            from huggingface_hub import snapshot_download
+            repo_id = source["dataset"]
+            subset = source.get("name", "")
+            cache_dir = snapshot_download(repo_id, repo_type="dataset")
+            pattern = f"{cache_dir}/{subset}/*test*.parquet" if subset else f"{cache_dir}/*test*.parquet"
+            pq_files = sorted(_glob.glob(pattern))
+            if not pq_files:
+                pattern = f"{cache_dir}/**/*test*.parquet"
+                pq_files = sorted(_glob.glob(pattern, recursive=True))
+            if not pq_files:
+                raise SystemExit(f"No test parquet files found for aethercode in {cache_dir}")
+
+            def _aethercode_rows():
+                for pf in pq_files:
+                    pf_obj = _pq.ParquetFile(pf)
+                    for batch in pf_obj.iter_batches(batch_size=1):
+                        yield {col: batch.column(col)[0].as_py() for col in batch.column_names}
+
+            rows_iter = _aethercode_rows()
+        else:
+            try:
+                from datasets import load_dataset
+            except ImportError as exc:
+                raise SystemExit("Missing dependency 'datasets'. Install it to use --bench mode.") from exc
+            load_kwargs: Dict[str, Any] = {"split": source["split"]}
+            if "name" in source:
+                load_kwargs["name"] = source["name"]
+            load_kwargs["streaming"] = True
+            rows_iter = load_dataset(source["dataset"], **load_kwargs)
 
     payloads: List[Dict[str, Any]] = []
     for idx, row in enumerate(rows_iter):
         if not isinstance(row, dict):
             continue
+        if bench_name == "apps" and apps_difficulty:
+            if str(row.get("difficulty", "")).lower() != apps_difficulty.lower():
+                continue
         if bench_name == "code-contest":
             public_tests = _normalize_tests(row.get("public_tests", {}))
             private_tests = _normalize_tests(row.get("private_tests", {}))
@@ -363,27 +518,42 @@ def _write_bench_payload_manifest(
     payload_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_root / "manifest.jsonl"
 
-    with manifest_path.open("w", encoding="utf-8") as fh:
-        for payload in payloads:
-            payload_path = payload_dir / f"{payload['problem_id']}.json"
-            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            row = {
-                "problem_id": payload["problem_id"],
-                "source": payload["source"],
-                "difficulty": payload["difficulty"],
-                "dataset_name": payload["dataset_meta"]["dataset_name"],
-                "split": payload["dataset_meta"]["split"],
-                "has_full_tests": True,
-                "problem_payload_path": str(payload_path),
-                "benchmark_version": payload["benchmark_version"],
-                "time_limit": payload["raw_problem"].get("time_limit"),
-                "memory_limit": payload["raw_problem"].get("space_limit"),
-                "tags": [],
-                "title": payload["dataset_meta"].get("title"),
-                "language": "cpp",
-                "notes": {},
-            }
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    # Avoid race condition when multiple configs run in parallel —
+    # if the manifest already exists with the right count, reuse it.
+    if manifest_path.exists():
+        existing = sum(1 for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip())
+        if existing == len(payloads):
+            return manifest_path
+
+    # Write to a temp file first, then atomically rename.
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(cache_root), suffix=".jsonl")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            for payload in payloads:
+                payload_path = payload_dir / f"{payload['problem_id']}.json"
+                payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                row = {
+                    "problem_id": payload["problem_id"],
+                    "source": payload["source"],
+                    "difficulty": payload["difficulty"],
+                    "dataset_name": payload["dataset_meta"]["dataset_name"],
+                    "split": payload["dataset_meta"]["split"],
+                    "has_full_tests": True,
+                    "problem_payload_path": str(payload_path),
+                    "benchmark_version": payload["benchmark_version"],
+                    "time_limit": payload["raw_problem"].get("time_limit"),
+                    "memory_limit": payload["raw_problem"].get("space_limit"),
+                    "tags": [],
+                    "title": payload["dataset_meta"].get("title"),
+                    "language": "cpp",
+                    "notes": {},
+                }
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        os.replace(tmp_path, str(manifest_path))
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
     return manifest_path
 
 
@@ -391,6 +561,29 @@ def main() -> None:
     args = parse_args()
     if args.bench is None and args.manifest is None:
         raise SystemExit("Either --manifest or --bench must be provided.")
+
+    # Resolve trainable_memory sub-network flags
+    tm_enabled = args.trainable_memory
+    tm_hacker: bool | None = None
+    tm_oracle: bool | None = None
+
+    if args.tm_hacker:
+        tm_enabled = True
+        tm_hacker = True
+    if args.tm_oracle:
+        tm_enabled = True
+        tm_oracle = True
+    if args.no_tm_hacker:
+        tm_hacker = False
+    if args.no_tm_oracle:
+        tm_oracle = False
+
+    common_kwargs = dict(
+        solver_network=args.solver_network,
+        trainable_memory=tm_enabled,
+        tm_hacker_enabled=tm_hacker,
+        tm_oracle_enabled=tm_oracle,
+    )
 
     if args.bench is None:
         _run_single_manifest(
@@ -400,13 +593,14 @@ def main() -> None:
             config_path=args.config_path,
             max_workers=args.max_workers,
             limit=args.limit,
+            **common_kwargs,
         )
         return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     suite_runs = []
     for bench_name, _ in _resolve_bench_targets(args.bench, args.bench_root):
-        payloads = _build_payloads_from_hf(bench_name=bench_name, limit=args.limit)
+        payloads = _build_payloads_from_hf(bench_name=bench_name, limit=args.limit, apps_difficulty=args.apps_difficulty)
         manifest_path = _write_bench_payload_manifest(
             bench_name=bench_name,
             payloads=payloads,
@@ -419,6 +613,7 @@ def main() -> None:
             modes=args.modes,
             config_path=args.config_path,
             max_workers=args.max_workers,
+            **common_kwargs,
         )
         run_info["bench"] = bench_name
         suite_runs.append(run_info)

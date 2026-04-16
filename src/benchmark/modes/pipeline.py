@@ -17,9 +17,6 @@ from src.llm.token_usage import ensure_token_usage_accumulator, get_token_usage_
 
 def build_pipeline_benchmark_config(config: Dict[str, Any] | None) -> Dict[str, Any]:
     benchmark_config = deepcopy(config or {})
-    trainable_memory = deepcopy(benchmark_config.get("trainable_memory", {}))
-    trainable_memory["enabled"] = False
-    benchmark_config["trainable_memory"] = trainable_memory
     ensure_token_usage_accumulator(benchmark_config)
     return benchmark_config
 

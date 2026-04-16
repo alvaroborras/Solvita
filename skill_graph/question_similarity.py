@@ -189,6 +189,7 @@ def _get_embedding_client():
             api_version=_EMB_CONFIG.azure_api_version,
             base_url=base_url,
             azure_ad_token_provider=token_provider,
+            max_retries=5,
         )
         return _EMB_CLIENT
 

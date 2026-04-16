@@ -15,7 +15,7 @@ def test_summarize_results_computes_head_to_head():
         },
         {
             "problem_id": "p1",
-            "mode": "gpt52_single_pass",
+            "mode": "single_pass",
             "pass_rate": 0.5,
             "compile_success": True,
             "elapsed_total_s": 1.0,
@@ -27,9 +27,9 @@ def test_summarize_results_computes_head_to_head():
 
     summary = summarize_results(rows)
     assert summary["head_to_head"]["wins_pipeline"] == 1
-    assert summary["head_to_head"]["wins_gpt52_single_pass"] == 0
+    assert summary["head_to_head"]["wins_single_pass"] == 0
     assert summary["modes"]["solvita_pipeline"]["avg_prompt_tokens"] == 100.0
-    assert summary["modes"]["gpt52_single_pass"]["avg_completion_tokens"] == 20.0
+    assert summary["modes"]["single_pass"]["avg_completion_tokens"] == 20.0
 
 
 def test_render_markdown_report_contains_key_sections():
@@ -48,7 +48,7 @@ def test_render_markdown_report_contains_key_sections():
             },
             "head_to_head": {
                 "wins_pipeline": 1,
-                "wins_gpt52_single_pass": 0,
+                "wins_single_pass": 0,
                 "ties": 0,
             },
         }

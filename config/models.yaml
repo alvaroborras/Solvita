@@ -1,30 +1,35 @@
 # Solvita LLM runtime configuration
-# Fill required fields before running workflow.
+# Uses Azure OpenAI (CloudGPT) with AAD authentication.
+# Deployment names from CloudGPT-AOAI (Bo Qiao, MSRA CloudAI FTE).
 
 llm:
-  # Required: OpenAI-compatible endpoint and key
-  base_url: "https://<gateway-host>/v1"
-  api_key: "sk-REDACTED"
+  # Azure OpenAI endpoint (CloudGPT)
+  base_url: "https://<azure-endpoint>"
 
-  # Default model for all nodes (can be overridden by roles below)
-  model: "gpt-5"
+  # AAD authentication (no api_key needed)
+  azure_tenant_id: "<azure-tenant>"
+  azure_scope: "api://<azure-scope>/.default"
+  api_version: "2025-04-01-preview"
+
+  # Default model for all nodes (CloudGPT deployment name)
+  model: "gpt-5.4-20260305"
   temperature: 0.1
   max_tokens: 16384
 
-  # Optional per-role overrides to match previous behavior
+  # Per-role overrides (use CloudGPT deployment names)
   roles:
     code:
-      model: "gpt-5"
+      model: "gpt-5.4-20260305"
     generator:
-      model: "gpt-5.2"
+      model: "gpt-5.4-20260305"
     validator:
-      model: "gpt-5"
+      model: "gpt-5.4-20260305"
     checker:
-      model: "gpt-5"
+      model: "gpt-5.4-20260305"
     output:
-      model: "gpt-5"
+      model: "gpt-5.4-20260305"
     hacker:
-      model: "claude-opus-4-6"
+      model: "gpt-5.4-20260305"
 
 # Embedding backend for semantic similarity in skill_graph/question_similarity.py.
 # Priority: environment variables > this YAML > hardcoded defaults.

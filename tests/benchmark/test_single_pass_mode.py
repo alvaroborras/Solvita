@@ -1,23 +1,23 @@
-from src.benchmark.modes.gpt52_single_pass import (
-    build_gpt52_single_pass_config,
+from src.benchmark.modes.single_pass import (
+    build_single_pass_config,
     build_single_pass_prompt,
-    run_gpt52_single_pass_case,
+    run_single_pass_case,
 )
 
 
-def test_build_gpt52_single_pass_config_forces_model():
-    cfg = build_gpt52_single_pass_config({"model": "other-model", "temperature": 0.3})
-    assert cfg["model"] == "gpt-5.2"
+def test_build_single_pass_config_resolves_model():
+    cfg = build_single_pass_config({"model": "other-model", "temperature": 0.3})
+    # Model is resolved from config/models.yaml roles.generator, not hardcoded
+    assert cfg["model"] != "other-model"
     assert cfg["temperature"] == 0.3
 
 
 def test_single_pass_mode_calls_llm_once(monkeypatch):
-    calls = {"n": 0, "model": None}
+    calls = {"n": 0}
 
     class FakeClient:
         def generate(self, prompt, **kwargs):
             calls["n"] += 1
-            calls["model"] = kwargs.get("model")
             return "int main(){return 0;}"
 
         def get_usage_snapshot(self):
@@ -27,10 +27,11 @@ def test_single_pass_mode_calls_llm_once(monkeypatch):
                 "token_usage_source": "api",
             }
 
-    monkeypatch.setattr("src.benchmark.modes.gpt52_single_pass.UnifiedLLMClient", lambda cfg: FakeClient())
-    monkeypatch.setattr("src.benchmark.modes.gpt52_single_pass.sanitize_cpp", lambda code: code)
+    monkeypatch.setattr("src.benchmark.modes.single_pass._resolve_single_pass_model", lambda cfg: "test-model")
+    monkeypatch.setattr("src.benchmark.modes.single_pass.UnifiedLLMClient", lambda cfg: FakeClient())
+    monkeypatch.setattr("src.benchmark.modes.single_pass.sanitize_cpp", lambda code: code)
     monkeypatch.setattr(
-        "src.benchmark.modes.gpt52_single_pass.score_solution_on_official_tests",
+        "src.benchmark.modes.single_pass.score_solution_on_official_tests",
         lambda **kwargs: {
             "compile_success": True,
             "passed_tests": 0,
@@ -40,7 +41,7 @@ def test_single_pass_mode_calls_llm_once(monkeypatch):
         },
     )
 
-    result = run_gpt52_single_pass_case(
+    result = run_single_pass_case(
         problem_payload={
             "problem_id": "p1",
             "raw_problem": {"description": "x", "public_tests": []},
@@ -50,8 +51,7 @@ def test_single_pass_mode_calls_llm_once(monkeypatch):
     )
 
     assert calls["n"] == 1
-    assert calls["model"] == "gpt-5.2"
-    assert result.mode == "gpt52_single_pass"
+    assert result.mode == "single_pass"
     assert result.prompt_tokens == 123
     assert result.completion_tokens == 45
     assert result.token_usage_source == "api"
@@ -81,14 +81,15 @@ def test_single_pass_mode_uses_official_tests_for_scoring(monkeypatch):
             "error": None,
         }
 
-    monkeypatch.setattr("src.benchmark.modes.gpt52_single_pass.UnifiedLLMClient", lambda cfg: FakeClient())
-    monkeypatch.setattr("src.benchmark.modes.gpt52_single_pass.sanitize_cpp", lambda code: code)
+    monkeypatch.setattr("src.benchmark.modes.single_pass._resolve_single_pass_model", lambda cfg: "test-model")
+    monkeypatch.setattr("src.benchmark.modes.single_pass.UnifiedLLMClient", lambda cfg: FakeClient())
+    monkeypatch.setattr("src.benchmark.modes.single_pass.sanitize_cpp", lambda code: code)
     monkeypatch.setattr(
-        "src.benchmark.modes.gpt52_single_pass.score_solution_on_official_tests",
+        "src.benchmark.modes.single_pass.score_solution_on_official_tests",
         fake_score_solution_on_official_tests,
     )
 
-    result = run_gpt52_single_pass_case(
+    result = run_single_pass_case(
         problem_payload={
             "problem_id": "p2",
             "raw_problem": {"description": "x", "public_tests": []},
@@ -115,9 +116,10 @@ def test_single_pass_mode_returns_error_on_empty_response(monkeypatch):
                 "token_usage_source": "api",
             }
 
-    monkeypatch.setattr("src.benchmark.modes.gpt52_single_pass.UnifiedLLMClient", lambda cfg: FakeClient())
+    monkeypatch.setattr("src.benchmark.modes.single_pass._resolve_single_pass_model", lambda cfg: "test-model")
+    monkeypatch.setattr("src.benchmark.modes.single_pass.UnifiedLLMClient", lambda cfg: FakeClient())
 
-    result = run_gpt52_single_pass_case(
+    result = run_single_pass_case(
         problem_payload={
             "problem_id": "p3",
             "raw_problem": {"description": "x", "public_tests": []},

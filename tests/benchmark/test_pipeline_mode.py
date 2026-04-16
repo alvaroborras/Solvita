@@ -8,12 +8,12 @@ from src.benchmark.modes.pipeline import (
 )
 
 
-def test_build_pipeline_benchmark_config_disables_trainable_memory():
+def test_build_pipeline_benchmark_config_passes_through_network_config():
     cfg = build_pipeline_benchmark_config(
         {"max_iterations": 3, "trainable_memory": {"enabled": True, "data_dir": "x"}}
     )
 
-    assert cfg["trainable_memory"]["enabled"] is False
+    assert cfg["trainable_memory"]["enabled"] is True
     assert cfg["trainable_memory"]["data_dir"] == "x"
 
 
@@ -56,7 +56,7 @@ def test_pipeline_mode_scores_against_official_tests_not_internal_state(monkeypa
     )
 
     assert captured["problem"] == {"description": "x"}
-    assert captured["config"]["trainable_memory"]["enabled"] is False
+    assert captured["config"]["trainable_memory"]["enabled"] is True
     assert result.passed_tests == 7
     assert result.total_tests == 10
     assert result.pass_rate == 0.7

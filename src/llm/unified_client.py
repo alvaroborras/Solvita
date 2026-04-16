@@ -26,11 +26,13 @@ class PromptTooLongError(ValueError):
 
 
 # 关键字集合：命中任一则视为 fatal (中英文均覆盖)
+# Note: 429 / rate limit are NOT fatal — the SDK retries them automatically.
+# Only truly unrecoverable errors belong here.
 _FATAL_KEYWORDS = (
     # English
-    "quota", "rate limit", "rate_limit", "429", "401", "403",
+    "quota", "401", "403",
     "unauthorized", "forbidden", "auth", "billing",
-    "insufficient_quota", "exceeded",
+    "insufficient_quota",
     # 中文（来自真实 API 响应）
     "额度已用尽", "额度", "令牌",
 )
@@ -185,6 +187,9 @@ class UnifiedLLMClient:
             "temperature": 0.1,
             "max_tokens": 128000,
             "request_timeout": 180,
+            "azure_tenant_id": "",
+            "azure_scope": "",
+            "api_version": "",
         }
 
         # Layer 1: YAML file (lowest priority for base_url/api_key)
@@ -203,6 +208,9 @@ class UnifiedLLMClient:
             "temperature": "SOLVITA_TEMPERATURE",
             "max_tokens": "SOLVITA_MAX_TOKENS",
             "request_timeout": "SOLVITA_REQUEST_TIMEOUT",
+            "azure_tenant_id": "SOLVITA_AZURE_TENANT_ID",
+            "azure_scope": "SOLVITA_AZURE_SCOPE",
+            "api_version": "SOLVITA_AZURE_API_VERSION",
         }
         for key, env_key in env_map.items():
             val = os.environ.get(env_key)
@@ -233,21 +241,58 @@ class UnifiedLLMClient:
         if not resolved["model"]:
             resolved["model"] = "gpt-4"
 
+        # Determine if Azure OpenAI AAD auth is available
+        self._use_azure = bool(resolved["azure_tenant_id"] and resolved["azure_scope"])
+
         # Validate required fields
-        if not resolved["base_url"] or not resolved["api_key"]:
+        if not self._use_azure and (not resolved["base_url"] or not resolved["api_key"]):
             raise self.ConfigurationError(
-                "LLM configuration incomplete. Provide base_url and api_key via one of:\n"
+                "LLM configuration incomplete. Provide base_url and api_key (or azure_tenant_id + azure_scope for AAD auth) via one of:\n"
                 "  1. config dict passed to UnifiedLLMClient\n"
                 "  2. config/models.yaml (llm.base_url / llm.api_key)\n"
                 "  3. Environment variables SOLVITA_BASE_URL / SOLVITA_API_KEY"
             )
 
+        if self._use_azure and not resolved["base_url"]:
+            raise self.ConfigurationError(
+                "Azure OpenAI requires base_url (e.g. https://<azure-endpoint>)"
+            )
+
         return resolved
     def _initialize_client(self):
-        """Initialize the OpenAI-compatible HTTP client."""
+        """Initialize the OpenAI-compatible HTTP client.
+
+        When azure_tenant_id + azure_scope are set, uses AzureOpenAI with
+        AAD token provider (AzureCliCredential).  Otherwise falls back to
+        the generic OpenAI client with static api_key.
+        """
         try:
-            from openai import OpenAI
-            return OpenAI(base_url=self.base_url, api_key=self.api_key)
+            if self._use_azure:
+                from openai import AzureOpenAI
+                from azure.identity import AzureCliCredential, get_bearer_token_provider
+
+                tenant_id = self._resolved["azure_tenant_id"]
+                scope = self._resolved["azure_scope"]
+                api_version = self._resolved.get("api_version") or "2025-04-01-preview"
+
+                credential = AzureCliCredential(tenant_id=tenant_id)
+                token_provider = get_bearer_token_provider(credential, scope)
+
+                base_url = self.base_url.rstrip("/") + "/"
+                if not base_url.endswith("openai/"):
+                    base_url = base_url + "openai/"
+
+                logger.info("LLM client: Azure OpenAI (AAD auth) @ {}", base_url)
+                return AzureOpenAI(
+                    api_version=api_version,
+                    base_url=base_url,
+                    azure_ad_token_provider=token_provider,
+                    max_retries=5,
+                )
+            else:
+                from openai import OpenAI
+                logger.info("LLM client: OpenAI-compatible @ {}", self.base_url)
+                return OpenAI(base_url=self.base_url, api_key=self.api_key)
         except Exception as e:
             logger.error(f"Error initializing LLM client: {e}")
             return None
@@ -295,18 +340,35 @@ class UnifiedLLMClient:
         )
         return content
 
+    # Models that require max_completion_tokens instead of max_tokens,
+    # and do not accept the temperature parameter.
+    _REASONING_MODEL_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
+    @classmethod
+    def _is_reasoning_model(cls, model: str) -> bool:
+        m = model.lower()
+        return any(m.startswith(p) for p in cls._REASONING_MODEL_PREFIXES)
+
     def _create_chat_completion(self, messages: List[Dict[str, Any]], **kwargs) -> str:
         if not self.client:
             return ""
 
         model = kwargs.get("model", self.model)
+        reasoning = self._is_reasoning_model(model)
+
         request_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
             "timeout": kwargs.get("timeout", self.request_timeout),
         }
+
+        # Reasoning models use max_completion_tokens and do not accept temperature
+        max_tok = kwargs.get("max_tokens", self.max_tokens)
+        if reasoning:
+            request_kwargs["max_completion_tokens"] = max_tok
+        else:
+            request_kwargs["max_tokens"] = max_tok
+            request_kwargs["temperature"] = kwargs.get("temperature", self.temperature)
         passthrough_keys = (
             "response_format",
             "seed",

@@ -18,7 +18,7 @@ from typing import Any, Dict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.benchmark.modes.gpt52_single_pass import build_single_pass_prompt
+from src.benchmark.modes.single_pass import build_single_pass_prompt
 from src.llm.token_usage import (
     estimate_message_tokens,
     estimate_text_tokens,
@@ -78,18 +78,18 @@ def estimate_single_pass_tokens(
         prompt = build_single_pass_prompt(payload.get("raw_problem", {}))
         prompt_tokens = estimate_message_tokens(
             [{"role": "user", "content": prompt}],
-            model="gpt-5.2",
+            model="gpt-5.4",
         )
         notes.append("prompt estimated from reconstructed single-pass prompt")
     elif prompt_tokens is None:
         notes.append("prompt unavailable: manifest not provided")
 
     if completion_tokens is None:
-        artifact_dir = results_dir / "artifacts" / "gpt52_single_pass"
+        artifact_dir = results_dir / "artifacts" / "single_pass"
         stem = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in row["problem_id"]).strip("._") or "unknown"
         raw_path = artifact_dir / f"{stem}.raw.txt"
         if raw_path.exists():
-            completion_tokens = estimate_text_tokens(raw_path.read_text(encoding="utf-8"), model="gpt-5.2")
+            completion_tokens = estimate_text_tokens(raw_path.read_text(encoding="utf-8"), model="gpt-5.4")
             notes.append("completion estimated from saved single-pass raw response")
         elif (row.get("error") or "") == "Empty model response":
             completion_tokens = 0
@@ -163,7 +163,7 @@ def estimate_row(
         return augmented
 
     manifest_row = manifest_map.get(str(row.get("problem_id")))
-    if row.get("mode") == "gpt52_single_pass":
+    if row.get("mode") in ("single_pass", "gpt52_single_pass"):
         estimate = estimate_single_pass_tokens(row, manifest_row, results_dir)
     else:
         estimate = estimate_pipeline_tokens(row, generated_root)

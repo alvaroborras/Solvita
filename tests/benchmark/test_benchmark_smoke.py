@@ -30,7 +30,7 @@ def _write_payload(tmp_path: Path, problem_id: str) -> Path:
     return payload
 
 
-def test_benchmark_smoke_gpt52_single_pass_mode(monkeypatch, tmp_path: Path):
+def test_benchmark_smoke_single_pass_mode(monkeypatch, tmp_path: Path):
     payload_path = _write_payload(tmp_path, "p1")
     item = BenchmarkProblem(
         problem_id="p1",
@@ -46,10 +46,10 @@ def test_benchmark_smoke_gpt52_single_pass_mode(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("scripts.run_benchmark.load_benchmark_manifest", lambda path: [item])
     monkeypatch.setitem(
         __import__("scripts.run_benchmark", fromlist=["MODE_RUNNERS"]).MODE_RUNNERS,
-        "gpt52_single_pass",
+        "single_pass",
         lambda problem_payload, config: BenchmarkResult(
             problem_id=problem_payload["problem_id"],
-            mode="gpt52_single_pass",
+            mode="single_pass",
             status="success",
             compile_success=True,
             passed_tests=1,
@@ -68,7 +68,7 @@ def test_benchmark_smoke_gpt52_single_pass_mode(monkeypatch, tmp_path: Path):
             "--output-dir",
             str(tmp_path / "out_gpt"),
             "--modes",
-            "gpt52_single_pass",
+            "single_pass",
         ],
     )
 
@@ -76,7 +76,7 @@ def test_benchmark_smoke_gpt52_single_pass_mode(monkeypatch, tmp_path: Path):
 
     results_path = tmp_path / "out_gpt" / "results.jsonl"
     row = json.loads(results_path.read_text(encoding="utf-8").strip())
-    assert row["mode"] == "gpt52_single_pass"
+    assert row["mode"] == "single_pass"
     assert row["passed_tests"] == 1
     assert row["total_tests"] == 1
     assert row["pass_rate"] == 1.0
