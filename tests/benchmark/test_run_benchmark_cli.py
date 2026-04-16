@@ -46,6 +46,10 @@ def test_run_benchmark_supports_bench_all(monkeypatch, tmp_path: Path):
                     "time_limit": 2000,
                     "space_limit": 256,
                     "public_tests": [],
+                    "_metadata": {
+                        "problem_id": f"{bench_name}_p1",
+                        "name": "Example",
+                    },
                 },
                 "official_tests": [{"input": "1\n", "output": "1\n"}],
                 "dataset_meta": {

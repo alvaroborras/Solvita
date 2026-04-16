@@ -380,7 +380,12 @@ def _build_problem_id(bench: str, row: Dict[str, Any], idx: int) -> str:
     return f"{bench}_{idx:06d}_{uuid4().hex[:8]}"
 
 
-def _build_raw_problem(bench: str, row: Dict[str, Any], public_tests: List[Dict[str, str]]) -> Dict[str, Any]:
+def _build_raw_problem(
+    bench: str,
+    row: Dict[str, Any],
+    public_tests: List[Dict[str, str]],
+    problem_id: str,
+) -> Dict[str, Any]:
     description = (
         row.get("description")
         or row.get("question")
@@ -390,15 +395,23 @@ def _build_raw_problem(bench: str, row: Dict[str, Any], public_tests: List[Dict[
     )
     time_limit = row.get("time_limit") or row.get("time_limit_ms")
     space_limit = row.get("space_limit") or row.get("memory_limit") or row.get("memory_limit_mb")
+    title = row.get("name") or row.get("title") or problem_id
+    metadata = {
+        "benchmark_source": bench,
+        "dataset": BENCH_TO_HF_SOURCE[bench]["dataset"],
+        "problem_id": problem_id,
+        "name": str(title),
+    }
+    for key in ("question_id", "id", "task_id"):
+        value = row.get(key)
+        if value is not None:
+            metadata[key] = str(value)
     return {
         "description": str(description),
         "time_limit": int(time_limit) if isinstance(time_limit, (int, float)) else 2000,
         "space_limit": int(space_limit) if isinstance(space_limit, (int, float)) else 256,
         "public_tests": public_tests,
-        "_metadata": {
-            "benchmark_source": bench,
-            "dataset": BENCH_TO_HF_SOURCE[bench]["dataset"],
-        },
+        "_metadata": metadata,
     }
 
 
@@ -489,7 +502,7 @@ def _build_payloads_from_hf(bench_name: str, limit: int | None, apps_difficulty:
                 "source": str(row.get("source", bench_name)),
                 "difficulty": str(row.get("difficulty", "unknown")),
                 "benchmark_version": f"hf-{bench_name}",
-                "raw_problem": _build_raw_problem(bench_name, row, public_tests),
+                "raw_problem": _build_raw_problem(bench_name, row, public_tests, problem_id),
                 "official_tests": official_tests,
                 "dataset_meta": {
                     "dataset_name": source["dataset"],
