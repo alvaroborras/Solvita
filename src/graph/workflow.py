@@ -33,6 +33,9 @@ from src.nodes import (
     update_plan_memory_node,
     update_solve_memory_node,
     update_oracle_memory_node,
+    update_best_solution_node,
+    enter_hack_phase_node,
+    restore_best_solution_node,
     hack_test_node,
     join_ready_node,
     join_wait_node,
@@ -97,10 +100,12 @@ def create_codegen_subgraph():
     g.add_node("join_ready", join_ready_node)
     g.add_node("join_wait", join_wait_node)
     g.add_node("run_tests", run_tests_node)
+    g.add_node("update_best_solution", update_best_solution_node)
     g.add_node("unified_check", unified_check_node)
     g.add_node("update_plan_memory", update_plan_memory_node)
     g.add_node("update_solve_memory", update_solve_memory_node)
     g.add_node("update_oracle_memory", update_oracle_memory_node)
+    g.add_node("restore_best_solution", restore_best_solution_node)
     g.add_node("analyze_feedback", analyze_feedback_node)
 
     g.set_entry_point("generate_code")
@@ -125,7 +130,8 @@ def create_codegen_subgraph():
         },
     )
 
-    g.add_edge("run_tests", "unified_check")
+    g.add_edge("run_tests", "update_best_solution")
+    g.add_edge("update_best_solution", "unified_check")
     g.add_edge("unified_check", "update_plan_memory")
     g.add_edge("update_plan_memory", "update_solve_memory")
     g.add_edge("update_solve_memory", "update_oracle_memory")
@@ -136,10 +142,11 @@ def create_codegen_subgraph():
         {
             "continue": "analyze_feedback",
             "hack": END,   # 解法通过所有测试，出 Phase 2 → 进 Phase 3
-            "end": END,    # 超出迭代次数，放弃
+            "end": "restore_best_solution",    # 超出迭代次数，恢复最佳解后退出
         },
     )
 
+    g.add_edge("restore_best_solution", END)
     g.add_edge("analyze_feedback", "generate_code")
 
     return g.compile()
@@ -206,6 +213,7 @@ def create_solvita_workflow():
     workflow.add_node("solver_skill_plan", solver_skill_plan_node)
     workflow.add_node("codegen_phase", codegen_sg)
     workflow.add_node("phase_transition_2", phase_transition_node)  # CODEGEN→HACKER
+    workflow.add_node("enter_hack_phase", enter_hack_phase_node)
     workflow.add_node("hacker_phase", hacker_sg)
     workflow.add_node("phase_transition_3", phase_transition_node)  # HACKER→CODEGEN（回环）
     workflow.add_node("terminal_hack_failure", terminal_hack_failure_node)
@@ -217,7 +225,8 @@ def create_solvita_workflow():
     workflow.add_edge("phase_transition_1", "solver_skill_plan")
     workflow.add_edge("solver_skill_plan", "codegen_phase")
     workflow.add_edge("codegen_phase", "phase_transition_2")
-    workflow.add_edge("phase_transition_2", "hacker_phase")
+    workflow.add_edge("phase_transition_2", "enter_hack_phase")
+    workflow.add_edge("enter_hack_phase", "hacker_phase")
 
     # Hack 结果路由（顶层）：找到 Bug → 回环 CodeGen；无法攻破 → Final AC
     workflow.add_conditional_edges(

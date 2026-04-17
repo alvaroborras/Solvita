@@ -167,6 +167,11 @@ class SolvitaState(TypedDict):
     # One-shot skill-graph injection for first initial codegen only
     solver_network_oneshot_spent: bool
 
+    best_solution: Annotated[Dict[str, Any], merge_dict]
+    best_tests: Annotated[Dict[str, Any], merge_dict]
+    best_phase: str  # "test" | "hack"
+    has_entered_hack_phase: bool
+
     # -- Metadata --
     execution_log: Annotated[List[str], add]
     llm_calls: Annotated[int, add]
@@ -416,6 +421,11 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
         current_phase="ABSTRACT",
 
         solver_network_oneshot_spent=False,
+
+        best_solution={},
+        best_tests={},
+        best_phase="test",
+        has_entered_hack_phase=False,
 
         # Metadata
         execution_log=[],
