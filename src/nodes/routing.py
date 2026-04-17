@@ -44,6 +44,11 @@ def hack_routing(state: Dict[str, Any]) -> str:
       - "end": hack passed and rounds >= max -> all clear, done
       - "hack_failed": hack found bugs -> analyze_feedback
     """
+    # If adversarial input generation failed entirely, do not spin the inner hack loop.
+    # The node still reports hack_passed=True (no successful break), but we should settle and exit.
+    if str(state.get("hack_result", "") or "").upper() == "GEN_FAILED":
+        return "end"
+
     if state.get("hack_passed", False):
         hack_round = state.get("hack_round", 0)
         max_rounds = state.get("max_hack_rounds", 3)

@@ -301,7 +301,14 @@ def compile_cpp(
         return False, f"Compilation failed: {e}"
         
     output = (result.stdout or "") + (result.stderr or "")
-    return result.returncode == 0, output
+    ok = result.returncode == 0
+    if ok and sys.platform != "win32" and exe_abs.exists():
+        try:
+            st = exe_abs.stat()
+            exe_abs.chmod(st.st_mode | 0o111)
+        except OSError:
+            pass
+    return ok, output
 
 
 def _truncate_output(text: str, max_chars: int = 100000) -> str:

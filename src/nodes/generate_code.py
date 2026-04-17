@@ -180,6 +180,101 @@ def _build_patch_prompt(
     )
 
 
+def _build_regenerate_prompt(
+    prev_code: str,
+    problem_desc: str,
+    algorithm: str,
+    steps: List[str],
+    specific_failures: List[Dict],
+    suggested_fixes: List[str],
+    feedback_text: str,
+    constraints: Dict[str, Any],
+    public_tests: List[Dict],
+    generated_tests: List[Dict],
+    memory_advice: str = "",
+    compact: bool = False,
+    abstract_tags_level2_block: str = "",
+) -> str:
+    """Build prompt for full regeneration (no SEARCH/REPLACE format)."""
+    prev_code = truncate_for_prompt(prev_code, 16000 if not compact else 8000, "PREV_CODE")
+    problem_desc = truncate_for_prompt(problem_desc, 10000 if not compact else 5000, "PROBLEM_DESC")
+    feedback_text = truncate_for_prompt(feedback_text, 5000 if not compact else 2200, "FEEDBACK_TEXT")
+    constraints_block = ""
+    if constraints:
+        constraints_block = f"Constraints:\n  {compact_json_for_prompt(constraints, 2500 if not compact else 1200, 'CONSTRAINTS')}"
+
+    public_block = ""
+    if public_tests:
+        parts = []
+        for i, t in enumerate(public_tests[:3]):
+            sample_input = truncate_for_prompt(t.get("input", ""), 400 if not compact else 180, f"PUBLIC_INPUT_{i+1}")
+            sample_output = truncate_for_prompt(t.get("output", ""), 400 if not compact else 180, f"PUBLIC_OUTPUT_{i+1}")
+            parts.append(f"  Sample {i+1}:")
+            parts.append(f"    Input:\n{_indent(sample_input, 6)}")
+            parts.append(f"    Output:\n{_indent(sample_output, 6)}")
+        public_block = "Public test cases:\n" + "\n".join(parts)
+
+    gen_block = ""
+    if generated_tests:
+        samples = generated_tests[:3]
+        parts = []
+        for i, t in enumerate(samples):
+            inp = t.get("input", "").strip()
+            if len(inp) > (300 if not compact else 150):
+                inp = inp[: (300 if not compact else 150)] + "...(truncated)"
+            parts.append(f"  Generated input {i+1}:\n{_indent(inp, 4)}")
+        gen_block = "Sample generated inputs (for format/scale reference):\n" + "\n".join(parts)
+
+    failures_block = ""
+    if specific_failures:
+        parts = ["The following test cases are FAILING:"]
+        for i, fail in enumerate(specific_failures[:10]):
+            parts.append(f"\nFailure {i+1} ({fail.get('type', 'Unknown Error')}):")
+            inp = str(fail.get("input", ""))
+            if len(inp) > (300 if not compact else 150):
+                inp = inp[: (300 if not compact else 150)] + "...(truncated)"
+            parts.append(f"  Input:\n{_indent(inp, 4)}")
+            if fail.get("expected"):
+                exp = str(fail.get("expected", ""))
+                if len(exp) > (220 if not compact else 120):
+                    exp = exp[: (220 if not compact else 120)] + "...(truncated)"
+                parts.append(f"  Expected:\n{_indent(exp, 4)}")
+            if fail.get("output"):
+                out = str(fail.get("output", ""))
+                if len(out) > (220 if not compact else 120):
+                    out = out[: (220 if not compact else 120)] + "...(truncated)"
+                parts.append(f"  Actual Output:\n{_indent(out, 4)}")
+        failures_block = "\n".join(parts)
+
+    fixes_block = ""
+    if suggested_fixes:
+        fixes_block = "Suggested Fixes:\n" + "\n".join([f"- {fix}" for fix in suggested_fixes])
+
+    memory_block = f"\n{memory_advice}\n" if memory_advice else ""
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.regenerate")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.regenerate must be a string template")
+    steps_block = "\n".join(steps)
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "ABSTRACT_TAGS_LEVEL2_BLOCK": abstract_tags_level2_block,
+            "ALGORITHM": algorithm,
+            "STEPS": steps_block,
+            "PREV_CODE": prev_code,
+            "CONSTRAINTS_BLOCK": constraints_block,
+            "PUBLIC_BLOCK": public_block,
+            "GEN_BLOCK": gen_block,
+            "FAILURES_BLOCK": failures_block,
+            "FEEDBACK_TEXT": feedback_text,
+            "FIXES_BLOCK": fixes_block,
+            "MEMORY_ADVICE": memory_block,
+        },
+    )
+
+
 def _generate_with_compact_retry(
     llm: UnifiedLLMClient,
     prompt_builder,
@@ -465,6 +560,7 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
             solver_graph_block = build_solver_network_block(state, state["config"])
             solver_state_update["solver_network_oneshot_spent"] = True
     
+    mode_label = "initial"
     if is_initial:
         # First time: generate complete code
         logger.info("[GenCode] Initial generation (no previous code)")
@@ -502,8 +598,16 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                 pass
     
     else:
-        # Patch mode: use SEARCH/REPLACE to fix previous code
-        logger.info("[GenCode] Patch mode (fixing previous code)")
+        revision_mode = str(((state.get("config") or {}).get("codegen", {}) or {}).get("revision_mode", "patch")).strip().lower()
+        if revision_mode not in {"patch", "full_regen"}:
+            revision_mode = "patch"
+        mode_label = revision_mode
+        if revision_mode == "patch":
+            # Patch mode: use SEARCH/REPLACE to fix previous code
+            logger.info("[GenCode] Patch mode (fixing previous code)")
+        else:
+            # Regeneration mode: rewrite full code on repair iterations
+            logger.info("[GenCode] Full regeneration mode (rewriting entire code)")
         
         # Extract feedback from previous iteration
         feedback_text = ""
@@ -521,63 +625,96 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                 feedback_text = f"Analysis: {analysis}\nError Pattern: {error_pattern}"
         
         for attempt in range(1, max_self_attempts + 1):
-            llm_response = _generate_with_compact_retry(
-                llm,
-                _build_patch_prompt,
-                prev_code,
-                problem_desc,
-                algorithm,
-                steps,
-                specific_failures,
-                suggested_fixes,
-                feedback_text,
-                memory_advice=memory_advice,
-                abstract_tags_level2_block=abstract_tags_level2_block,
-            )
-            llm_calls += 1
-            
-            # Parse SEARCH/REPLACE blocks
-            blocks = parse_search_replace_blocks(llm_response)
-            
-            if not blocks:
-                logger.warning(f"[GenCode] No SEARCH/REPLACE blocks found in LLM response (attempt {attempt})")
-                self_validation_log.append(f"Patch attempt {attempt}: No valid SEARCH/REPLACE blocks found")
-                code = prev_code  # Keep previous code
-                continue
-            
-            # Apply patches
-            success, patched_code, error_msg = apply_search_replace_blocks(prev_code, blocks)
-            
-            if not success:
-                logger.warning(f"[GenCode] Patch application failed: {error_msg} (attempt {attempt})")
-                self_validation_log.append(f"Patch attempt {attempt}: Failed to apply - {error_msg}")
-                code = prev_code  # Keep previous code
-                continue
-            
-            # Log the diff for traceability
-            diff = compute_unified_diff(prev_code, patched_code)
-            logger.debug(f"[GenCode] Patch diff:\n{diff}")
-            
-            code = patched_code
-            
-            # Self-validate patched code
-            passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
-            
-            if passed:
-                self_validation_log.append(
-                    f"Patch attempt {attempt}: Applied {len(blocks)} edit(s), PASSED all {len(verify_set)} cases"
+            if revision_mode == "patch":
+                llm_response = _generate_with_compact_retry(
+                    llm,
+                    _build_patch_prompt,
+                    prev_code,
+                    problem_desc,
+                    algorithm,
+                    steps,
+                    specific_failures,
+                    suggested_fixes,
+                    feedback_text,
+                    memory_advice=memory_advice,
+                    abstract_tags_level2_block=abstract_tags_level2_block,
                 )
-                logger.info(f"[GenCode] Patch validation passed on attempt {attempt}")
+                llm_calls += 1
+
+                # Parse SEARCH/REPLACE blocks
+                blocks = parse_search_replace_blocks(llm_response)
+
+                if not blocks:
+                    logger.warning(f"[GenCode] No SEARCH/REPLACE blocks found in LLM response (attempt {attempt})")
+                    self_validation_log.append(f"Patch attempt {attempt}: No valid SEARCH/REPLACE blocks found")
+                    code = prev_code  # Keep previous code
+                    continue
+
+                # Apply patches
+                success, patched_code, error_msg = apply_search_replace_blocks(prev_code, blocks)
+
+                if not success:
+                    logger.warning(f"[GenCode] Patch application failed: {error_msg} (attempt {attempt})")
+                    self_validation_log.append(f"Patch attempt {attempt}: Failed to apply - {error_msg}")
+                    code = prev_code  # Keep previous code
+                    continue
+
+                # Log the diff for traceability
+                diff = compute_unified_diff(prev_code, patched_code)
+                logger.debug(f"[GenCode] Patch diff:\n{diff}")
+                code = patched_code
+            else:
+                code = _generate_with_compact_retry(
+                    llm,
+                    _build_regenerate_prompt,
+                    prev_code,
+                    problem_desc,
+                    algorithm,
+                    steps,
+                    specific_failures,
+                    suggested_fixes,
+                    feedback_text,
+                    constraints,
+                    public_tests,
+                    generated_tests,
+                    memory_advice=memory_advice,
+                    abstract_tags_level2_block=abstract_tags_level2_block,
+                )
+                llm_calls += 1
+                code = sanitize_cpp(code)
+
+            # Self-validate repaired code
+            passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
+
+            if passed:
+                if revision_mode == "patch":
+                    self_validation_log.append(
+                        f"Patch attempt {attempt}: PASSED all {len(verify_set)} cases"
+                    )
+                    logger.info(f"[GenCode] Patch validation passed on attempt {attempt}")
+                else:
+                    self_validation_log.append(
+                        f"Regenerate attempt {attempt}: PASSED all {len(verify_set)} cases"
+                    )
+                    logger.info(f"[GenCode] Regenerate validation passed on attempt {attempt}")
                 break
-            
-            fail_summary = f"Patch attempt {attempt}: Applied {len(blocks)} edit(s), FAILED ({len(failures)} issue(s) in {total_run}/{len(verify_set)} cases)"
+
+            if revision_mode == "patch":
+                fail_summary = (
+                    f"Patch attempt {attempt}: FAILED ({len(failures)} issue(s) in "
+                    f"{total_run}/{len(verify_set)} cases)"
+                )
+            else:
+                fail_summary = (
+                    f"Regenerate attempt {attempt}: FAILED ({len(failures)} issue(s) in "
+                    f"{total_run}/{len(verify_set)} cases)"
+                )
             self_validation_log.append(fail_summary)
             logger.info(f"[GenCode] {fail_summary}")
-            
+
             if attempt < max_self_attempts:
-                # For next patch attempt, inject validation failures
+                # For next repair attempt, inject validation failures
                 feedback_text = _format_self_validation_feedback(failures, total_run, len(verify_set))
-                # Update specific_failures with validation failures
                 specific_failures = [
                     {
                         "type": f.get("type", "unknown"),
@@ -611,7 +748,7 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
         "solution": solution,
         "execution_log": [
             f"Generated C++ code (v{solution['version']}), {llm_calls} LLM call(s)",
-            f"  Mode: {'initial' if is_initial else 'patch'}",
+            f"  Mode: {mode_label}",
             f"  Solve memory items injected: {len(memory_item_ids)}",
             *self_validation_log,
         ],

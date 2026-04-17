@@ -272,6 +272,28 @@ def _load_trainable_memory_defaults() -> Dict[str, Any]:
     return out
 
 
+def _fallback_codegen_defaults() -> Dict[str, Any]:
+    """Used when ``config/codegen.yaml`` is missing."""
+    return {
+        "regenerate": False,
+        "revision_mode": "patch",
+    }
+
+
+def _load_codegen_defaults() -> Dict[str, Any]:
+    """Load ``config/codegen.yaml``."""
+    repo_root = _REPO_ROOT
+    path = repo_root / "config" / "codegen.yaml"
+    if not path.is_file():
+        return _fallback_codegen_defaults()
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    cg = data.get("codegen")
+    if not isinstance(cg, dict):
+        return _fallback_codegen_defaults()
+    return dict(cg)
+
+
 def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Apply defaults for nested runtime knobs (mutates a copy)."""
     cfg = dict(config)
@@ -298,6 +320,27 @@ def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         tm_merged["data_dir"] = ""
     cfg["trainable_memory"] = tm_merged
+
+    codegen = cfg.get("codegen")
+    if not isinstance(codegen, dict):
+        codegen = {}
+    codegen_base = _load_codegen_defaults()
+    if not isinstance(codegen_base, dict):
+        codegen_base = _fallback_codegen_defaults()
+    merged_codegen: Dict[str, Any] = {**codegen_base, **codegen}
+    # Normalize revision mode and map regenerate -> full_regen when revision_mode is not explicitly set.
+    if "revision_mode" in codegen:
+        revision_mode = str((merged_codegen.get("revision_mode") or "patch")).strip().lower()
+        if revision_mode not in {"patch", "full_regen"}:
+            revision_mode = "patch"
+        merged_codegen["revision_mode"] = revision_mode
+    else:
+        if bool(merged_codegen.get("regenerate")):
+            merged_codegen["revision_mode"] = "full_regen"
+        else:
+            merged_codegen["revision_mode"] = "patch"
+
+    cfg["codegen"] = merged_codegen
     return cfg
 
 

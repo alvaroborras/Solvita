@@ -1,35 +1,34 @@
 # Solvita LLM runtime configuration
-# Uses Azure OpenAI (CloudGPT) with AAD authentication.
-# Deployment names from CloudGPT-AOAI (Bo Qiao, MSRA CloudAI FTE).
+# Fill required fields before running workflow.
 
 llm:
-  # Azure OpenAI endpoint (CloudGPT)
-  base_url: "https://<azure-endpoint>"
+  # Provider: openai_compatible | anthropic | dashscope
+  provider: "dashscope"
+  # Keep base_url non-empty for unified config validation; dashscope SDK uses api_key directly.
+  base_url: "https://dashscope.aliyuncs.com/api/v1"
+  api_key: "sk-<redacted>"
 
-  # AAD authentication (no api_key needed)
-  azure_tenant_id: "<azure-tenant>"
-  azure_scope: "api://<azure-scope>/.default"
-  api_version: "2025-04-01-preview"
-
-  # Default model for all nodes (CloudGPT deployment name)
-  model: "gpt-5.4-20260305"
+  # Default model for all nodes (can be overridden by roles below)
+  # Note: `qwen3.*-plus` models are multimodal in DashScope; `Generation.call` in our client is the
+  # text-generation path. Use a text-first model id here to avoid `InvalidParameter: url error`.
+  model: "qwen-plus"
   temperature: 0.1
   max_tokens: 16384
 
-  # Per-role overrides (use CloudGPT deployment names)
+  # Optional per-role overrides to match previous behavior
   roles:
     code:
-      model: "gpt-5.4-20260305"
+      model: "qwen-plus"
     generator:
-      model: "gpt-5.4-20260305"
+      model: "qwen-plus"
     validator:
-      model: "gpt-5.4-20260305"
+      model: "qwen-plus"
     checker:
-      model: "gpt-5.4-20260305"
+      model: "qwen-plus"
     output:
-      model: "gpt-5.4-20260305"
+      model: "qwen-plus"
     hacker:
-      model: "gpt-5.4-20260305"
+      model: "qwen-plus"
 
 # Embedding backend for semantic similarity in skill_graph/question_similarity.py.
 # Priority: environment variables > this YAML > hardcoded defaults.

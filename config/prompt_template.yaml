@@ -222,6 +222,46 @@ generate_code:
 
     Generate the SEARCH/REPLACE edits now:
 
+  regenerate: |
+    You are repairing a failing C++ solution. Rewrite the FULL corrected code (not patch blocks).
+
+    Problem:
+    <PROBLEM_DESC>
+
+    <ABSTRACT_TAGS_LEVEL2_BLOCK>
+
+    Algorithm:
+    <ALGORITHM>
+
+    Implementation steps:
+    <STEPS>
+
+    ## Previous Code (for reference only):
+    ```cpp
+    <PREV_CODE>
+    ```
+
+    <CONSTRAINTS_BLOCK>
+
+    <PUBLIC_BLOCK>
+
+    <GEN_BLOCK>
+
+    ## Test Failures:
+    <FAILURES_BLOCK>
+
+    <FEEDBACK_TEXT>
+
+    <FIXES_BLOCK>
+
+    <MEMORY_ADVICE>
+
+    Requirements:
+    - Return ONLY complete C++17 source code (no markdown fences, no explanations).
+    - Keep valid parts of previous code when possible, but you may rewrite structure if needed.
+    - Fix the listed failures and avoid regressions on passing cases.
+    - Do NOT output SEARCH/REPLACE blocks or any diff format.
+
   canonical_problem_block: |
     Objective: <OBJECTIVE>
     Inputs: <INPUTS_JSON>
