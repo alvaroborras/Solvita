@@ -14,6 +14,9 @@ def __getattr__(name: str):
     elif name == "solver_skill_plan_node":
         from .solver_skill_plan import solver_skill_plan_node
         return solver_skill_plan_node
+    elif name == "solver_skill_plan_ensemble_node":
+        from .solver_skill_plan_ensemble import solver_skill_plan_ensemble_node
+        return solver_skill_plan_ensemble_node
     elif name == "generate_code_node":
         from .generate_code import generate_code_node
         return generate_code_node
@@ -84,6 +87,7 @@ __all__ = [
     "abstract_problem_node",
     "generate_tests_node",
     "solver_skill_plan_node",
+    "solver_skill_plan_ensemble_node",
     "generate_code_node",
     "compile_code_node",
     "run_tests_node",

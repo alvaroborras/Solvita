@@ -16,3 +16,18 @@ solver_network:
   min_llm_skills: 1
   max_llm_skills: 5
   skill_selection_planner_max_chars: 3500
+  # When enabled (and solver_network.enabled), run ``count`` independent skill-plan + CodeGen/Hacker tails after TestGen, merge best branch, then END (no second main-graph hacker pass).
+  ensemble_skill_plans:
+    enabled: false
+    count: 3
+    parallel: true
+    max_parallel_workers: 3
+    tail_recursion_limit: 600
+    # When ensemble runs with benchmark_output_dir (or branch_log_dir), ``run_workflow`` creates one folder per problem:
+    #   {root}/logs/ensemble_cases/{stem}/00_pre_ensemble.log  (Abstract→TestGen)
+    #   {root}/logs/ensemble_cases/{stem}/branch_00.log …    (each tail branch)
+    # Legacy fallback (no case folder): {root}/logs/{branch_log_subdir}/{stem}_b{id}.log
+    branch_log_dir: ""
+    branch_log_subdir: solvita_ensemble
+    diversity:
+      temperature_delta: [0.0, 0.04, -0.04]

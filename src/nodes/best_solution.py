@@ -3,6 +3,36 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+def is_better_ensemble_branch(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """
+    Compare two ensemble branch outcomes (higher is better for pass metrics).
+
+    Order: pass_rate desc, passed_tests desc; if both pass_rate >= 1.0 and
+    total_tests > 0, prefer lower branch_elapsed_s; then lower branch_index.
+    """
+    ar = float(a.get("pass_rate", 0.0) or 0.0)
+    br = float(b.get("pass_rate", 0.0) or 0.0)
+    if ar != br:
+        return ar > br
+
+    ap = int(a.get("passed_tests", 0) or 0)
+    bp = int(b.get("passed_tests", 0) or 0)
+    if ap != bp:
+        return ap > bp
+
+    at = int(a.get("total_tests", 0) or 0)
+    bt = int(b.get("total_tests", 0) or 0)
+    if ar >= 1.0 and br >= 1.0 and at > 0 and bt > 0:
+        ae = float(a.get("branch_elapsed_s", 1e308) or 1e308)
+        be = float(b.get("branch_elapsed_s", 1e308) or 1e308)
+        if ae != be:
+            return ae < be
+
+    ai = int(a.get("branch_index", 10**9) or 10**9)
+    bi = int(b.get("branch_index", 10**9) or 10**9)
+    return ai < bi
+
+
 def is_better_candidate(
     current_solution: Dict[str, Any],
     current_tests: Dict[str, Any],

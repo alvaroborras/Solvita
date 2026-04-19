@@ -212,6 +212,16 @@ def _fallback_solver_network_defaults(repo_root: Path) -> Dict[str, Any]:
         "min_llm_skills": 1,
         "max_llm_skills": 5,
         "skill_selection_planner_max_chars": 3500,
+        "ensemble_skill_plans": {
+            "enabled": False,
+            "count": 3,
+            "parallel": True,
+            "max_parallel_workers": 3,
+            "tail_recursion_limit": 600,
+            "branch_log_dir": "",
+            "branch_log_subdir": "solvita_ensemble",
+            "diversity": {"temperature_delta": [0.0, 0.04, -0.04]},
+        },
     }
 
 
@@ -232,6 +242,17 @@ def _load_solver_network_defaults() -> Dict[str, Any]:
         out["graph_dir"] = _resolve_repo_path(repo_root, gd)
     else:
         out["graph_dir"] = ""
+    fb = _fallback_solver_network_defaults(repo_root)
+    fe = dict(fb.get("ensemble_skill_plans") or {})
+    ens = out.get("ensemble_skill_plans")
+    if not isinstance(ens, dict):
+        out["ensemble_skill_plans"] = fe
+    else:
+        out["ensemble_skill_plans"] = {**fe, **ens}
+        div_d = fe.get("diversity") if isinstance(fe.get("diversity"), dict) else {}
+        div_u = ens.get("diversity") if isinstance(ens.get("diversity"), dict) else {}
+        if div_d or div_u:
+            out["ensemble_skill_plans"]["diversity"] = {**div_d, **div_u}
     return out
 
 
@@ -307,6 +328,16 @@ def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
         merged["graph_dir"] = _resolve_repo_path(_REPO_ROOT, ug)
     else:
         merged["graph_dir"] = ""
+    fe = dict(base.get("ensemble_skill_plans") or {})
+    ue = merged.get("ensemble_skill_plans")
+    if isinstance(ue, dict):
+        merged["ensemble_skill_plans"] = {**fe, **ue}
+        div_b = fe.get("diversity") if isinstance(fe.get("diversity"), dict) else {}
+        div_u = ue.get("diversity") if isinstance(ue.get("diversity"), dict) else {}
+        if div_b or div_u:
+            merged["ensemble_skill_plans"]["diversity"] = {**div_b, **div_u}
+    else:
+        merged["ensemble_skill_plans"] = fe
     cfg["solver_network"] = merged
 
     tm = cfg.get("trainable_memory")

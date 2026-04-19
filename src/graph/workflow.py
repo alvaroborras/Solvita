@@ -8,6 +8,8 @@ Phase 1: TestGen  — generate_tests
           ↓ phase_transition_1 (clear messages)
 Phase 1b: Solver plan (optional) — solver_skill_plan (when solver_network.enabled)
           builds DAG + skill selection + solver_graph_augmentation_block; skipped on Hack→CodeGen loop
+          When ensemble_skill_plans.enabled: solver_skill_plan_ensemble runs N parallel/sequential
+          skill-plan + CodeGen/Hacker tail invokes, merges winner, then END (no main-graph CodeGen/Hacker).
 Phase 2: CodeGen  — generate_code/compile → run_tests
                     → memory settlement → status_routing
           ↓ phase_transition_2 (clear messages)
@@ -19,12 +21,16 @@ Phase 3: Hacker   — hack_test (≤3 retry) → settle_hacker_memory
 Iteration budget: iteration increments per codegen repair round; max_iterations stops the run.
 """
 
+from pathlib import Path
+
 from langgraph.graph import StateGraph, END
 from src.graph.state import SolvitaState, create_initial_state
+from src.utils.problem_utils import extract_problem_code
 from src.nodes import (
     abstract_problem_node,
     generate_tests_node,
     solver_skill_plan_node,
+    solver_skill_plan_ensemble_node,
     generate_code_node,
     compile_code_node,
     run_tests_node,
@@ -50,6 +56,83 @@ from src.llm.token_usage import ensure_token_usage_accumulator, get_token_usage_
 from src.nodes.settle_hacker_memory import settle_hacker_memory
 from typing import Dict, Any
 from loguru import logger
+
+# Per-problem ensemble log folder (set by ``setup_ensemble_case_logging`` in ``run_workflow``).
+ENSEMBLE_CASE_LOG_DIR_KEY = "_ensemble_case_log_dir"
+ENSEMBLE_PRE_LOG_SINK_KEY = "_ensemble_pre_log_sink_id"
+
+
+def _sanitize_problem_stem_for_logs(raw_problem: Dict[str, Any]) -> str:
+    pid = str((raw_problem or {}).get("problem_id") or extract_problem_code(raw_problem or {}) or "unknown")
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in pid)
+    return cleaned.strip("._") or "unknown"
+
+
+def _ensemble_case_log_root(cfg: Dict[str, Any]) -> str | None:
+    sn = cfg.get("solver_network") or {}
+    ens = sn.get("ensemble_skill_plans") or {}
+    root = cfg.get("benchmark_output_dir")
+    if not (isinstance(root, str) and root.strip()):
+        bl = ens.get("branch_log_dir") if isinstance(ens, dict) else None
+        root = bl if isinstance(bl, str) and bl.strip() else ""
+    return str(root).strip() or None
+
+
+def _ensemble_will_use_case_logs(cfg: Dict[str, Any]) -> bool:
+    sn = cfg.get("solver_network") or {}
+    ens = sn.get("ensemble_skill_plans") or {}
+    if not bool(sn.get("enabled")) or not isinstance(ens, dict) or not bool(ens.get("enabled")):
+        return False
+    return _ensemble_case_log_root(cfg) is not None
+
+
+def setup_ensemble_case_logging(initial_state: Dict[str, Any]) -> None:
+    """
+    When ensemble is enabled and a log root exists, create one directory per problem::
+
+        {root}/logs/ensemble_cases/{stem}/00_pre_ensemble.log
+
+    and attach a loguru sink so Abstract→TestGen (up to ensemble) are captured.
+    ``solver_skill_plan_ensemble_node`` removes this sink and writes ``branch_XX.log`` there.
+    """
+    cfg = initial_state.get("config") or {}
+    if not _ensemble_will_use_case_logs(cfg):
+        return
+    root = _ensemble_case_log_root(cfg)
+    assert root  # guarded by _ensemble_will_use_case_logs
+    stem = _sanitize_problem_stem_for_logs(initial_state.get("raw_problem") or {})
+    case_dir = Path(root).expanduser().resolve() / "logs" / "ensemble_cases" / stem
+    case_dir.mkdir(parents=True, exist_ok=True)
+    pre_path = case_dir / "00_pre_ensemble.log"
+    sink_id = logger.add(str(pre_path), enqueue=True, backtrace=True, diagnose=False)
+    cfg[ENSEMBLE_CASE_LOG_DIR_KEY] = str(case_dir)
+    cfg[ENSEMBLE_PRE_LOG_SINK_KEY] = sink_id
+    logger.info(
+        "[ensemble_case_logs] case_dir={} pre_ensemble={}",
+        case_dir,
+        pre_path.name,
+    )
+
+
+def teardown_ensemble_pre_log_sink(config: Dict[str, Any] | None) -> None:
+    """Remove pre-ensemble file sink if still registered (e.g. workflow error before ensemble)."""
+    if not isinstance(config, dict):
+        return
+    sid = config.pop(ENSEMBLE_PRE_LOG_SINK_KEY, None)
+    if sid is not None:
+        try:
+            logger.remove(sid)
+        except ValueError:
+            pass
+
+
+def after_testgen_routing(state: Dict[str, Any]) -> str:
+    """After TestGen: either run skill-plan ensemble (tail-only) or single-branch skill plan + main tail."""
+    sn = (state.get("config") or {}).get("solver_network") or {}
+    ens = sn.get("ensemble_skill_plans") or {}
+    if bool(sn.get("enabled")) and isinstance(ens, dict) and bool(ens.get("enabled")):
+        return "ensemble"
+    return "single"
 
 
 def terminal_hack_failure_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -180,6 +263,40 @@ def create_hacker_subgraph():
     return g.compile()
 
 
+def compile_codegen_hacker_tail():
+    """
+    Standalone subgraph invoked per ensemble branch: CodeGen ↔ Hacker with the same
+    structure as the main orchestrator tail (from ``codegen_phase`` onward).
+    """
+    tail = StateGraph(SolvitaState)
+    codegen_sg = create_codegen_subgraph()
+    hacker_sg = create_hacker_subgraph()
+
+    tail.add_node("codegen_phase", codegen_sg)
+    tail.add_node("phase_transition_2", phase_transition_node)
+    tail.add_node("enter_hack_phase", enter_hack_phase_node)
+    tail.add_node("hacker_phase", hacker_sg)
+    tail.add_node("phase_transition_3", phase_transition_node)
+    tail.add_node("terminal_hack_failure", terminal_hack_failure_node)
+
+    tail.set_entry_point("codegen_phase")
+    tail.add_edge("codegen_phase", "phase_transition_2")
+    tail.add_edge("phase_transition_2", "enter_hack_phase")
+    tail.add_edge("enter_hack_phase", "hacker_phase")
+    tail.add_conditional_edges(
+        "hacker_phase",
+        hack_outcome_routing,
+        {
+            "loop_codegen": "phase_transition_3",
+            "terminal_failure": "terminal_hack_failure",
+            "final_ac": END,
+        },
+    )
+    tail.add_edge("phase_transition_3", "codegen_phase")
+    tail.add_edge("terminal_hack_failure", END)
+    return tail.compile()
+
+
 # ============================================================
 # Top-level Orchestrator（含 Hack→CodeGen 回环）
 # ============================================================
@@ -211,6 +328,7 @@ def create_solvita_workflow():
     workflow.add_node("testgen_phase", testgen_sg)
     workflow.add_node("phase_transition_1", phase_transition_node)  # TESTGEN→CODEGEN
     workflow.add_node("solver_skill_plan", solver_skill_plan_node)
+    workflow.add_node("solver_skill_plan_ensemble", solver_skill_plan_ensemble_node)
     workflow.add_node("codegen_phase", codegen_sg)
     workflow.add_node("phase_transition_2", phase_transition_node)  # CODEGEN→HACKER
     workflow.add_node("enter_hack_phase", enter_hack_phase_node)
@@ -222,7 +340,15 @@ def create_solvita_workflow():
     workflow.add_edge("abstract_phase", "phase_transition_0")
     workflow.add_edge("phase_transition_0", "testgen_phase")
     workflow.add_edge("testgen_phase", "phase_transition_1")
-    workflow.add_edge("phase_transition_1", "solver_skill_plan")
+    workflow.add_conditional_edges(
+        "phase_transition_1",
+        after_testgen_routing,
+        {
+            "ensemble": "solver_skill_plan_ensemble",
+            "single": "solver_skill_plan",
+        },
+    )
+    workflow.add_edge("solver_skill_plan_ensemble", END)
     workflow.add_edge("solver_skill_plan", "codegen_phase")
     workflow.add_edge("codegen_phase", "phase_transition_2")
     workflow.add_edge("phase_transition_2", "enter_hack_phase")
@@ -262,6 +388,13 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
 
     Returns:
         Final state after workflow completion.
+
+    When ``solver_network.enabled`` and ``ensemble_skill_plans.enabled`` and a log root
+    (``benchmark_output_dir`` or ``branch_log_dir``) is set, creates::
+
+        {root}/logs/ensemble_cases/{stem}/00_pre_ensemble.log
+
+    for Abstract→TestGen, then each ensemble branch writes ``branch_XX.log`` in the same folder.
     """
     if config is None:
         config = {
@@ -275,12 +408,18 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     logger.info("=" * 60)
 
     initial_state = create_initial_state(raw_problem, config)
+    setup_ensemble_case_logging(initial_state)
     workflow = create_solvita_workflow()
 
-    final_state = workflow.invoke(
-        initial_state,
-        {"recursion_limit": 200},
-    )
+    final_state: Dict[str, Any] | None = None
+    try:
+        final_state = workflow.invoke(
+            initial_state,
+            {"recursion_limit": 200},
+        )
+    finally:
+        merged_cfg = (final_state or initial_state).get("config") or {}
+        teardown_ensemble_pre_log_sink(merged_cfg)
 
     logger.info("=" * 60)
     logger.info(f"Workflow Complete: {final_state.get('status', 'unknown')}")

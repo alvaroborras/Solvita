@@ -108,10 +108,9 @@ def _merge_skill_selection_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def solver_skill_plan_node(state: "SolvitaState") -> Dict[str, Any]:
+def _run_skill_plan(state: "SolvitaState") -> Dict[str, Any]:
     """
-    Populate ``plan`` with skill-graph rollout, optional LLM skill + DAG selection, and the
-    preformatted ``solver_graph_augmentation_block`` for ``generate_code_node``.
+    Core skill-plan logic. Returns keys: plan, execution_log, llm_calls (same shape as node output).
     """
     cfg = state["config"]
     sn = cfg.get("solver_network") or {}
@@ -269,3 +268,16 @@ def solver_skill_plan_node(state: "SolvitaState") -> Dict[str, Any]:
         ],
         "llm_calls": llm_calls,
     }
+
+
+def run_skill_plan_once(state: "SolvitaState") -> Dict[str, Any]:
+    """Alias for ensemble / tests: same return shape as ``solver_skill_plan_node``."""
+    return _run_skill_plan(state)
+
+
+def solver_skill_plan_node(state: "SolvitaState") -> Dict[str, Any]:
+    """
+    Populate ``plan`` with skill-graph rollout, optional LLM skill + DAG selection, and the
+    preformatted ``solver_graph_augmentation_block`` for ``generate_code_node``.
+    """
+    return _run_skill_plan(state)

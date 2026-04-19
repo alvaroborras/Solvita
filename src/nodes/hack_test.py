@@ -188,7 +188,14 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     # Persist hack tests to disk
     problem_code = extract_problem_code(state.get("raw_problem", {}))
     if problem_code:
-        tests_dir = Path("data") / "generated" / problem_code / "tests"
+        cfg = state.get("config") or {}
+        snw = cfg.get("solver_network") or {}
+        branch_id = snw.get("ensemble_branch_id")
+        base_tests = Path("data") / "generated" / problem_code / "tests"
+        if branch_id is not None:
+            tests_dir = base_tests / f"ensemble_b{int(branch_id)}"
+        else:
+            tests_dir = base_tests
         tests_dir.mkdir(parents=True, exist_ok=True)
         existing = list(tests_dir.glob("hack_*.in"))
         next_idx = 0

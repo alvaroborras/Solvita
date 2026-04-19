@@ -731,6 +731,10 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     problem_code = extract_problem_code(state.get("raw_problem", {}))
     if problem_code:
         out_dir = Path("data") / "generated" / problem_code / "code"
+        sn = (state.get("config") or {}).get("solver_network") or {}
+        ens_b = sn.get("ensemble_branch_id")
+        if ens_b is not None:
+            out_dir = out_dir / f"ensemble_b{int(ens_b)}"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"solution_v{version}.cpp").write_text(code, encoding="utf-8")
         (out_dir / "solution_latest.cpp").write_text(code, encoding="utf-8")
