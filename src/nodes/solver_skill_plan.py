@@ -24,6 +24,7 @@ from src.solver_network.adapter import build_augmentation_block_from_rollout
 from src.solver_network.graph_prompts import format_selected_skills_content_by_ids
 from src.solver_network.llm_skill_selection import (
     SkillSelectionResult,
+    format_skill_ids_for_log,
     llm_select_skills,
     normalize_subproblem_dag,
     subproblem_dag_nonempty,
@@ -252,11 +253,19 @@ def solver_skill_plan_node(state: "SolvitaState") -> Dict[str, Any]:
         "solver_graph_augmentation_block": skill_block,
     }
 
+    skill_detail = format_skill_ids_for_log(graph, sel.skill_ids) if sel.skill_ids else "(none)"
+    if sel.skill_ids:
+        if llm_calls:
+            logger.info("[solver_skill_plan] LLM-selected skills: {}", skill_detail)
+        else:
+            logger.info("[solver_skill_plan] Rollout-sampled skills (no activated context): {}", skill_detail)
+
     return {
         "plan": plan_patch,
         "execution_log": [
-            f"Solver skill plan: skills={len(sel.skill_ids)} dag_nodes={len(dag_norm.get('nodes') or [])} "
-            f"block_chars={len(skill_block)}"
+            f"Solver skill plan: selected_skills={skill_detail} "
+            f"dag_nodes={len(dag_norm.get('nodes') or [])} block_chars={len(skill_block)} "
+            f"llm_skill_calls={llm_calls}",
         ],
         "llm_calls": llm_calls,
     }

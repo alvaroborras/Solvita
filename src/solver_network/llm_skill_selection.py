@@ -10,11 +10,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-import logging
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 from skill_graph.graph import SolvitaSkillGraph  # noqa: E402
+from skill_graph.nodes import SNode  # noqa: E402
 from skill_graph.path_scoring import SkillPathContribution  # noqa: E402
 from skill_graph.rl_rollout import RolloutContext  # noqa: E402
 from src.llm import UnifiedLLMClient  # noqa: E402
@@ -24,6 +23,21 @@ from src.utils.prompt_templates import (  # noqa: E402
     load_prompt_templates,
     render_template,
 )
+
+
+def format_skill_ids_for_log(graph: SolvitaSkillGraph, skill_ids: Sequence[str]) -> str:
+    """Human-readable skill list for logs (id + S-node title when available)."""
+    if not skill_ids:
+        return "(none)"
+    parts: List[str] = []
+    for sid in skill_ids:
+        n = graph.get_node(sid)
+        if isinstance(n, SNode):
+            t = (n.title or "").strip()
+            parts.append(f"{sid} ({t})" if t else str(sid))
+        else:
+            parts.append(str(sid))
+    return " | ".join(parts)
 
 
 def _skill_selection_system_prompt() -> str:
@@ -628,11 +642,12 @@ def llm_select_skills(
             )
         return SkillSelectionResult([], nd)
 
+    skill_line = format_skill_ids_for_log(graph, filtered)
     logger.info(
-        "LLM selected %d skills (from %d candidates): %s | DAG nodes=%d edges=%d",
+        "LLM skill selection: {} skill(s) from {} candidates — {} | DAG nodes={} edges={}",
         len(filtered),
         len(candidates),
-        filtered[:12],
+        skill_line,
         len(last_dag.get("nodes") or []),
         len(last_dag.get("edges") or []),
     )
