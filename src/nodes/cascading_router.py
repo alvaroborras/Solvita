@@ -92,13 +92,16 @@ def cascading_execution_router(
     analyst_report: Dict[str, Any],
     max_retries: int = 3,
     memory_advice: str = "",
-) -> Tuple[str, str, List[str]]:
+    messages_history: list = None,
+) -> Tuple[str, str, List[str], List[Dict[str, str]]]:
     """
     Implements the T3.1 Cascading Execution Logic.
     Returns:
-        (route_used, validated_test_input, execution_log)
+        (route_used, validated_test_input, execution_log, new_messages)
     """
     execution_log = []
+    all_new_msgs: List[Dict[str, str]] = []
+    history = list(messages_history) if messages_history else []
     tests_data = state.get("tests", {})
     validator_path_str = tests_data.get("validator_exe")
     validator_exe = Path(validator_path_str) if validator_path_str else None
@@ -109,11 +112,13 @@ def cascading_execution_router(
     if suggested_route == "anti_hash":
         logger.info("[Router] Executing Primary Anti-Hash Generator")
         execution_log.append("Router: Attempting Anti-Hash generator.")
-        cpp_source = generate_anti_hash_test_program(state, llm, analyst_report)
+        cpp_source, gen_msgs = generate_anti_hash_test_program(state, llm, analyst_report, messages_history=history)
+        all_new_msgs.extend(gen_msgs)
+        history.extend(gen_msgs)
         ok, result, err = execute_generator_and_validate(cpp_source, validator_exe, state.get("problem", {}))
         if ok:
             execution_log.append("Router: Anti-Hash generation successful.")
-            return GeneratorRoute.ANTI_HASH.value, result, execution_log
+            return GeneratorRoute.ANTI_HASH.value, result, execution_log, all_new_msgs
         else:
             execution_log.append(f"Router: Anti-Hash failed ({err}). Downgrading to Semantic.")
             logger.warning("[Router] Anti-Hash Failed. Downgrading to Semantic route.")
@@ -131,31 +136,31 @@ def cascading_execution_router(
     for attempt in range(1, max_retries + 1):
         execution_log.append(f"Router: Semantic generation attempt {attempt}/{max_retries}.")
         if attempt == 1 or not last_generator_code:
-            cpp_source = generate_semantic_test_program(
-                state,
-                llm,
-                analyst_report,
+            cpp_source, gen_msgs = generate_semantic_test_program(
+                state, llm, analyst_report,
                 memory_advice=memory_advice,
                 previous_attempt_issues=semantic_feedback,
                 previous_generated_input=previous_generated_input,
+                messages_history=history,
             )
         else:
-            cpp_source = repair_semantic_test_program(
-                state,
-                llm,
-                analyst_report,
+            cpp_source, gen_msgs = repair_semantic_test_program(
+                state, llm, analyst_report,
                 last_generator_code=last_generator_code,
                 failure_kind=failure_kind,
                 failure_reason=failure_reason,
                 previous_attempt_issues=semantic_feedback,
                 previous_generated_input=previous_generated_input,
                 memory_advice=memory_advice,
+                messages_history=history,
             )
+        all_new_msgs.extend(gen_msgs)
+        history.extend(gen_msgs)
         ok, result, err = execute_generator_and_validate(cpp_source, validator_exe, state.get("problem", {}))
-        
+
         if ok:
             execution_log.append("Router: Semantic generation successful.")
-            return GeneratorRoute.SEMANTIC.value, result, execution_log
+            return GeneratorRoute.SEMANTIC.value, result, execution_log, all_new_msgs
             
         semantic_log.append(f"Attempt {attempt} failed: {err}")
         logger.debug(f"[Router] Semantic attempt {attempt} failed: {err}")
@@ -182,23 +187,25 @@ def cascading_execution_router(
     for attempt in range(1, max_retries + 1):
         execution_log.append(f"Router: Stress generation attempt {attempt}/{max_retries}.")
         if attempt == 1 or not stress_last_generator_code:
-            cpp_source = generate_stress_test_program(state, llm)
+            cpp_source, gen_msgs = generate_stress_test_program(state, llm, messages_history=history)
         else:
-            cpp_source = repair_stress_test_program(
-                state,
-                llm,
+            cpp_source, gen_msgs = repair_stress_test_program(
+                state, llm,
                 last_generator_code=stress_last_generator_code,
                 failure_kind=stress_failure_kind,
                 failure_reason=stress_failure_reason,
                 previous_attempt_issues=stress_feedback,
                 previous_generated_input=stress_previous_generated_input,
+                messages_history=history,
             )
+        all_new_msgs.extend(gen_msgs)
+        history.extend(gen_msgs)
 
         ok, result, err = execute_generator_and_validate(cpp_source, validator_exe, state.get("problem", {}))
 
         if ok:
             execution_log.append("Router: Stress generation successful.")
-            return GeneratorRoute.STRESS.value, result, execution_log
+            return GeneratorRoute.STRESS.value, result, execution_log, all_new_msgs
 
         stress_last_generator_code = cpp_source
         stress_previous_generated_input = result
@@ -218,4 +225,4 @@ def cascading_execution_router(
     logger.error("[Router] Stress fuzzer fallback failed.")
     
     # Total failure
-    return "failed", "", execution_log
+    return "failed", "", execution_log, all_new_msgs

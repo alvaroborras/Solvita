@@ -7,6 +7,7 @@ from pathlib import Path
 from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
+from src.nodes._chat_utils import chat_with_history
 from src.utils.cpp_execution import (
     sanitize_cpp,
     compile_cpp,
@@ -277,17 +278,22 @@ def _build_regenerate_prompt(
 
 def _generate_with_compact_retry(
     llm: UnifiedLLMClient,
+    messages_history: list,
     prompt_builder,
     *args,
     **kwargs,
-) -> str:
+) -> tuple:
+    """Build prompt, call LLM with history, return (response, new_messages).
+
+    On PromptTooLongError, retries with compact=True.
+    """
     prompt = prompt_builder(*args, compact=False, **kwargs)
     try:
-        return llm.generate(prompt)
+        return chat_with_history(llm, messages_history, prompt)
     except PromptTooLongError:
         compact_prompt = prompt_builder(*args, compact=True, **kwargs)
         logger.warning("[GenCode] Prompt exceeded max tokens, retrying with compact prompt")
-        return llm.generate(compact_prompt)
+        return chat_with_history(llm, messages_history, compact_prompt)
 
 
 def _indent(text: str, n: int) -> str:
@@ -548,7 +554,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     code = ""
     self_validation_log = []
     prev_code = state["solution"].get("code", "")
-    
+    all_new_messages: List[Dict[str, str]] = []
+    history = list(state.get("messages", []))
+
     # Determine if this is initial generation or patch iteration
     is_initial = (iteration == 0 or not prev_code)
 
@@ -566,8 +574,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
         logger.info("[GenCode] Initial generation (no previous code)")
         
         for attempt in range(1, max_self_attempts + 1):
-            code = _generate_with_compact_retry(
+            response, new_msgs = _generate_with_compact_retry(
                 llm,
+                history,
                 _build_initial_prompt,
                 problem_desc, algorithm, steps,
                 constraints, public_tests, generated_tests,
@@ -576,7 +585,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                 abstract_tags_level2_block=abstract_tags_level2_block,
             )
             llm_calls += 1
-            code = sanitize_cpp(code)
+            all_new_messages.extend(new_msgs)
+            history.extend(new_msgs)
+            code = sanitize_cpp(response)
 
             # Self-validate
             passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
@@ -626,8 +637,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
         
         for attempt in range(1, max_self_attempts + 1):
             if revision_mode == "patch":
-                llm_response = _generate_with_compact_retry(
+                llm_response, new_msgs = _generate_with_compact_retry(
                     llm,
+                    history,
                     _build_patch_prompt,
                     prev_code,
                     problem_desc,
@@ -640,6 +652,8 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                     abstract_tags_level2_block=abstract_tags_level2_block,
                 )
                 llm_calls += 1
+                all_new_messages.extend(new_msgs)
+                history.extend(new_msgs)
 
                 # Parse SEARCH/REPLACE blocks
                 blocks = parse_search_replace_blocks(llm_response)
@@ -664,8 +678,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                 logger.debug(f"[GenCode] Patch diff:\n{diff}")
                 code = patched_code
             else:
-                code = _generate_with_compact_retry(
+                response, new_msgs = _generate_with_compact_retry(
                     llm,
+                    history,
                     _build_regenerate_prompt,
                     prev_code,
                     problem_desc,
@@ -681,7 +696,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                     abstract_tags_level2_block=abstract_tags_level2_block,
                 )
                 llm_calls += 1
-                code = sanitize_cpp(code)
+                all_new_messages.extend(new_msgs)
+                history.extend(new_msgs)
+                code = sanitize_cpp(response)
 
             # Self-validate repaired code
             passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
@@ -750,6 +767,7 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
 
     out: Dict[str, Any] = {
         "solution": solution,
+        "messages": all_new_messages,
         "execution_log": [
             f"Generated C++ code (v{solution['version']}), {llm_calls} LLM call(s)",
             f"  Mode: {mode_label}",

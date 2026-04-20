@@ -3,16 +3,16 @@
 Workflow overview (Abstract → TestGen → CodeGen → Hacker + Hack→CodeGen loop)
 ============================================================================
 Phase 0: Abstract — abstract_problem (canonical + whitelist tags + confidence)
-          ↓ phase_transition_0 (clear messages)
+          ↓ phase_transition_0
 Phase 1: TestGen  — generate_tests
-          ↓ phase_transition_1 (clear messages)
+          ↓ phase_transition_1
 Phase 1b: Solver plan (optional) — solver_skill_plan (when solver_network.enabled)
           builds DAG + skill selection + solver_graph_augmentation_block; skipped on Hack→CodeGen loop
           When ensemble_skill_plans.enabled: solver_skill_plan_ensemble runs N parallel/sequential
           skill-plan + CodeGen/Hacker tail invokes, merges winner, then END (no main-graph CodeGen/Hacker).
 Phase 2: CodeGen  — generate_code/compile → run_tests
                     → memory settlement → status_routing
-          ↓ phase_transition_2 (clear messages)
+          ↓ phase_transition_2
 Phase 3: Hacker   — hack_test (≤3 retry) → settle_hacker_memory
           ↓ hack_outcome_routing:
               "loop_codegen" → phase_transition_3 → back to CodeGen
@@ -201,6 +201,7 @@ def create_codegen_subgraph():
         {
             "success": "join_ready",
             "failed": "analyze_feedback",
+            "exhausted": END,
         },
     )
 
@@ -365,7 +366,7 @@ def create_solvita_workflow():
         },
     )
 
-    # 回环：HACKER → CODEGEN（清空 messages，重置 hack_round，带 hack 失败用例重新答题）
+    # 回环：HACKER → CODEGEN（保留 messages，重置 hack_round，带 hack 失败用例重新答题）
     workflow.add_edge("phase_transition_3", "codegen_phase")
     workflow.add_edge("terminal_hack_failure", END)
 

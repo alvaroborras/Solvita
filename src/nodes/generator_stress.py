@@ -1,8 +1,9 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from loguru import logger
 
 from src.llm import UnifiedLLMClient
+from src.nodes._chat_utils import chat_with_history
 from src.nodes.generator_common import (
     apply_patch_response,
     parse_repair_checklist,
@@ -91,17 +92,17 @@ def build_stress_patch_prompt(
 def generate_stress_test_program(
     state: Dict[str, Any],
     llm: UnifiedLLMClient,
-) -> str:
-    """
-    Invokes the LLM to generate the Stress C++ Fuzzer.
-    """
+    messages_history: list = None,
+) -> Tuple[str, List[Dict[str, str]]]:
+    """Returns (cpp_source, new_messages)."""
     logger.info("[Stress Generator] Generating boundary/randomized fallback Fuzzer...")
 
     problem_desc = state.get("problem", {}).get("description", "")
     constraints_text = render_input_validity_constraints(state)
 
     prompt = build_stress_generator_prompt(problem_desc, constraints_text)
-    cpp_source = llm.generate(prompt)
+    history = list(messages_history) if messages_history else []
+    cpp_source, new_msgs = chat_with_history(llm, history, prompt)
 
     from src.utils.cpp_execution import sanitize_cpp
 
@@ -109,9 +110,9 @@ def generate_stress_test_program(
         clean_cpp = sanitize_cpp(cpp_source)
     except Exception as exc:
         logger.warning(f"[Stress Generator] LLM produced invalid/dangerous format: {exc}")
-        return "int main() { return 1; }"
+        return "int main() { return 1; }", new_msgs
 
-    return clean_cpp
+    return clean_cpp, new_msgs
 
 
 def repair_stress_test_program(
@@ -122,50 +123,47 @@ def repair_stress_test_program(
     failure_reason: str,
     previous_attempt_issues: str = "",
     previous_generated_input: str = "",
-) -> str:
-    """
-    Repairs the previous Stress generator via checklist + SEARCH/REPLACE patching.
-    """
+    messages_history: list = None,
+) -> Tuple[str, List[Dict[str, str]]]:
+    """Returns (cpp_source, new_messages)."""
     if not last_generator_code:
-        return generate_stress_test_program(state, llm)
+        return generate_stress_test_program(state, llm, messages_history=messages_history)
 
     problem_desc = state.get("problem", {}).get("description", "")
     constraints_text = render_input_validity_constraints(state)
+    history = list(messages_history) if messages_history else []
+    all_new_msgs: List[Dict[str, str]] = []
 
     checklist_prompt = build_stress_checklist_prompt(
-        problem_desc,
-        constraints_text,
+        problem_desc, constraints_text,
         last_generator_code=last_generator_code,
-        failure_kind=failure_kind,
-        failure_reason=failure_reason,
+        failure_kind=failure_kind, failure_reason=failure_reason,
         previous_attempt_issues=previous_attempt_issues,
         previous_generated_input=previous_generated_input[:400],
     )
-    checklist = parse_repair_checklist(
-        llm.generate(checklist_prompt),
-        fallback_reason=failure_reason or previous_attempt_issues,
-    )
+    checklist_response, new_msgs = chat_with_history(llm, history, checklist_prompt)
+    all_new_msgs.extend(new_msgs)
+    history.extend(new_msgs)
+    checklist = parse_repair_checklist(checklist_response, fallback_reason=failure_reason or previous_attempt_issues)
 
     patch_prompt = build_stress_patch_prompt(
-        problem_desc,
-        constraints_text,
-        last_generator_code=last_generator_code,
-        checklist=checklist,
-        failure_kind=failure_kind,
-        failure_reason=failure_reason,
+        problem_desc, constraints_text,
+        last_generator_code=last_generator_code, checklist=checklist,
+        failure_kind=failure_kind, failure_reason=failure_reason,
         previous_generated_input=previous_generated_input[:400],
     )
-    patch_response = llm.generate(patch_prompt)
+    patch_response, new_msgs = chat_with_history(llm, history, patch_prompt)
+    all_new_msgs.extend(new_msgs)
 
     ok, patched_cpp, patch_error = apply_patch_response(last_generator_code, patch_response)
     if not ok:
         logger.warning(f"[Stress Generator] Patch application failed: {patch_error}")
-        return last_generator_code
+        return last_generator_code, all_new_msgs
 
     from src.utils.cpp_execution import sanitize_cpp
 
     try:
-        return sanitize_cpp(patched_cpp)
+        return sanitize_cpp(patched_cpp), all_new_msgs
     except Exception as exc:
         logger.warning(f"[Stress Generator] Patched code failed sanitation: {exc}")
-        return last_generator_code
+        return last_generator_code, all_new_msgs

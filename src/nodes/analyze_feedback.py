@@ -6,6 +6,7 @@ import tempfile
 from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
+from src.nodes._chat_utils import chat_with_history
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
 from src.utils.json_utils import parse_json_response
@@ -16,14 +17,15 @@ if TYPE_CHECKING:
     from src.graph.state import SolvitaState
 
 
-def _generate_feedback_with_retry(llm: UnifiedLLMClient, build_prompt, *args, **kwargs) -> str:
+def _generate_feedback_with_retry(llm: UnifiedLLMClient, messages_history: list, build_prompt, *args, **kwargs) -> tuple:
+    """Returns (response_text, new_messages)."""
     prompt = build_prompt(*args, compact=False, **kwargs)
     try:
-        return llm.generate(prompt)
+        return chat_with_history(llm, messages_history, prompt)
     except PromptTooLongError:
         compact_prompt = build_prompt(*args, compact=True, **kwargs)
         logger.warning("[AnalyzeFeedback] Prompt exceeded max tokens, retrying with compact prompt")
-        return llm.generate(compact_prompt)
+        return chat_with_history(llm, messages_history, compact_prompt)
 
 
 def analyze_feedback_node(state: "SolvitaState") -> Dict[str, Any]:
@@ -87,27 +89,29 @@ Required Properties: {canonical.get('required_properties', [])}"""
     
     # Initialize LLM
     llm = UnifiedLLMClient(state['config'])
+    history = list(state.get("messages", []))
 
     if hack_failures:
         logger.info(f"Analyzing {len(hack_failures)} hack failures")
         return _analyze_hack_failures(
-            llm, 
-            code, 
-            hack_failures, 
-            problem_desc, 
-            state.get('plan', {}).get('algorithm_choice', ''), 
-            state.get('plan', {}).get('implementation_steps', []), 
+            llm,
+            history,
+            code,
+            hack_failures,
+            problem_desc,
+            state.get('plan', {}).get('algorithm_choice', ''),
+            state.get('plan', {}).get('implementation_steps', []),
             state.get('iteration', 0)
         )
-    
+
     # Analyze compilation errors first (higher priority)
     if compilation_errors:
-        feedback_dict = _analyze_compilation_errors(llm, code, compilation_errors)
+        feedback_dict, new_msgs = _analyze_compilation_errors(llm, history, code, compilation_errors)
     else:
         # Analyze test failures
         failed_tests = [t for t in test_results if not t.get('passed', False)]
-        feedback_dict = _analyze_test_failures(
-            llm, code, failed_tests,
+        feedback_dict, new_msgs = _analyze_test_failures(
+            llm, history, code, failed_tests,
             problem_desc, algorithm, steps, iteration, pass_rate
         )
     
@@ -121,6 +125,7 @@ Required Properties: {canonical.get('required_properties', [])}"""
 
     return {
         "feedback": feedback,
+        "messages": new_msgs,
         "execution_log": ["✓ Feedback analyzed"],
         "llm_calls": 1,
     }
@@ -138,14 +143,14 @@ def _build_compilation_error_prompt(code: str, errors: list[str], compact: bool 
     )
 
 
-def _analyze_compilation_errors(llm: UnifiedLLMClient, code: str, errors: list[str]) -> Dict:
-    analysis = _generate_feedback_with_retry(llm, _build_compilation_error_prompt, code, errors)
-    
+def _analyze_compilation_errors(llm: UnifiedLLMClient, messages_history: list, code: str, errors: list[str]) -> tuple:
+    analysis, new_msgs = _generate_feedback_with_retry(llm, messages_history, _build_compilation_error_prompt, code, errors)
+
     return {
         'error_type': 'compilation',
         'analysis': analysis,
-        'suggested_fixes': [],  # LLM provides fixes in analysis text
-    }
+        'suggested_fixes': [],
+    }, new_msgs
 
 
 def _select_representative_failures(failed_tests: List[Dict], max_count: int = 10) -> List[Dict]:
@@ -367,8 +372,9 @@ def _build_test_failure_prompt(
 
 
 def _analyze_test_failures(
-    llm: UnifiedLLMClient, 
-    code: str, 
+    llm: UnifiedLLMClient,
+    messages_history: list,
+    code: str,
     failed_tests: list[Dict],
     problem_desc: str,
     algorithm: str,
@@ -376,14 +382,15 @@ def _analyze_test_failures(
     iteration: int,
     pass_rate: float,
     diagnostic_output: str = ""
-) -> Dict:
-    """Analyze test failures with full context"""
+) -> tuple:
+    """Analyze test failures with full context. Returns (feedback_dict, new_messages)."""
     if not failed_tests:
-        return {'error_type': 'none', 'analysis': 'No failures', 'suggested_fixes': [], 'failures': []}
+        return {'error_type': 'none', 'analysis': 'No failures', 'suggested_fixes': [], 'failures': []}, []
     selected_tests = _select_representative_failures(failed_tests, max_count=10)
     error_pattern = _analyze_error_pattern(failed_tests)
-    analysis = _generate_feedback_with_retry(
+    analysis, new_msgs = _generate_feedback_with_retry(
         llm,
+        messages_history,
         _build_test_failure_prompt,
         code,
         failed_tests,
@@ -424,12 +431,13 @@ def _analyze_test_failures(
         'error_pattern': error_pattern,
         'suggested_fixes': suggested_fixes,
         'failures': normalized_failures,
-    }
+    }, new_msgs
 
 
 def _analyze_hack_failures(
-    llm: UnifiedLLMClient, 
-    code: str, 
+    llm: UnifiedLLMClient,
+    messages_history: list,
+    code: str,
     hack_failures: List[Dict],
     problem_desc: str,
     algorithm: str,
@@ -474,7 +482,7 @@ def _analyze_hack_failures(
             HACK_FAILURES_TEXT=compact_failures,
         )
 
-    response = _generate_feedback_with_retry(llm, _build_hack_failure_prompt)
+    response, new_msgs = _generate_feedback_with_retry(llm, messages_history, _build_hack_failure_prompt)
     
     try:
         analysis_data = parse_json_response(response)
@@ -500,6 +508,7 @@ def _analyze_hack_failures(
     
     return {
         "feedback": feedback,
+        "messages": new_msgs,
         "execution_log": [
             f"Analyzed {len(hack_failures)} hack failures",
             f"Root cause: {analysis_data.get('analysis', '')[:50]}..."

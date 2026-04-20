@@ -7,6 +7,7 @@ from loguru import logger
 
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
+from src.nodes._chat_utils import chat_with_history
 from src.utils.python_execution import run_python
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 from src.utils.prompt_utils import compact_json_for_prompt, compact_list_for_prompt, truncate_for_prompt
@@ -56,11 +57,20 @@ def _extract_json_candidate(text: str) -> str:
     return text
 
 
-def _analyst_llm_generate(llm: UnifiedLLMClient, prompt: str, *, temperature: float = 0.0) -> str:
-    generate_with_system = getattr(type(llm), "generate_with_system", None)
-    if callable(generate_with_system):
-        return llm.generate_with_system(_analyst_system_prompt(), prompt, temperature=temperature)
-    return llm.generate(prompt, temperature=temperature)
+def _analyst_llm_generate(llm: UnifiedLLMClient, prompt: str, *, temperature: float = 0.0, messages_history: list = None, new_messages_acc: list = None) -> str:
+    """Generate with history support. Appends to new_messages_acc if provided."""
+    history = messages_history if messages_history is not None else []
+    system_prompt = _analyst_system_prompt()
+    response, new_msgs = chat_with_history(
+        llm, history, prompt,
+        system_content=system_prompt,
+        temperature=temperature,
+    )
+    if new_messages_acc is not None:
+        new_messages_acc.extend(new_msgs)
+    if messages_history is not None:
+        messages_history.extend(new_msgs)
+    return response
 
 
 def parse_code_analyst_response(text: str) -> Tuple[str, Dict[str, Any]]:
@@ -247,10 +257,10 @@ def should_force_tool_validation(report: Dict[str, Any], has_tool_evidence: bool
         return False
     return report.get("bug_class") == "unknown" or report.get("confidence") == "low"
 
-def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: int = 5, memory_advice: str = "") -> Dict[str, Any]:
+def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: int = 5, memory_advice: str = "", messages_history: list = None) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """
     Executes the Code Analyst loop (up to `max_rounds` times).
-    Returns the parsed Vulnerability Report.
+    Returns (parsed_report, new_messages).
     """
     logger.info("[Code Analyst] Starting investigation...")
     
@@ -262,11 +272,13 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
     has_tool_evidence = False
     round_num = 1
     prompt_compact = False
+    msg_history = list(messages_history) if messages_history else []
+    all_new_msgs: List[Dict[str, str]] = []
 
     while round_num <= max_rounds:
         prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice, compact=prompt_compact)
         try:
-            response_text = _analyst_llm_generate(llm, prompt)
+            response_text = _analyst_llm_generate(llm, prompt, messages_history=msg_history, new_messages_acc=all_new_msgs)
         except PromptTooLongError:
             if prompt_compact:
                 raise
@@ -291,7 +303,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         compact=prompt_compact,
                     )
                     try:
-                        forced_response = _analyst_llm_generate(llm, force_prompt, temperature=0.0)
+                        forced_response = _analyst_llm_generate(llm, force_prompt, temperature=0.0, messages_history=msg_history, new_messages_acc=all_new_msgs)
                     except PromptTooLongError:
                         if prompt_compact:
                             raise
@@ -305,7 +317,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                             memory_advice=memory_advice,
                             compact=True,
                         )
-                        forced_response = _analyst_llm_generate(llm, force_prompt, temperature=0.0)
+                        forced_response = _analyst_llm_generate(llm, force_prompt, temperature=0.0, messages_history=msg_history, new_messages_acc=all_new_msgs)
                     logger.debug(f"[Code Analyst] Round {round_num} forced-tool response:\n{forced_response[:300]}...")
                     forced_type, forced_data = parse_code_analyst_response(forced_response)
                     if forced_type == "tool_call":
@@ -315,14 +327,14 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         history.append(f"Action: Tool '{tool_name}' invoked.\nOutput:\n{tool_output}")
                         has_tool_evidence = True
                         prompt = build_analyst_prompt(problem_desc, constraints, target_code, history, memory_advice=memory_advice, compact=prompt_compact)
-                        response_text = _analyst_llm_generate(llm, prompt)
+                        response_text = _analyst_llm_generate(llm, prompt, messages_history=msg_history, new_messages_acc=all_new_msgs)
                         logger.debug(f"[Code Analyst] Round {round_num} post-tool response:\n{response_text[:300]}...")
                         continue
                     history.append("Action: Forced tool validation failed.\nError: Analyst did not return a valid tool call.")
                     break
 
                 logger.info(f"[Code Analyst] Investigation complete in {round_num} rounds.")
-                return parsed_data
+                return parsed_data, all_new_msgs
 
             elif res_type == "tool_call":
                 tool_name = parsed_data["tool"]
@@ -343,7 +355,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                     compact=prompt_compact,
                 )
                 try:
-                    repaired_response = _analyst_llm_generate(llm, repair_prompt, temperature=0.0)
+                    repaired_response = _analyst_llm_generate(llm, repair_prompt, temperature=0.0, messages_history=msg_history, new_messages_acc=all_new_msgs)
                 except PromptTooLongError:
                     if prompt_compact:
                         raise
@@ -356,7 +368,7 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
                         memory_advice=memory_advice,
                         compact=True,
                     )
-                    repaired_response = _analyst_llm_generate(llm, repair_prompt, temperature=0.0)
+                    repaired_response = _analyst_llm_generate(llm, repair_prompt, temperature=0.0, messages_history=msg_history, new_messages_acc=all_new_msgs)
                 logger.debug(f"[Code Analyst] Round {round_num} repair response:\n{repaired_response[:300]}...")
                 repaired_type, repaired_data = parse_code_analyst_response(repaired_response)
                 if repaired_type == "final_report":
@@ -376,6 +388,6 @@ def run_code_analyst(state: Dict[str, Any], llm: UnifiedLLMClient, max_rounds: i
         "bug_class": "unknown",
         "confidence": "low",
         "evidence": ["Max analyst loop rounds reached without conclusion."],
-        "suggested_route": "semantic",  # Default to semantic so Generator Matrix will still try
+        "suggested_route": "semantic",
         "input_hypothesis": ["Max random limits"]
-    }
+    }, all_new_msgs

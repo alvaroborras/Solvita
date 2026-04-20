@@ -63,16 +63,18 @@ def generate_hack_candidate(state: "SolvitaState") -> Dict[str, Any]:
     )
 
     llm = UnifiedLLMClient(config)
-    analyst_report = run_code_analyst(state, llm, max_rounds=5, memory_advice=advice)
+    history = list(state.get("messages", []))
+    analyst_report, analyst_msgs = run_code_analyst(state, llm, max_rounds=5, memory_advice=advice, messages_history=history)
+    history.extend(analyst_msgs)
 
     logger.info("[Hack Node] Handing over to Cascading Router...")
-    route_used, generated_input, routing_log = cascading_execution_router(
-        state,
-        llm,
-        analyst_report,
+    route_used, generated_input, routing_log, router_msgs = cascading_execution_router(
+        state, llm, analyst_report,
         max_retries=MAX_ROUTER_RETRIES,
         memory_advice=advice,
+        messages_history=history,
     )
+    all_new_msgs = analyst_msgs + router_msgs
 
     full_execution_log = ["--- Router Execution Log ---"] + routing_log
     compile_failures = sum(1 for entry in routing_log if "Compilation Failed" in entry)
@@ -95,6 +97,7 @@ def generate_hack_candidate(state: "SolvitaState") -> Dict[str, Any]:
             "execution_log": full_execution_log,
             "compile_failures": compile_failures,
             "validator_rejection_reasons": structured_rejections,
+            "new_messages": all_new_msgs,
         }
 
     return {
@@ -108,6 +111,7 @@ def generate_hack_candidate(state: "SolvitaState") -> Dict[str, Any]:
         "execution_log": full_execution_log,
         "compile_failures": compile_failures,
         "validator_rejection_reasons": [],
+        "new_messages": all_new_msgs,
     }
 
 def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
@@ -135,6 +139,7 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
         }
 
     candidate = generate_hack_candidate(state)
+    candidate_msgs = candidate.get("new_messages", [])
     if candidate["generator_route_used"] == "failed" or not candidate["generated_input"]:
         return {
             "hack_round": candidate["hack_round"],
@@ -150,6 +155,7 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             "analyst_report": candidate["analyst_report"],
             "execution_log": candidate["execution_log"],
             "validator_rejection_reasons": candidate["validator_rejection_reasons"],
+            "messages": candidate_msgs,
         }
     
     tests_data = state.get('tests', {})
@@ -240,6 +246,7 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
             "compile_failures": compile_failures,
             "tests": updated_tests,
             "execution_log": candidate["execution_log"] + [f"Hack FAILED (Found {len(failures)} bugs). Pending reward settlement."],
+            "messages": candidate_msgs,
         }
     
     logger.info(f"Hack round {hack_round} target passed.")
@@ -260,4 +267,5 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
         "compile_failures": compile_failures,
         "tests": updated_tests,
         "execution_log": candidate["execution_log"] + [f"Hack round {hack_round} target passed. Pending reward settlement."],
+        "messages": candidate_msgs,
     }

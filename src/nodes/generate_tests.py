@@ -10,6 +10,7 @@ from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
 from src.memory import MemoryClient, MemoryNamespace
+from src.nodes._chat_utils import chat_with_history as _chat_with_history
 from src.memory.client import render_oracle_plan_to_prompt_payload, resolve_oracle_item_ids_by_family_ids
 from src.oracle.catalog import build_oracle_catalog
 from src.oracle.selector import build_rule_based_oracle_plan
@@ -76,12 +77,15 @@ def _generate_with_compact_retry(
     *args,
     _telemetry: Optional[Dict[str, Any]] = None,
     _stage: Optional[str] = None,
+    _messages_history: Optional[list] = None,
     **kwargs,
-) -> str:
+) -> tuple:
+    """Returns (response_text, new_messages)."""
+    history = _messages_history if _messages_history is not None else []
     prompt = prompt_builder(*args, compact=False, **kwargs)
     _update_prompt_telemetry(_telemetry, _stage, prompt)
     try:
-        return llm.generate(prompt)
+        return _chat_with_history(llm, history, prompt)
     except PromptTooLongError:
         compact_prompt = prompt_builder(*args, compact=True, **kwargs)
         _update_prompt_telemetry(_telemetry, _stage, compact_prompt)
@@ -91,7 +95,7 @@ def _generate_with_compact_retry(
             if _stage not in stages:
                 stages.append(_stage)
         logger.warning("[TestGen] Prompt exceeded max tokens, retrying with compact prompt")
-        return llm.generate(compact_prompt)
+        return _chat_with_history(llm, history, compact_prompt)
 
 
 def _compute_certification_ratio(certified_count: int, target_count: int) -> float:
@@ -799,6 +803,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     gen_feedback = ""
     val_feedback = ""
     validator_exe: Optional[Path] = None
+    all_new_messages: List[Dict[str, str]] = []
+    history = list(state.get("messages", []))
     oracle_telemetry: Dict[str, Any] = {
         "prompt_char_stats": {},
         "compact_retry_count": 0,
@@ -806,7 +812,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     }
 
     for attempt in range(1, max_iter + 1):
-        gen_response = _generate_with_compact_retry(
+        gen_response, gen_new_msgs = _generate_with_compact_retry(
             gen_llm,
             build_generator_prompt,
             problem_desc,
@@ -816,8 +822,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             memory_advice=generator_advice,
             _telemetry=oracle_telemetry,
             _stage="generator",
+            _messages_history=history,
         )
         llm_calls += 1
+        all_new_messages.extend(gen_new_msgs)
+        history.extend(gen_new_msgs)
         (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
         try:
             gen_data = parse_json_response(gen_response)
@@ -835,7 +844,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             (code_dir / f"generator_{attempt}.log").write_text(gen_log, encoding="utf-8")
             continue
 
-        val_response = _generate_with_compact_retry(
+        val_response, val_new_msgs = _generate_with_compact_retry(
             val_llm,
             build_validator_prompt,
             problem_desc,
@@ -844,8 +853,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             val_feedback,
             _telemetry=oracle_telemetry,
             _stage="validator",
+            _messages_history=history,
         )
         llm_calls += 1
+        all_new_messages.extend(val_new_msgs)
+        history.extend(val_new_msgs)
         logger.info(f"[GV] Validator response length: {len(val_response)}")
         (code_dir / f"validator_{attempt}_raw.txt").write_text(val_response, encoding="utf-8")
         try:
@@ -966,7 +978,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     if generated_inputs and not generated_outputs:
         checker_feedback = ""
         for attempt in range(1, max_iter + 1):
-            checker_response = _generate_with_compact_retry(
+            checker_response, chk_new_msgs = _generate_with_compact_retry(
                 chk_llm,
                 build_checker_prompt,
                 problem_desc,
@@ -975,8 +987,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 checker_feedback,
                 _telemetry=oracle_telemetry,
                 _stage="checker",
+                _messages_history=history,
             )
             llm_calls += 1
+            all_new_messages.extend(chk_new_msgs)
+            history.extend(chk_new_msgs)
             (code_dir / f"checker_{attempt}_raw.txt").write_text(checker_response, encoding="utf-8")
             try:
                 checker_data = parse_json_response(checker_response)
@@ -1026,7 +1041,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         best_partial_outputs: list = []
         for attempt in range(1, output_max_iter + 1):
             solver_attempt_count = attempt
-            solver_response = _generate_with_compact_retry(
+            solver_response, solver_new_msgs = _generate_with_compact_retry(
                 out_llm,
                 build_solver_prompt,
                 problem_desc, constraints, public_tests, oracle_advice,
@@ -1034,8 +1049,11 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 attempt=attempt,
                 _telemetry=oracle_telemetry,
                 _stage="solver",
+                _messages_history=history,
             )
             llm_calls += 1
+            all_new_messages.extend(solver_new_msgs)
+            history.extend(solver_new_msgs)
             (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
             try:
                 solver_data = parse_json_response(solver_response)
@@ -1430,6 +1448,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
     return {
         "tests": tests,
+        "messages": all_new_messages,
         "oracle_memory_decision": oracle_memory_decision,
         "oracle_event_metadata": build_oracle_event_payload(
             problem_hash="",
