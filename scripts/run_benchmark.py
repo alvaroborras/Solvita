@@ -237,8 +237,10 @@ def _run_single_manifest(
         "config_path": config_path,
         "benchmark_output_dir": str(output_dir),
         "solver_network": {"enabled": solver_network},
+        "workflow": {
+            "hacker_enabled": hacker_enabled,
+        },
         "trainable_memory": tm_config,
-        "hacker_enabled": hacker_enabled,
     }
     rows: List[Dict[str, Any]] = []
     worker_count = max(1, int(max_workers))

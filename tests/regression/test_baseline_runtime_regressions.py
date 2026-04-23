@@ -3,9 +3,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.graph.state import create_initial_state
 from src.nodes.compile_code import prepare_executable
 from src.nodes.phase_transition import phase_transition_node
-from src.nodes.routing import hack_outcome_routing
+from src.nodes.routing import hack_outcome_routing, status_routing
 
 
 def test_prepare_executable_returns_existing_binary_path_on_windows(tmp_path, monkeypatch):
@@ -64,13 +65,31 @@ def test_phase_transition_loops_hacker_failures_back_to_codegen():
     assert "messages" not in result
 
 
-def test_hack_outcome_routing_marks_terminal_failure_after_iteration_budget():
-    route = hack_outcome_routing(
+
+
+def test_create_initial_state_normalizes_workflow_config():
+    state = create_initial_state(
+        {"description": "demo", "public_tests": []},
         {
-            "hack_passed": False,
-            "iteration": 1,
-            "max_iterations": 1,
+            "max_iterations": 7,
+            "max_hack_rounds": 2,
+            "hacker_enabled": False,
+        },
+    )
+
+    assert state["config"]["workflow"]["max_iterations"] == 7
+    assert state["config"]["workflow"]["max_hack_rounds"] == 2
+    assert state["config"]["workflow"]["hacker_enabled"] is False
+
+
+def test_status_routing_uses_workflow_hacker_enabled_flag():
+    route = status_routing(
+        {
+            "status": "success",
+            "config": {
+                "workflow": {"hacker_enabled": False},
+            },
         }
     )
 
-    assert route == "terminal_failure"
+    assert route == "finish"

@@ -10,7 +10,6 @@ from typing import TypedDict, List, Dict, Any, Optional, Annotated
 
 import yaml
 from operator import add
-from langgraph.graph.message import add_messages
 
 
 # ========== Custom Reducers ==========
@@ -24,6 +23,13 @@ def merge_dict(left: Dict, right: Dict) -> Dict:
     result = dict(left)
     result.update(right)
     return result
+
+
+def overwrite_messages(left: List[Dict[str, str]], right: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    """Replace persisted transcript when nodes provide one."""
+    if right is None:
+        return left or []
+    return list(right)
 
 
 # ========== Nested Data Structures ==========
@@ -136,7 +142,7 @@ class SolvitaState(TypedDict):
     oracle_memory_decision: Annotated[Dict[str, Any], merge_dict]
 
     # -- LLM conversation history --
-    messages: Annotated[List[Dict[str, str]], add_messages]
+    messages: Annotated[List[Dict[str, str]], overwrite_messages]
 
     # -- Control flow --
     iteration: int
@@ -318,6 +324,20 @@ def _load_codegen_defaults() -> Dict[str, Any]:
 def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Apply defaults for nested runtime knobs (mutates a copy)."""
     cfg = dict(config)
+
+    workflow = cfg.get("workflow")
+    if not isinstance(workflow, dict):
+        workflow = {}
+    workflow_merged: Dict[str, Any] = {
+        "max_iterations": int(workflow.get("max_iterations", cfg.get("max_iterations", 5)) or 5),
+        "max_hack_rounds": int(workflow.get("max_hack_rounds", cfg.get("max_hack_rounds", 3)) or 3),
+        "hacker_enabled": bool(workflow.get("hacker_enabled", cfg.get("hacker_enabled", True))),
+    }
+    cfg["workflow"] = workflow_merged
+    cfg["max_iterations"] = workflow_merged["max_iterations"]
+    cfg["max_hack_rounds"] = workflow_merged["max_hack_rounds"]
+    cfg["hacker_enabled"] = workflow_merged["hacker_enabled"]
+
     sn = cfg.get("solver_network")
     if not isinstance(sn, dict):
         sn = {}

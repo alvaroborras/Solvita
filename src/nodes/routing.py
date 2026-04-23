@@ -4,7 +4,11 @@ from typing import Dict, Any
 
 
 def _hacker_enabled(state: Dict[str, Any]) -> bool:
-    return bool((state.get("config", {}) or {}).get("hacker_enabled", True))
+    config = (state.get("config", {}) or {})
+    workflow = (config.get("workflow", {}) or {}) if isinstance(config, dict) else {}
+    if "hacker_enabled" in workflow:
+        return bool(workflow.get("hacker_enabled", True))
+    return bool(config.get("hacker_enabled", True))
 
 
 def status_routing(state: Dict[str, Any]) -> str:

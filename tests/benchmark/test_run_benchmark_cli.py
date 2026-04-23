@@ -102,7 +102,39 @@ def test_run_single_manifest_repeat_resume_tracks_repeat_index(monkeypatch, tmp_
     assert summary["modes"]["solvita_pipeline"]["problem_count"] == 1
 
 
-def test_run_benchmark_writes_outputs(monkeypatch, tmp_path: Path):
+
+
+def test_run_single_manifest_maps_disable_hacker_into_workflow_config(monkeypatch, tmp_path: Path):
+    manifest = tmp_path / "manifest.jsonl"
+    payload = tmp_path / "payload.json"
+    manifest.write_text(json.dumps({"problem_id": "p1", "problem_payload_path": str(payload)}) + "\n", encoding="utf-8")
+    payload.write_text(json.dumps({"problem_id": "p1", "raw_problem": {}, "official_tests": []}), encoding="utf-8")
+
+    class Item:
+        def __init__(self, problem_id: str, problem_payload_path: str):
+            self.problem_id = problem_id
+            self.problem_payload_path = problem_payload_path
+
+    seen = {}
+    monkeypatch.setattr("scripts.run_benchmark.load_benchmark_manifest", lambda path: [Item("p1", str(payload))])
+
+    def fake_run_problem_modes(item, modes, config, repeat_index=1):
+        seen["config"] = config
+        return []
+
+    monkeypatch.setattr("scripts.run_benchmark._run_problem_modes", fake_run_problem_modes)
+
+    _run_single_manifest(
+        manifest=manifest,
+        output_dir=tmp_path / "out",
+        modes=["solvita_pipeline"],
+        config_path="config/models.yaml",
+        max_workers=1,
+        repeat=1,
+        hacker_enabled=False,
+    )
+
+    assert seen["config"]["workflow"]["hacker_enabled"] is False
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text("", encoding="utf-8")
 
