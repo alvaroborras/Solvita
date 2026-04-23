@@ -68,13 +68,16 @@ def common_mocks(monkeypatch):
     monkeypatch.setattr("src.nodes.hack_test.MemoryClient", lambda **kw: mock_mem)
     monkeypatch.setattr(
         "src.nodes.hack_test.run_code_analyst",
-        lambda *a, **k: {
-            "bug_class": "overflow",
-            "confidence": "high",
-            "evidence": "N=1e9 triggers int overflow in sum accumulation.",
-            "suggested_route": "semantic",
-            "suggested_fix": None,
-        },
+        lambda *a, **k: (
+            {
+                "bug_class": "overflow",
+                "confidence": "high",
+                "evidence": "N=1e9 triggers int overflow in sum accumulation.",
+                "suggested_route": "semantic",
+                "suggested_fix": None,
+            },
+            [],
+        ),
     )
     return mock_mem
 
@@ -122,7 +125,7 @@ class TestScenario1Break:
     def test_hack_test_returns_break_state(self, base_state, common_mocks, monkeypatch):
         monkeypatch.setattr(
             "src.nodes.hack_test.cascading_execution_router",
-            lambda *a, **k: ("semantic", "5\n1 2 3 4 5\n", ["Router: Semantic OK."]),
+            lambda *a, **k: ("semantic", "5\n1 2 3 4 5\n", ["Router: Semantic OK."], []),
         )
         wa_verdict = {
             "verdict": VerdictStatus.VALID_AND_BREAK.value,
@@ -158,19 +161,22 @@ class TestScenario1Break:
 
         captured = {}
 
-        def fake_analyst(state, llm, max_rounds=5, memory_advice=""):
+        def fake_analyst(state, llm, max_rounds=5, memory_advice="", messages_history=None, **kwargs):
             captured["analyst_advice"] = memory_advice
-            return {
-                "bug_class": "logic_branch",
-                "confidence": "medium",
-                "evidence": ["x"],
-                "suggested_route": "semantic",
-                "input_hypothesis": ["y"],
-            }
+            return (
+                {
+                    "bug_class": "logic_branch",
+                    "confidence": "medium",
+                    "evidence": ["x"],
+                    "suggested_route": "semantic",
+                    "input_hypothesis": ["y"],
+                },
+                [],
+            )
 
-        def fake_router(state, llm, analyst_report, max_retries=3, memory_advice=""):
+        def fake_router(state, llm, analyst_report, max_retries=3, memory_advice="", messages_history=None, **kwargs):
             captured["router_advice"] = memory_advice
-            return "semantic", "1\n42\n", ["Router: Semantic OK."]
+            return "semantic", "1\n42\n", ["Router: Semantic OK."], []
 
         monkeypatch.setattr("src.nodes.hack_test.run_code_analyst", fake_analyst)
         monkeypatch.setattr("src.nodes.hack_test.cascading_execution_router", fake_router)
@@ -236,7 +242,7 @@ class TestScenario2Safe:
         }
         monkeypatch.setattr(
             "src.nodes.hack_test.cascading_execution_router",
-            lambda *a, **k: ("stress", "3\n1 2 3\n", ["Router: Stress OK."]),
+            lambda *a, **k: ("stress", "3\n1 2 3\n", ["Router: Stress OK."], []),
         )
         safe_verdict = {
             "verdict": VerdictStatus.VALID_BUT_SAFE.value,
@@ -302,6 +308,7 @@ class TestScenario3GenFailed:
                     "Router: Semantic attempt 3 failed (compile error)",
                     "Router: Stress generator fallback also failed (empty output)",
                 ],
+                [],
             ),
         )
         result = hack_test_node(base_state)
@@ -341,16 +348,16 @@ class TestScenario4CascadingFallback:
         # Semantic generator: always produces broken C++ code
         monkeypatch.setattr(
             "src.nodes.cascading_router.generate_semantic_test_program",
-            lambda *a, **k: "NOT VALID C++",
+            lambda *a, **k: ("NOT VALID C++", []),
         )
         monkeypatch.setattr(
             "src.nodes.cascading_router.repair_semantic_test_program",
-            lambda *a, **k: "NOT VALID C++",
+            lambda *a, **k: ("NOT VALID C++", []),
         )
-        # Stress generator: produces valid code 
+        # Stress generator: produces valid code
         monkeypatch.setattr(
             "src.nodes.cascading_router.generate_stress_test_program",
-            lambda *a, **k: "VALID C++",
+            lambda *a, **k: ("VALID C++", []),
         )
         # execute_generator_and_validate: fail for semantic, succeed for stress
         call_count = {"n": 0}
@@ -366,7 +373,7 @@ class TestScenario4CascadingFallback:
         from src.nodes.cascading_router import cascading_execution_router
         llm = MagicMock()
         analyst_report = {"suggested_route": "semantic"}
-        route, inp, log = cascading_execution_router(
+        route, inp, log, _msgs = cascading_execution_router(
             base_state, llm, analyst_report, max_retries=3
         )
 
@@ -382,7 +389,16 @@ class TestScenario4CascadingFallback:
         first_attempt_calls = []
         repair_calls = []
 
-        def fake_semantic(state, llm, analyst_report, memory_advice="", previous_attempt_issues="", previous_generated_input=""):
+        def fake_semantic(
+            state,
+            llm,
+            analyst_report,
+            memory_advice="",
+            previous_attempt_issues="",
+            previous_generated_input="",
+            messages_history=None,
+            **kwargs,
+        ):
             first_attempt_calls.append(
                 {
                     "memory_advice": memory_advice,
@@ -390,7 +406,7 @@ class TestScenario4CascadingFallback:
                     "previous_generated_input": previous_generated_input,
                 }
             )
-            return "VALID C++"
+            return "VALID C++", []
 
         def fake_repair_semantic(
             state,
@@ -402,6 +418,8 @@ class TestScenario4CascadingFallback:
             previous_attempt_issues="",
             previous_generated_input="",
             memory_advice="",
+            messages_history=None,
+            **kwargs,
         ):
             repair_calls.append(
                 {
@@ -413,7 +431,7 @@ class TestScenario4CascadingFallback:
                     "previous_generated_input": previous_generated_input,
                 }
             )
-            return "VALID C++"
+            return "VALID C++", []
 
         responses = iter(
             [
@@ -433,7 +451,7 @@ class TestScenario4CascadingFallback:
 
         llm = MagicMock()
         analyst_report = {"suggested_route": "semantic"}
-        route, inp, log = cascading_execution_router(
+        route, inp, log, _msgs = cascading_execution_router(
             base_state, llm, analyst_report, max_retries=3, memory_advice="prefer repeats"
         )
 
@@ -451,7 +469,16 @@ class TestScenario4CascadingFallback:
         generated_sources = []
         repaired_calls = []
 
-        def fake_generate_semantic(state, llm, analyst_report, memory_advice="", previous_attempt_issues="", previous_generated_input=""):
+        def fake_generate_semantic(
+            state,
+            llm,
+            analyst_report,
+            memory_advice="",
+            previous_attempt_issues="",
+            previous_generated_input="",
+            messages_history=None,
+            **kwargs,
+        ):
             generated_sources.append(
                 {
                     "memory_advice": memory_advice,
@@ -459,7 +486,7 @@ class TestScenario4CascadingFallback:
                     "previous_generated_input": previous_generated_input,
                 }
             )
-            return "SEMANTIC_V1"
+            return "SEMANTIC_V1", []
 
         def fake_repair_semantic(
             state,
@@ -471,6 +498,8 @@ class TestScenario4CascadingFallback:
             previous_attempt_issues="",
             previous_generated_input="",
             memory_advice="",
+            messages_history=None,
+            **kwargs,
         ):
             repaired_calls.append(
                 {
@@ -482,7 +511,7 @@ class TestScenario4CascadingFallback:
                     "memory_advice": memory_advice,
                 }
             )
-            return "SEMANTIC_V2_PATCHED"
+            return "SEMANTIC_V2_PATCHED", []
 
         responses = iter(
             [
@@ -502,7 +531,7 @@ class TestScenario4CascadingFallback:
 
         llm = MagicMock()
         analyst_report = {"suggested_route": "semantic"}
-        route, inp, log = cascading_execution_router(
+        route, inp, log, _msgs = cascading_execution_router(
             base_state, llm, analyst_report, max_retries=3, memory_advice="prefer repeated prefixes"
         )
 
@@ -524,11 +553,11 @@ class TestScenario4CascadingFallback:
 
         def fake_generate_semantic(*args, **kwargs):
             semantic_calls["generate"] += 1
-            return "SEMANTIC_FAIL_GENERATE"
+            return "SEMANTIC_FAIL_GENERATE", []
 
         def fake_repair_semantic(*args, **kwargs):
             semantic_calls["repair"] += 1
-            return f"SEMANTIC_FAIL_REPAIR_{semantic_calls['repair']}"
+            return f"SEMANTIC_FAIL_REPAIR_{semantic_calls['repair']}", []
 
         monkeypatch.setattr(
             "src.nodes.cascading_router.generate_semantic_test_program",
@@ -541,7 +570,7 @@ class TestScenario4CascadingFallback:
 
         def fake_generate_stress(*args, **kwargs):
             stress_calls["n"] += 1
-            return "STRESS_V1"
+            return "STRESS_V1", []
 
         def fake_repair_stress(
             state,
@@ -551,6 +580,8 @@ class TestScenario4CascadingFallback:
             failure_reason,
             previous_attempt_issues="",
             previous_generated_input="",
+            messages_history=None,
+            **kwargs,
         ):
             repaired_stress_calls.append(
                 {
@@ -561,7 +592,7 @@ class TestScenario4CascadingFallback:
                     "previous_generated_input": previous_generated_input,
                 }
             )
-            return "STRESS_V2_PATCHED"
+            return "STRESS_V2_PATCHED", []
 
         def fake_execute(cpp_source, validator_exe, problem_limits):
             if str(cpp_source).startswith("SEMANTIC_FAIL_"):
@@ -580,7 +611,7 @@ class TestScenario4CascadingFallback:
 
         llm = MagicMock()
         analyst_report = {"suggested_route": "semantic"}
-        route, inp, log = cascading_execution_router(
+        route, inp, log, _msgs = cascading_execution_router(
             base_state, llm, analyst_report, max_retries=3
         )
 
@@ -601,11 +632,11 @@ class TestScenario4CascadingFallback:
         """
         monkeypatch.setattr(
             "src.nodes.cascading_router.generate_anti_hash_test_program",
-            lambda *a, **k: "BAD HASH CPP",
+            lambda *a, **k: ("BAD HASH CPP", []),
         )
         monkeypatch.setattr(
             "src.nodes.cascading_router.generate_semantic_test_program",
-            lambda *a, **k: "GOOD SEMANTIC CPP",
+            lambda *a, **k: ("GOOD SEMANTIC CPP", []),
         )
 
         def fake_execute(cpp_source, validator_exe, problem_limits):
@@ -621,7 +652,7 @@ class TestScenario4CascadingFallback:
         from src.nodes.cascading_router import cascading_execution_router
         llm = MagicMock()
         analyst_report = {"suggested_route": "anti_hash"}
-        route, inp, log = cascading_execution_router(
+        route, inp, log, _msgs = cascading_execution_router(
             base_state, llm, analyst_report, max_retries=3
         )
 

@@ -25,13 +25,16 @@ def test_hack_test_surfaces_structured_generation_failure(monkeypatch):
     monkeypatch.setattr("src.nodes.hack_test.MemoryClient", lambda **kw: DummyMemory())
     monkeypatch.setattr(
         "src.nodes.hack_test.run_code_analyst",
-        lambda *a, **k: {
-            "bug_class": "unknown",
-            "confidence": "low",
-            "evidence": [],
-            "suggested_route": "semantic",
-            "input_hypothesis": [],
-        },
+        lambda *a, **k: (
+            {
+                "bug_class": "unknown",
+                "confidence": "low",
+                "evidence": [],
+                "suggested_route": "semantic",
+                "input_hypothesis": [],
+            },
+            [],
+        ),
     )
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
@@ -42,6 +45,7 @@ def test_hack_test_surfaces_structured_generation_failure(monkeypatch):
                 'ROUTER_META: {"failure_kind": "validator_rejected", "failure_reason": "Strings must be pairwise distinct"}',
                 "Router: CRITICAL. Stress generator fallback also failed: Validation Failed: duplicate",
             ],
+            [],
         ),
     )
 

@@ -82,7 +82,11 @@ def _call_feedback_with_history(
         **kwargs,
     )
     from src.nodes._chat_utils import normalize_chat_history_result
-    return normalize_chat_history_result(result)
+
+    if isinstance(result, tuple) and len(result) == 3:
+        return normalize_chat_history_result(result)
+    # No conversation threading: ``llm.generate`` returns plain text.
+    return str(result), [], []
 
 
 def analyze_feedback_node(state: "SolvitaState") -> Dict[str, Any]:
@@ -228,7 +232,7 @@ def _analyze_compilation_errors(
     compaction_context: Optional[Dict[str, Any]] = None,
     compaction_config: Optional[Dict[str, Any]] = None,
 ) -> tuple:
-    result = _call_feedback_with_history(
+    analysis, new_msgs, persisted_messages = _call_feedback_with_history(
         llm,
         _build_compilation_error_prompt,
         code,
@@ -238,11 +242,7 @@ def _analyze_compilation_errors(
         _compaction_context=compaction_context,
         _compaction_config=compaction_config,
     )
-    if messages_history is None:
-        analysis = result
-        new_msgs = []
-    else:
-        analysis, new_msgs, persisted_messages = result
+    if messages_history is not None:
         messages_history[:] = persisted_messages
     feedback = {
         'error_type': 'compilation',

@@ -23,35 +23,60 @@ def make_search_replace_block(search: str, replace: str) -> str:
     )
 
 
+def _prep_llm(llm: MagicMock) -> None:
+    """Generators call ``llm.chat`` with history compaction; stubs need stable model fields."""
+    llm.model = "gpt-test-model"
+    llm.max_tokens = 8192
+
+
+def _last_user_prompt(llm: MagicMock) -> str:
+    messages = llm.chat.call_args[0][0]
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return str(m.get("content", ""))
+    return ""
+
+
+def _nth_user_prompt(llm: MagicMock, n: int) -> str:
+    messages = llm.chat.call_args_list[n][0][0]
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return str(m.get("content", ""))
+    return ""
+
+
 @pytest.fixture
 def mock_state():
     return {
         "problem": {
             "description": "Find sum",
-            "constraints": {"N": "1000", "A_i": "-1e9 to 1e9"}
+            "constraints": {"N": "1000", "A_i": "-1e9 to 1e9"},
         }
     }
+
 
 @pytest.fixture
 def mock_report():
     return {
         "bug_class": "overflow",
-        "input_hypothesis": ["Very large negative numbers"]
+        "input_hypothesis": ["Very large negative numbers"],
     }
+
 
 def test_semantic_generator_clean(mock_state, mock_report):
     llm = MagicMock()
-    # Mock LLM wraps in markdown
-    llm.generate.return_value = "```cpp\n#include <iostream>\nint main(){ std::cout << 1; return 0; }\n```"
-    
-    code = generate_semantic_test_program(mock_state, llm, mock_report)
+    _prep_llm(llm)
+    llm.chat.return_value = "```cpp\n#include <iostream>\nint main(){ std::cout << 1; return 0; }\n```"
+
+    code, _msgs = generate_semantic_test_program(mock_state, llm, mock_report)
     assert "#include <iostream>" in code
     assert "```" not in code
 
 
 def test_semantic_generator_includes_memory_advice(mock_state, mock_report):
     llm = MagicMock()
-    llm.generate.return_value = "int main(){ return 0; }"
+    _prep_llm(llm)
+    llm.chat.return_value = "int main(){ return 0; }"
 
     generate_semantic_test_program(
         mock_state,
@@ -60,14 +85,15 @@ def test_semantic_generator_includes_memory_advice(mock_state, mock_report):
         memory_advice="Prioritize duplicated-prefix strings.",
     )
 
-    prompt = llm.generate.call_args[0][0]
+    prompt = _last_user_prompt(llm)
     assert "HACKER STRATEGY ADVICE" in prompt
     assert "duplicated-prefix strings" in prompt
 
 
 def test_semantic_generator_uses_canonical_constraints_and_retry_feedback(mock_report):
     llm = MagicMock()
-    llm.generate.return_value = "int main(){ return 0; }"
+    _prep_llm(llm)
+    llm.chat.return_value = "int main(){ return 0; }"
     state = {
         "problem": {
             "description": "Original description",
@@ -96,26 +122,28 @@ def test_semantic_generator_uses_canonical_constraints_and_retry_feedback(mock_r
         previous_generated_input="3 2\nAA\nAA\nBB\n",
     )
 
-    prompt = llm.generate.call_args[0][0]
+    prompt = _last_user_prompt(llm)
     assert "1 <= n * m <= 10^6" in prompt
     assert "strings are pairwise distinct" in prompt
     assert "Validation Failed: duplicate found at line 3" in prompt
     assert "3 2" in prompt
     assert "VALIDITY-FIRST" in prompt
 
+
 def test_semantic_generator_fallback(mock_state, mock_report):
     llm = MagicMock()
-    # Mock LLM generates dangerous syscalls
-    llm.generate.return_value = '#include <unistd.h>\nint main(){ system("rm -rf"); return 0; }'
-    
-    code = generate_semantic_test_program(mock_state, llm, mock_report)
+    _prep_llm(llm)
+    llm.chat.return_value = '#include <unistd.h>\nint main(){ system("rm -rf"); return 0; }'
+
+    code, _msgs = generate_semantic_test_program(mock_state, llm, mock_report)
     assert "return 1;" in code  # fallback code
     assert "system" not in code
 
 
 def test_semantic_retry_builds_checklist_then_patch_from_previous_code(mock_report):
     llm = MagicMock()
-    llm.generate.side_effect = [
+    _prep_llm(llm)
+    llm.chat.side_effect = [
         """```json
         {
           "must_fix": ["enforce pairwise distinctness"],
@@ -151,7 +179,7 @@ int main() {
 }
 """
 
-    patched = repair_semantic_test_program(
+    patched, _msgs = repair_semantic_test_program(
         state,
         llm,
         mock_report,
@@ -164,9 +192,9 @@ int main() {
     )
 
     assert 'vector<string> s = {"AA", "AB", "BB"};' in patched
-    assert llm.generate.call_count == 2
-    checklist_prompt = llm.generate.call_args_list[0].args[0]
-    patch_prompt = llm.generate.call_args_list[1].args[0]
+    assert llm.chat.call_count == 2
+    checklist_prompt = _nth_user_prompt(llm, 0)
+    patch_prompt = _nth_user_prompt(llm, 1)
     assert "must_fix" in checklist_prompt
     assert "validator_rejected" in checklist_prompt
     assert "duplicate strings" in checklist_prompt
@@ -178,7 +206,8 @@ int main() {
 
 def test_semantic_retry_preserves_old_code_when_patch_does_not_apply(mock_report):
     llm = MagicMock()
-    llm.generate.side_effect = [
+    _prep_llm(llm)
+    llm.chat.side_effect = [
         '{"must_fix":["enforce pairwise distinctness"],"do_not_regress":["keep length = m"],"attack_goal":["preserve attack shape"]}',
         make_search_replace_block(
             'vector<string> s = {"XX", "XX"};',
@@ -203,7 +232,7 @@ int main() {
 }
 """
 
-    patched = repair_semantic_test_program(
+    patched, _msgs = repair_semantic_test_program(
         state,
         llm,
         mock_report,
@@ -216,27 +245,32 @@ int main() {
 
     assert patched == previous_code
 
+
 def test_stress_generator_clean(mock_state):
     llm = MagicMock()
-    llm.generate.return_value = '```\n#include <random>\nint main(){ return 0; }\n```'
-    
-    code = generate_stress_test_program(mock_state, llm)
+    _prep_llm(llm)
+    llm.chat.return_value = '```\n#include <random>\nint main(){ return 0; }\n```'
+
+    code, _msgs = generate_stress_test_program(mock_state, llm)
     assert "#include <random>" in code
     assert "```" not in code
 
+
 def test_stress_generator_includes_random_prompt(mock_state):
     llm = MagicMock()
-    llm.generate.return_value = "int main(){}"
+    _prep_llm(llm)
+    llm.chat.return_value = "int main(){}"
     generate_stress_test_program(mock_state, llm)
-    
-    prompt = llm.generate.call_args[0][0]
+
+    prompt = _last_user_prompt(llm)
     assert "<random>" in prompt
     assert "std::mt19937_64" in prompt
 
 
 def test_stress_generator_uses_canonical_input_constraints():
     llm = MagicMock()
-    llm.generate.return_value = "int main(){}"
+    _prep_llm(llm)
+    llm.chat.return_value = "int main(){}"
     state = {
         "problem": {
             "description": "Original description",
@@ -254,14 +288,15 @@ def test_stress_generator_uses_canonical_input_constraints():
     }
 
     generate_stress_test_program(state, llm)
-    prompt = llm.generate.call_args[0][0]
+    prompt = _last_user_prompt(llm)
     assert "1 <= n * m <= 10^6" in prompt
     assert "pairwise distinct" in prompt
 
 
 def test_stress_retry_uses_checklist_then_patch():
     llm = MagicMock()
-    llm.generate.side_effect = [
+    _prep_llm(llm)
+    llm.chat.side_effect = [
         '{"must_fix":["ensure all strings have length m"],"do_not_regress":["keep output size near upper bound"],"attack_goal":["preserve large random case"]}',
         make_search_replace_block(
             'cout << "AAA\\n";',
@@ -289,7 +324,7 @@ int main() {
 }
 """
 
-    patched = repair_stress_test_program(
+    patched, _msgs = repair_stress_test_program(
         state,
         llm,
         last_generator_code=previous_code,
@@ -300,9 +335,9 @@ int main() {
     )
 
     assert 'cout << "AAB\\n";' in patched
-    assert llm.generate.call_count == 2
-    checklist_prompt = llm.generate.call_args_list[0].args[0]
-    patch_prompt = llm.generate.call_args_list[1].args[0]
+    assert llm.chat.call_count == 2
+    checklist_prompt = _nth_user_prompt(llm, 0)
+    patch_prompt = _nth_user_prompt(llm, 1)
     assert "must_fix" in checklist_prompt
     assert "string length not matching m" in checklist_prompt
     assert "SEARCH/REPLACE" in patch_prompt
@@ -311,24 +346,28 @@ int main() {
 
 def test_anti_hash_generator_clean(mock_state, mock_report):
     llm = MagicMock()
-    llm.generate.return_value = '#include <string>\nint main(){ return 0; }'
-    
-    code = generate_anti_hash_test_program(mock_state, llm, mock_report)
+    _prep_llm(llm)
+    llm.chat.return_value = '#include <string>\nint main(){ return 0; }'
+
+    code, _msgs = generate_anti_hash_test_program(mock_state, llm, mock_report)
     assert "#include <string>" in code
+
 
 def test_anti_hash_generator_includes_collision_prompt(mock_state, mock_report):
     llm = MagicMock()
-    llm.generate.return_value = "int main(){}"
+    _prep_llm(llm)
+    llm.chat.return_value = "int main(){}"
     generate_anti_hash_test_program(mock_state, llm, mock_report)
-    
-    prompt = llm.generate.call_args[0][0]
+
+    prompt = _last_user_prompt(llm)
     assert "collision derivation algorithm" in prompt
     assert "Thue-Morse" in prompt
 
 
 def test_anti_hash_generator_uses_canonical_input_constraints(mock_report):
     llm = MagicMock()
-    llm.generate.return_value = "int main(){}"
+    _prep_llm(llm)
+    llm.chat.return_value = "int main(){}"
     state = {
         "problem": {
             "description": "Original description",
@@ -346,6 +385,6 @@ def test_anti_hash_generator_uses_canonical_input_constraints(mock_report):
     }
 
     generate_anti_hash_test_program(state, llm, mock_report)
-    prompt = llm.generate.call_args[0][0]
+    prompt = _last_user_prompt(llm)
     assert "1 <= n <= 10^5" in prompt
     assert "only lowercase letters" in prompt

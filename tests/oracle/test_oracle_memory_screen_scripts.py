@@ -1,15 +1,18 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path("<workspace>/.worktrees/oracle-redesign")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_SCRIPT = REPO_ROOT / "scripts" / "run_oracle_memory_full_screen.sh"
 STATUS_SCRIPT = REPO_ROOT / "scripts" / "check_oracle_memory_full_status.sh"
 
 
 def _base_env(tmp_path: Path) -> dict[str, str]:
+    dataset_path = tmp_path / "dummy_dataset.jsonl"
+    dataset_path.write_text('{"id":"p1"}\n', encoding="utf-8")
     env = os.environ.copy()
     env.update(
         {
@@ -20,11 +23,12 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
             "CHECKPOINT_DIR": str(tmp_path / "data" / "checkpoints_oracle_memory_full"),
             "ORACLE_MEMORY_OUTPUT_DIR": str(tmp_path / "data" / "oracle_memory_models"),
             "SCRIPT_TRAIN": str(REPO_ROOT / "scripts" / "train_oracle.py"),
-            "PYTHON_BIN": "<home>/miniconda3.bak_2026-01-04_163412/envs/solvita/bin/python",
-            "DATASET": "<workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl",
+            "PYTHON_BIN": sys.executable,
+            "DATASET": str(dataset_path),
             "DRY_RUN": "1",
             "SESSION_NAME": "oracle-memory-full-test",
             "SNAPSHOT_ID": "oracle_memory_full_test",
+            "LLM_API_KEY": "test-key-for-dry-run-scripts",
         }
     )
     return env

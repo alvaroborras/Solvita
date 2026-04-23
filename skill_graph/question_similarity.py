@@ -1,9 +1,9 @@
 """
 Question similarity Sim(q_new, q_i) for retrieving relevant Q-nodes.
 
-Semantic similarity for problem text uses the OpenAI embedding API
-(``text-embedding-3-small``) via the configured Azure endpoint, with a
-thread-safe LRU cache to avoid redundant API calls.
+Semantic similarity for problem text uses a configured embedding backend
+(Azure OpenAI AAD, OpenAI-compatible HTTP ``/v1/embeddings``, or local
+``sentence_transformers``), with a thread-safe LRU cache to avoid redundant API calls.
 
 加权和
 -------
@@ -17,6 +17,9 @@ Sim = problem_semantic_weight · Sim_problem + tag_jaccard_weight · Jaccard(tag
 环境变量
 --------
 - ``SOLVITA_EMBEDDING_MODEL``：OpenAI embedding 模型名（默认 ``text-embedding-3-small``）。
+- ``SOLVITA_EMBEDDING_OPENAI_BASE_URL`` / ``SOLVITA_EMBEDDING_OPENAI_API_KEY``：当 ``provider: openai_compatible`` 时，
+  覆盖 ``embedding.openai_compatible`` 中的 ``base_url`` / ``api_key``；未设置 ``api_key`` 时可回退 ``SOLVITA_API_KEY``。
+- ``SOLVITA_EMBEDDING_HTTP_MAX_RETRIES``：覆盖 ``embedding.http_max_retries``（HTTP 嵌入客户端，默认 5）。
 
 MS 边初始化复用同一模型与同一套「标签句 + 逻辑文本」余弦思路，见
 ``ms_init_*`` / ``encode_l2_normalized_batch``。
@@ -78,11 +81,14 @@ class EmbeddingConfig:
     provider: str
     model: str
     cache_size: int
+    http_max_retries: int
     azure_base_url: str
     azure_tenant_id: str
     azure_scope: str
     azure_api_version: str
     st_device: str
+    openapi_base_url: str = ""
+    openapi_api_key: str = ""
 
 
 def resolve_embedding_config() -> EmbeddingConfig:
@@ -94,6 +100,8 @@ def resolve_embedding_config() -> EmbeddingConfig:
         or emb.get("provider")
         or "azure_openai"
     ).strip().lower()
+    if provider == "openai":
+        provider = "openai_compatible"
 
     model = str(
         os.environ.get("SOLVITA_EMBEDDING_MODEL")
@@ -110,6 +118,29 @@ def resolve_embedding_config() -> EmbeddingConfig:
         cache_size = max(1024, int(cache_size_raw))
     except (TypeError, ValueError):
         cache_size = 32768
+
+    emb_http = emb.get("http") if isinstance(emb.get("http"), dict) else {}
+    http_retries_raw = (
+        os.environ.get("SOLVITA_EMBEDDING_HTTP_MAX_RETRIES")
+        or emb.get("http_max_retries")
+        or emb_http.get("max_retries")
+        or 5
+    )
+    try:
+        http_max_retries = max(0, int(http_retries_raw))
+    except (TypeError, ValueError):
+        http_max_retries = 5
+
+    oc = emb.get("openai_compatible") if isinstance(emb.get("openai_compatible"), dict) else {}
+    openapi_base_url = str(
+        os.environ.get("SOLVITA_EMBEDDING_OPENAI_BASE_URL") or oc.get("base_url") or ""
+    ).strip()
+    openapi_api_key = str(
+        os.environ.get("SOLVITA_EMBEDDING_OPENAI_API_KEY")
+        or oc.get("api_key")
+        or os.environ.get("SOLVITA_API_KEY")
+        or ""
+    ).strip()
 
     azure = emb.get("azure") if isinstance(emb.get("azure"), dict) else {}
     azure_base_url = str(
@@ -149,11 +180,14 @@ def resolve_embedding_config() -> EmbeddingConfig:
         provider=provider,
         model=model,
         cache_size=cache_size,
+        http_max_retries=http_max_retries,
         azure_base_url=azure_base_url,
         azure_tenant_id=azure_tenant_id,
         azure_scope=azure_scope,
         azure_api_version=azure_api_version,
         st_device=st_device,
+        openapi_base_url=openapi_base_url,
+        openapi_api_key=openapi_api_key,
     )
 
 
@@ -167,8 +201,18 @@ _EMB_MODEL = _EMB_CONFIG.model
 _EMB_CACHE_SIZE = _EMB_CONFIG.cache_size
 
 
+def _normalize_openai_compatible_base_url(base_url: str) -> str:
+    """Ensure base_url is suitable for ``openai.OpenAI`` (…/v1 suffix)."""
+    s = (base_url or "").strip().rstrip("/")
+    if not s:
+        return ""
+    if s.endswith("/v1"):
+        return s
+    return f"{s}/v1"
+
+
 def _get_embedding_client():
-    """Return a shared Azure OpenAI embedding client."""
+    """Return a shared HTTP embedding client (Azure OpenAI AAD or OpenAI-compatible)."""
     global _EMB_CLIENT
     if _EMB_CLIENT is not None:
         return _EMB_CLIENT
@@ -176,22 +220,46 @@ def _get_embedding_client():
         if _EMB_CLIENT is not None:
             return _EMB_CLIENT
         import openai
-        from azure.identity import AzureCliCredential, get_bearer_token_provider
 
-        credential = AzureCliCredential(tenant_id=_EMB_CONFIG.azure_tenant_id)
-        token_provider = get_bearer_token_provider(credential, _EMB_CONFIG.azure_scope)
+        retries = int(getattr(_EMB_CONFIG, "http_max_retries", 5) or 5)
 
-        base_url = _EMB_CONFIG.azure_base_url.rstrip("/") + "/"
-        if not base_url.endswith("openai/"):
-            base_url = base_url + "openai/"
+        if _EMB_CONFIG.provider == "azure_openai":
+            from azure.identity import AzureCliCredential, get_bearer_token_provider
 
-        _EMB_CLIENT = openai.AzureOpenAI(
-            api_version=_EMB_CONFIG.azure_api_version,
-            base_url=base_url,
-            azure_ad_token_provider=token_provider,
-            max_retries=5,
+            credential = AzureCliCredential(tenant_id=_EMB_CONFIG.azure_tenant_id)
+            token_provider = get_bearer_token_provider(credential, _EMB_CONFIG.azure_scope)
+
+            base_url = _EMB_CONFIG.azure_base_url.rstrip("/") + "/"
+            if not base_url.endswith("openai/"):
+                base_url = base_url + "openai/"
+
+            _EMB_CLIENT = openai.AzureOpenAI(
+                api_version=_EMB_CONFIG.azure_api_version,
+                base_url=base_url,
+                azure_ad_token_provider=token_provider,
+                max_retries=retries,
+            )
+            return _EMB_CLIENT
+
+        if _EMB_CONFIG.provider == "openai_compatible":
+            bu = _normalize_openai_compatible_base_url(_EMB_CONFIG.openapi_base_url)
+            if not bu or not _EMB_CONFIG.openapi_api_key:
+                raise RuntimeError(
+                    "embedding.provider is 'openai_compatible' but base_url or api_key is missing. "
+                    "Set embedding.openai_compatible.base_url / api_key in config/models.yaml, or "
+                    "SOLVITA_EMBEDDING_OPENAI_BASE_URL / SOLVITA_EMBEDDING_OPENAI_API_KEY "
+                    "(api_key may fall back to SOLVITA_API_KEY)."
+                )
+            _EMB_CLIENT = openai.OpenAI(
+                base_url=bu,
+                api_key=_EMB_CONFIG.openapi_api_key,
+                max_retries=retries,
+            )
+            return _EMB_CLIENT
+
+        raise RuntimeError(
+            f"embedding.provider {_EMB_CONFIG.provider!r} does not use the HTTP embedding client"
         )
-        return _EMB_CLIENT
 
 
 def _get_sentence_transformer_model():
@@ -230,14 +298,14 @@ def _embed_text(text: str) -> np.ndarray:
             model.encode([text], convert_to_numpy=True, normalize_embeddings=False)[0],
             dtype=np.float64,
         )
-    elif _EMB_CONFIG.provider == "azure_openai":
+    elif _EMB_CONFIG.provider in ("azure_openai", "openai_compatible"):
         client = _get_embedding_client()
         resp = client.embeddings.create(model=_EMB_MODEL, input=text)
         vec = np.asarray(resp.data[0].embedding, dtype=np.float64)
     else:
         raise ValueError(
             f"Unsupported embedding provider: {_EMB_CONFIG.provider!r}. "
-            "Use 'azure_openai' or 'sentence_transformers'."
+            "Use 'azure_openai', 'openai_compatible', or 'sentence_transformers'."
         )
     with _EMB_CACHE_LOCK:
         _EMB_CACHE[text] = vec
@@ -267,9 +335,15 @@ def warmup_embedding_cache(texts: List[str], batch_size: int = 256) -> int:
                     embedded += 1
         return embedded
 
+    if _EMB_CONFIG.provider not in ("azure_openai", "openai_compatible"):
+        raise ValueError(
+            f"Unsupported embedding provider: {_EMB_CONFIG.provider!r}. "
+            "Use 'azure_openai', 'openai_compatible', or 'sentence_transformers'."
+        )
+
     client = _get_embedding_client()
     for i in range(0, len(to_embed), batch_size):
-        batch = to_embed[i: i + batch_size]
+        batch = to_embed[i : i + batch_size]
         resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
         with _EMB_CACHE_LOCK:
             for d in sorted(resp.data, key=lambda x: x.index):
@@ -367,13 +441,18 @@ def encode_l2_normalized_batch(
             )
             for row in embs:
                 all_embs.append(row)
-    else:
+    elif _EMB_CONFIG.provider in ("azure_openai", "openai_compatible"):
         client = _get_embedding_client()
         for i in range(0, len(safe), eff_bs):
             batch = safe[i : i + eff_bs]
             resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
             for d in sorted(resp.data, key=lambda x: x.index):
                 all_embs.append(d.embedding)
+    else:
+        raise ValueError(
+            f"Unsupported embedding provider: {_EMB_CONFIG.provider!r}. "
+            "Use 'azure_openai', 'openai_compatible', or 'sentence_transformers'."
+        )
     arr = np.asarray(all_embs, dtype=np.float64)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-12)

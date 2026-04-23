@@ -12,7 +12,10 @@ def base_mocks(monkeypatch):
     mock_mem = MagicMock()
     mock_mem.get_injection.return_value = ("advice", ["id1"])
     monkeypatch.setattr("src.nodes.hack_test.MemoryClient", lambda **kw: mock_mem)
-    monkeypatch.setattr("src.nodes.hack_test.run_code_analyst", lambda *a, **k: {"bug_class": "overflow"})
+    monkeypatch.setattr(
+        "src.nodes.hack_test.run_code_analyst",
+        lambda *a, **k: ({"bug_class": "overflow"}, []),
+    )
     return mock_mem
 
 @pytest.fixture
@@ -31,7 +34,12 @@ def test_router_failure_returns_structured_rejections(mock_state, base_mocks, mo
     """GEN_FAILED path: validator_rejection_reasons should be a list of dicts."""
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
-        lambda *a, **k: ("failed", "", ["Router: Anti-Hash failed (compile error)", "Router: Semantic failed (validator rejected)"])
+        lambda *a, **k: (
+            "failed",
+            "",
+            ["Router: Anti-Hash failed (compile error)", "Router: Semantic failed (validator rejected)"],
+            [],
+        ),
     )
     result = hack_test_node(mock_state)
 
@@ -53,7 +61,7 @@ def test_target_break_writes_all_new_state_fields(mock_state, base_mocks, monkey
     """BREAK path: all three new state contract fields must be written correctly."""
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
-        lambda *a, **k: ("semantic", "100\n", ["log"])
+        lambda *a, **k: ("semantic", "100\n", ["log"], []),
     )
     mock_verdict = {"verdict": VerdictStatus.VALID_AND_BREAK.value, "failure_type": FailureType.WA.value, "details": ""}
     monkeypatch.setattr("src.nodes.hack_test.evaluate_verdict", lambda *a, **k: mock_verdict)
@@ -75,7 +83,7 @@ def test_target_safe_writes_all_new_state_fields(mock_state, base_mocks, monkeyp
     """SAFE path: all three new state contract fields must be SAFE/NONE."""
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
-        lambda *a, **k: ("stress", "5\n1 2 3 4 5\n", ["log"])
+        lambda *a, **k: ("stress", "5\n1 2 3 4 5\n", ["log"], []),
     )
     safe_verdict = {"verdict": VerdictStatus.VALID_BUT_SAFE.value, "failure_type": FailureType.NONE.value, "details": ""}
     monkeypatch.setattr("src.nodes.hack_test.evaluate_verdict", lambda *a, **k: safe_verdict)
@@ -96,7 +104,7 @@ def test_target_tle_via_run_program(mock_state, base_mocks, monkeypatch):
     """Coverage for TLE path through unified run_program (returncode 124)."""
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
-        lambda *a, **k: ("semantic", "100\n", ["log"])
+        lambda *a, **k: ("semantic", "100\n", ["log"], []),
     )
     tle_verdict = {"verdict": VerdictStatus.VALID_AND_BREAK.value, "failure_type": FailureType.TLE.value, "details": "TLE"}
     monkeypatch.setattr("src.nodes.hack_test.evaluate_verdict", lambda *a, **k: tle_verdict)
@@ -115,7 +123,7 @@ def test_checker_branch_called(mock_state, base_mocks, monkeypatch):
     mock_state["tests"]["checker_exe"] = "checker.exe"
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
-        lambda *a, **k: ("anti_hash", "input\n", ["log"])
+        lambda *a, **k: ("anti_hash", "input\n", ["log"], []),
     )
     monkeypatch.setattr("src.nodes.hack_test.run_program", lambda *a, **k: (0, "output\n", ""))
     mock_checker = MagicMock(return_value=(False, "WA: expected 1 got 2"))
@@ -134,7 +142,7 @@ def test_execution_exception_handled(mock_state, base_mocks, monkeypatch):
     """Coverage: exception in run_program is caught and added as System Error failure."""
     monkeypatch.setattr(
         "src.nodes.hack_test.cascading_execution_router",
-        lambda *a, **k: ("semantic", "100\n", ["log"])
+        lambda *a, **k: ("semantic", "100\n", ["log"], []),
     )
     monkeypatch.setattr("src.nodes.hack_test.run_program", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
 

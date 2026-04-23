@@ -6,7 +6,7 @@ llm:
   provider: "dashscope"
   # Keep base_url non-empty for unified config validation; dashscope SDK uses api_key directly.
   base_url: "https://dashscope.aliyuncs.com/api/v1"
-  api_key: "sk-<redacted>"
+  api_key: ""
 
   # Default model for all nodes (can be overridden by roles below)
   # Note: `qwen3.*-plus` models are multimodal in DashScope; `Generation.call` in our client is the
@@ -33,10 +33,16 @@ llm:
 # Embedding backend for semantic similarity in skill_graph/question_similarity.py.
 # Priority: environment variables > this YAML > hardcoded defaults.
 embedding:
-  # "azure_openai" or "sentence_transformers"
+  # "azure_openai" | "openai_compatible" | "sentence_transformers"
   provider: "azure_openai"
   model: "text-embedding-3-small"
   cache_size: 32768
+  # Retries for HTTP embedding clients (azure_openai / openai_compatible).
+  http_max_retries: 5
+  # OpenAI-compatible /v1/embeddings (local gateway, ChatAnywhere, etc.).
+  openai_compatible:
+    base_url: ""
+    api_key: ""
   azure:
     base_url: "https://<azure-endpoint>"
     tenant_id: "<azure-tenant>"
