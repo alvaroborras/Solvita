@@ -1,7 +1,105 @@
 import json
 from pathlib import Path
 
-from scripts.run_benchmark import main
+from scripts.run_benchmark import _run_single_manifest, main
+
+
+def test_run_single_manifest_repeat_resume_tracks_repeat_index(monkeypatch, tmp_path: Path):
+    manifest = tmp_path / "manifest.jsonl"
+    payload = tmp_path / "payload.json"
+    manifest.write_text(
+        json.dumps({
+            "problem_id": "p1",
+            "problem_payload_path": str(payload),
+        }) + "\n",
+        encoding="utf-8",
+    )
+    payload.write_text(json.dumps({"problem_id": "p1", "raw_problem": {}, "official_tests": []}), encoding="utf-8")
+
+    class Item:
+        def __init__(self, problem_id: str, problem_payload_path: str):
+            self.problem_id = problem_id
+            self.problem_payload_path = problem_payload_path
+
+    monkeypatch.setattr("scripts.run_benchmark.load_benchmark_manifest", lambda path: [Item("p1", str(payload))])
+
+    calls = []
+
+    def fake_run_problem_modes(item, modes, config, repeat_index=1):
+        calls.append((item.problem_id, tuple(modes), repeat_index))
+        return [
+            {
+                "problem_id": item.problem_id,
+                "repeat_index": repeat_index,
+                "mode": mode,
+                "status": "success",
+                "compile_success": True,
+                "passed_tests": 1,
+                "total_tests": 1,
+                "pass_rate": 1.0 if repeat_index == 2 else 0.0,
+                "elapsed_total_s": 0.1,
+                "llm_infer_s": 0.1,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "token_usage_source": "test",
+                "error": None,
+                "hack_result": None,
+                "hack_passed": None,
+                "generator_failure_kind": None,
+                "generator_failure_reason": None,
+                "workflow_log_path": None,
+            }
+            for mode in modes
+        ]
+
+    monkeypatch.setattr("scripts.run_benchmark._run_problem_modes", fake_run_problem_modes)
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "problem_id": "p1",
+                "repeat_index": 1,
+                "mode": "solvita_pipeline",
+                "status": "success",
+                "compile_success": True,
+                "passed_tests": 0,
+                "total_tests": 1,
+                "pass_rate": 0.0,
+                "elapsed_total_s": 0.1,
+                "llm_infer_s": 0.1,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "token_usage_source": "test",
+                "error": None,
+                "hack_result": None,
+                "hack_passed": None,
+                "generator_failure_kind": None,
+                "generator_failure_reason": None,
+                "workflow_log_path": None,
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    result = _run_single_manifest(
+        manifest=manifest,
+        output_dir=out,
+        modes=["solvita_pipeline"],
+        config_path="config/models.yaml",
+        max_workers=1,
+        repeat=3,
+    )
+
+    assert calls == [
+        ("p1", ("solvita_pipeline",), 2),
+        ("p1", ("solvita_pipeline",), 3),
+    ]
+    summary = result["summary"]
+    assert summary["pass_at_k"]["solvita_pipeline"]["full_pass_at_k"] == 1
+    assert summary["modes"]["solvita_pipeline"]["row_count"] == 3
+    assert summary["modes"]["solvita_pipeline"]["problem_count"] == 1
 
 
 def test_run_benchmark_writes_outputs(monkeypatch, tmp_path: Path):

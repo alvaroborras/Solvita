@@ -31,7 +31,9 @@ def _resolve_workflow_log_path(config: Dict[str, Any], problem_id: str, mode: st
     if not output_dir:
         return None
     root = Path(output_dir)
-    return root / "logs" / mode / f"{_sanitize_log_stem(problem_id)}.log"
+    repeat_index = int(config.get("benchmark_repeat_index", 1) or 1)
+    suffix = f".r{repeat_index}" if repeat_index > 1 else ""
+    return root / "logs" / mode / f"{_sanitize_log_stem(problem_id)}{suffix}.log"
 
 
 def run_pipeline_benchmark_case(

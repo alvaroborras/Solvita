@@ -3,23 +3,35 @@
 from typing import Dict, Any
 
 
+def _hacker_enabled(state: Dict[str, Any]) -> bool:
+    return bool((state.get("config", {}) or {}).get("hacker_enabled", True))
+
+
 def status_routing(state: Dict[str, Any]) -> str:
     """
     Routing after memory settlement.
 
     Returns:
-      - "hack": if status == "success" -> enter adversarial hack phase
+      - "hack": if status == "success" and hacker is enabled
+      - "finish": if status == "success" and hacker is disabled
       - "continue": if still iterating
       - "end": if max_iterations reached (give up)
     """
     status = state.get("status", "pending")
 
     if status == "success":
-        return "hack"
+        return "hack" if _hacker_enabled(state) else "finish"
     elif status == "max_iterations":
         return "end"
     else:
         return "continue"
+
+
+def post_codegen_routing(state: Dict[str, Any]) -> str:
+    status = state.get("status", "pending")
+    if status == "success" and _hacker_enabled(state):
+        return "to_hacker"
+    return "end"
 
 
 def compilation_routing(state: Dict[str, Any]) -> str:

@@ -1,6 +1,8 @@
 """Unified LLM Client - Universal API for all LLM providers"""
 
 import os
+import shutil
+import sys
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -85,6 +87,7 @@ class UnifiedLLMClient:
         self.temperature: float = self._resolved["temperature"]
         self.max_tokens: int = self._resolved["max_tokens"]
         self.request_timeout: Optional[float] = self._resolved["request_timeout"]
+        self.provider: str = str(self._resolved.get("provider") or "openai").strip().lower()
 
         self._usage_accumulator = ensure_token_usage_accumulator(self.config)
         self._last_usage = {
@@ -143,10 +146,11 @@ class UnifiedLLMClient:
         """Resolve per-role LLM overrides from runtime config and YAML."""
         role_overrides: Dict[str, Any] = {}
         yaml_root = cls._load_yaml_root(config)
+        prefer_runtime_overrides = cls._has_runtime_llm_overrides(config)
 
         llm_section = yaml_root.get("llm", {}) if isinstance(yaml_root, dict) else {}
         yaml_roles = llm_section.get("roles", {}) if isinstance(llm_section, dict) else {}
-        if role in yaml_roles:
+        if not prefer_runtime_overrides and role in yaml_roles:
             value = yaml_roles[role]
             if isinstance(value, dict):
                 role_overrides.update(value)
@@ -154,7 +158,7 @@ class UnifiedLLMClient:
                 role_overrides["model"] = value
 
         yaml_roles_legacy = yaml_root.get("llm_roles", {}) if isinstance(yaml_root, dict) else {}
-        if role in yaml_roles_legacy:
+        if not prefer_runtime_overrides and role in yaml_roles_legacy:
             value = yaml_roles_legacy[role]
             if isinstance(value, dict):
                 role_overrides.update(value)
@@ -170,6 +174,40 @@ class UnifiedLLMClient:
                 role_overrides["model"] = value
 
         return role_overrides
+
+    @staticmethod
+    def _has_runtime_llm_overrides(config: Dict[str, Any]) -> bool:
+        keys = (
+            "base_url",
+            "api_key",
+            "model",
+            "temperature",
+            "max_tokens",
+            "request_timeout",
+            "azure_tenant_id",
+            "azure_scope",
+            "api_version",
+        )
+        if isinstance(config, dict) and any(config.get(key) for key in keys):
+            return True
+
+        env_keys = (
+            "SOLVITA_BASE_URL",
+            "SOLVITA_API_KEY",
+            "SOLVITA_MODEL",
+            "SOLVITA_TEMPERATURE",
+            "SOLVITA_MAX_TOKENS",
+            "SOLVITA_REQUEST_TIMEOUT",
+            "SOLVITA_AZURE_TENANT_ID",
+            "SOLVITA_AZURE_SCOPE",
+            "SOLVITA_AZURE_API_VERSION",
+        )
+        return any(os.environ.get(key) for key in env_keys)
+
+    @staticmethod
+    def _looks_like_azure_base_url(base_url: str) -> bool:
+        url = (base_url or "").lower()
+        return "azure" in url or ".azure-api.net" in url or ".openai.azure.com" in url
 
     @classmethod
     def build_role_config(cls, config: Dict[str, Any], role: str) -> Dict[str, Any]:
@@ -190,6 +228,7 @@ class UnifiedLLMClient:
             "azure_tenant_id": "",
             "azure_scope": "",
             "api_version": "",
+            "provider": "openai",
         }
 
         # Layer 1: YAML file (lowest priority for base_url/api_key)
@@ -211,9 +250,13 @@ class UnifiedLLMClient:
             "azure_tenant_id": "SOLVITA_AZURE_TENANT_ID",
             "azure_scope": "SOLVITA_AZURE_SCOPE",
             "api_version": "SOLVITA_AZURE_API_VERSION",
+            "provider": "SOLVITA_PROVIDER",
         }
+        legacy_env_provider = os.environ.get("SOLVITA_LLM_PROVIDER")
         for key, env_key in env_map.items():
             val = os.environ.get(env_key)
+            if key == "provider" and not val and legacy_env_provider:
+                val = legacy_env_provider
             if val:
                 if key == "temperature":
                     try:
@@ -235,14 +278,60 @@ class UnifiedLLMClient:
 
         # Layer 3: Explicit config dict (highest priority)
         for key in resolved:
-            if key in self.config and self.config[key]:
+            if key in self.config and self.config[key] not in (None, ""):
                 resolved[key] = self.config[key]
+
+        has_explicit_api_key = "api_key" in self.config and self.config.get("api_key") not in (None, "")
+        has_explicit_provider = "provider" in self.config and self.config.get("provider") not in (None, "")
+        has_explicit_base_url = "base_url" in self.config and self.config.get("base_url") not in (None, "")
+        has_explicit_azure_tenant = "azure_tenant_id" in self.config and self.config.get("azure_tenant_id") not in (None, "")
+        has_explicit_azure_scope = "azure_scope" in self.config and self.config.get("azure_scope") not in (None, "")
+
+        if has_explicit_base_url and not has_explicit_api_key and not os.environ.get("SOLVITA_API_KEY"):
+            resolved["api_key"] = ""
+
+        if (has_explicit_azure_tenant or has_explicit_azure_scope) and not has_explicit_api_key and not os.environ.get("SOLVITA_API_KEY"):
+            resolved["provider"] = "openai"
+            resolved["api_key"] = ""
 
         if not resolved["model"]:
             resolved["model"] = "gpt-4"
 
-        # Determine if Azure OpenAI AAD auth is available
-        self._use_azure = bool(resolved["azure_tenant_id"] and resolved["azure_scope"])
+        if not resolved["provider"]:
+            resolved["provider"] = "openai"
+
+        if has_explicit_api_key and not has_explicit_provider:
+            resolved["provider"] = "openai"
+
+        provider = str(resolved.get("provider") or "openai").strip().lower()
+        if provider in {"openai_compatible", "dashscope", "anthropic"}:
+            provider = "openai"
+        if provider not in {"openai"}:
+            raise self.ConfigurationError(f"Unknown provider: {provider}")
+        resolved["provider"] = provider
+
+        if (
+            provider == "openai"
+            and not resolved["api_key"]
+            and resolved["azure_tenant_id"]
+            and resolved["azure_scope"]
+            and self._looks_like_azure_base_url(resolved["base_url"])
+        ):
+            self._use_azure = True
+        else:
+            self._use_azure = False
+
+        if self._use_azure:
+            try:
+                from azure.identity import AzureCliCredential, get_bearer_token_provider  # noqa: F401
+            except ImportError as e:
+                raise self.ConfigurationError(
+                    "Azure OpenAI AAD auth requires the 'azure-identity' package in the active Python environment"
+                ) from e
+            if shutil.which("az") is None:
+                raise self.ConfigurationError(
+                    "Azure OpenAI AAD auth requires the Azure CLI ('az') on PATH and an active az login"
+                )
 
         # Validate required fields
         if not self._use_azure and (not resolved["base_url"] or not resolved["api_key"]):
@@ -262,18 +351,28 @@ class UnifiedLLMClient:
     def _initialize_client(self):
         """Initialize the OpenAI-compatible HTTP client.
 
-        When azure_tenant_id + azure_scope are set, uses AzureOpenAI with
-        AAD token provider (AzureCliCredential).  Otherwise falls back to
-        the generic OpenAI client with static api_key.
+        When api_key is set, prefers the generic OpenAI-compatible client.
+        Otherwise, when azure_tenant_id + azure_scope are set, uses AzureOpenAI with
+        AAD token provider (AzureCliCredential).
         """
         try:
             if self._use_azure:
-                from openai import AzureOpenAI
-                from azure.identity import AzureCliCredential, get_bearer_token_provider
+                try:
+                    from openai import AzureOpenAI
+                    from azure.identity import AzureCliCredential, get_bearer_token_provider
+                except ImportError as e:
+                    raise self.ConfigurationError(
+                        "Azure OpenAI AAD auth requires the 'azure-identity' package in the active Python environment"
+                    ) from e
 
                 tenant_id = self._resolved["azure_tenant_id"]
                 scope = self._resolved["azure_scope"]
                 api_version = self._resolved.get("api_version") or "2025-04-01-preview"
+
+                if shutil.which("az") is None:
+                    raise self.ConfigurationError(
+                        "Azure OpenAI AAD auth requires the Azure CLI ('az') on PATH and an active az login"
+                    )
 
                 credential = AzureCliCredential(tenant_id=tenant_id)
                 token_provider = get_bearer_token_provider(credential, scope)
@@ -295,7 +394,7 @@ class UnifiedLLMClient:
                 return OpenAI(base_url=self.base_url, api_key=self.api_key)
         except Exception as e:
             logger.error(f"Error initializing LLM client: {e}")
-            return None
+            raise
 
 
     def _record_response_usage(self, response: Any, messages: List[Dict[str, Any]], model: str) -> str:
@@ -354,12 +453,14 @@ class UnifiedLLMClient:
             return ""
 
         model = kwargs.get("model", self.model)
+        timeout = kwargs.get("timeout", self.request_timeout)
+
         reasoning = self._is_reasoning_model(model)
 
         request_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "timeout": kwargs.get("timeout", self.request_timeout),
+            "timeout": timeout,
         }
 
         # Reasoning models use max_completion_tokens and do not accept temperature

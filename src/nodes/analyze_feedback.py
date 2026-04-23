@@ -1,12 +1,13 @@
 """Analyze Feedback Node - Analyze failures and provide improvement suggestions"""
 
-from typing import Dict, Any, TYPE_CHECKING, List, Optional
+from collections import Counter
+from typing import Dict, Any, TYPE_CHECKING, List, Optional, Tuple
 from pathlib import Path
 import tempfile
 from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
-from src.nodes._chat_utils import chat_with_history
+from src.nodes._chat_utils import build_chat_compaction_context, chat_with_history
 from src.utils.cpp_execution import compile_cpp, run_program, ExecutionLimits
 import json
 from src.utils.json_utils import parse_json_response
@@ -17,36 +18,92 @@ if TYPE_CHECKING:
     from src.graph.state import SolvitaState
 
 
-def _generate_feedback_with_retry(llm: UnifiedLLMClient, messages_history: list, build_prompt, *args, **kwargs) -> tuple:
-    """Returns (response_text, new_messages)."""
+def _log_prompt(stage: str, prompt: str, compact: bool) -> None:
+    logger.debug(f"[PROMPT_BODY:{stage}] compact={int(compact)}\n{prompt}")
+
+
+def _generate_feedback_with_retry(
+    llm: UnifiedLLMClient,
+    build_prompt,
+    *args,
+    _messages_history: Optional[list] = None,
+    _stage: str = "analyze_feedback",
+    _compaction_context: Optional[Dict[str, Any]] = None,
+    _compaction_config: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> tuple | str:
+    """Call feedback prompt builder with optional threaded conversation history."""
+    history = _messages_history if _messages_history is not None else []
     prompt = build_prompt(*args, compact=False, **kwargs)
+    _log_prompt(_stage, prompt, compact=False)
     try:
-        return chat_with_history(llm, messages_history, prompt)
+        if _messages_history is None:
+            return llm.generate(prompt)
+        return chat_with_history(
+            llm,
+            history,
+            prompt,
+            compaction_context=_compaction_context,
+            compaction_config=_compaction_config,
+        )
     except PromptTooLongError:
         compact_prompt = build_prompt(*args, compact=True, **kwargs)
+        _log_prompt(_stage, compact_prompt, compact=True)
         logger.warning("[AnalyzeFeedback] Prompt exceeded max tokens, retrying with compact prompt")
-        return chat_with_history(llm, messages_history, compact_prompt)
+        if _messages_history is None:
+            return llm.generate(compact_prompt)
+        return chat_with_history(
+            llm,
+            history,
+            compact_prompt,
+            compaction_context=_compaction_context,
+            compaction_config=_compaction_config,
+        )
+
+
+def _call_feedback_with_history(
+    llm: UnifiedLLMClient,
+    build_prompt,
+    *args,
+    messages_history: Optional[list] = None,
+    _stage: str = "analyze_feedback",
+    _compaction_context: Optional[Dict[str, Any]] = None,
+    _compaction_config: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
+    result = _generate_feedback_with_retry(
+        llm,
+        build_prompt,
+        *args,
+        _messages_history=messages_history,
+        _stage=_stage,
+        _compaction_context=_compaction_context,
+        _compaction_config=_compaction_config,
+        **kwargs,
+    )
+    from src.nodes._chat_utils import normalize_chat_history_result
+    return normalize_chat_history_result(result)
 
 
 def analyze_feedback_node(state: "SolvitaState") -> Dict[str, Any]:
     """
     Analyze test failures and compilation errors
-    
+
     Provides:
     - Root cause analysis
     - Suggested fixes
     - Error patterns
     """
     logger.info("[Node] Analyzing feedback from failures")
-    
+
     # Get failure information
     code = state['solution'].get('code', '')
     compilation_errors = state['solution'].get('compilation_errors', [])
     test_results = state['tests'].get('test_results', [])
-    
+
     # [NEW] Check for Hack Failures
     hack_failures = state.get('hack_failures', [])
-    
+
     # Get context information
     # Prefer canonical problem representation if available
     canonical = state['problem'].get('canonical', {})
@@ -56,7 +113,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}
 Required Properties: {canonical.get('required_properties', [])}"""
     else:
         problem_desc = state['problem'].get('description', '')
-    
+
     algorithm = state.get('plan', {}).get('algorithm_choice', 'Unknown')
     steps = state.get('plan', {}).get('implementation_steps', [])
     iteration = state.get('iteration', 0)
@@ -86,35 +143,55 @@ Required Properties: {canonical.get('required_properties', [])}"""
             "llm_calls": 0,
             "skip_generate_code": True,
         }
-    
+
     # Initialize LLM
     llm = UnifiedLLMClient(state['config'])
     history = list(state.get("messages", []))
+    compaction_context = build_chat_compaction_context(state, node_name="analyze_feedback")
+    compaction_config = state.get("config")
 
     if hack_failures:
         logger.info(f"Analyzing {len(hack_failures)} hack failures")
         return _analyze_hack_failures(
             llm,
-            history,
             code,
             hack_failures,
             problem_desc,
             state.get('plan', {}).get('algorithm_choice', ''),
             state.get('plan', {}).get('implementation_steps', []),
-            state.get('iteration', 0)
+            state.get('iteration', 0),
+            messages_history=history,
+            compaction_context=compaction_context,
+            compaction_config=compaction_config,
         )
 
     # Analyze compilation errors first (higher priority)
     if compilation_errors:
-        feedback_dict, new_msgs = _analyze_compilation_errors(llm, history, code, compilation_errors)
+        feedback_dict, new_msgs = _analyze_compilation_errors(
+            llm,
+            code,
+            compilation_errors,
+            messages_history=history,
+            compaction_context=compaction_context,
+            compaction_config=compaction_config,
+        )
     else:
         # Analyze test failures
         failed_tests = [t for t in test_results if not t.get('passed', False)]
         feedback_dict, new_msgs = _analyze_test_failures(
-            llm, history, code, failed_tests,
-            problem_desc, algorithm, steps, iteration, pass_rate
+            llm,
+            code,
+            failed_tests,
+            problem_desc,
+            algorithm,
+            steps,
+            iteration,
+            pass_rate,
+            messages_history=history,
+            compaction_context=compaction_context,
+            compaction_config=compaction_config,
         )
-    
+
     # Build feedback dict (avoiding FeedbackData import for circular dep fix)
     feedback = {
         "feedback": feedback_dict,
@@ -143,105 +220,334 @@ def _build_compilation_error_prompt(code: str, errors: list[str], compact: bool 
     )
 
 
-def _analyze_compilation_errors(llm: UnifiedLLMClient, messages_history: list, code: str, errors: list[str]) -> tuple:
-    analysis, new_msgs = _generate_feedback_with_retry(llm, messages_history, _build_compilation_error_prompt, code, errors)
-
-    return {
+def _analyze_compilation_errors(
+    llm: UnifiedLLMClient,
+    code: str,
+    errors: list[str],
+    messages_history: Optional[list] = None,
+    compaction_context: Optional[Dict[str, Any]] = None,
+    compaction_config: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    result = _call_feedback_with_history(
+        llm,
+        _build_compilation_error_prompt,
+        code,
+        errors,
+        messages_history=messages_history,
+        _stage="analyze_feedback.compilation",
+        _compaction_context=compaction_context,
+        _compaction_config=compaction_config,
+    )
+    if messages_history is None:
+        analysis = result
+        new_msgs = []
+    else:
+        analysis, new_msgs, persisted_messages = result
+        messages_history[:] = persisted_messages
+    feedback = {
         'error_type': 'compilation',
         'analysis': analysis,
         'suggested_fixes': [],
-    }, new_msgs
+    }
+    if messages_history is None:
+        return feedback
+    return feedback, new_msgs
+
+
+def _normalize_output_tokens(text: Any) -> List[str]:
+    return str(text or "").split()
+
+
+
+def _normalize_space(text: Any) -> str:
+    return " ".join(str(text or "").split())
+
+
+
+def _parse_numeric_tokens(text: Any) -> Optional[List[float]]:
+    tokens = _normalize_output_tokens(text)
+    if not tokens:
+        return None
+    try:
+        return [float(token) for token in tokens]
+    except ValueError:
+        return None
+
+
+
+def _classify_failure_status(test: Dict[str, Any]) -> str:
+    error = str(test.get("error") or "")
+    error_lower = error.lower()
+    actual_text = str(test.get("actual", "") or "").strip()
+
+    if any(token in error_lower for token in ["memory limit", "bad_alloc", "out of memory", "oom"]):
+        return "memory_limit_exceeded"
+    if "timeout" in error_lower or "time limit" in error_lower:
+        return "timeout"
+    if "checker" in error_lower or "presentation" in error_lower or "invalid output" in error_lower:
+        return "checker"
+    if any(
+        token in error_lower
+        for token in [
+            "runtime error",
+            "segmentation fault",
+            "sigsegv",
+            "abort",
+            "assert",
+            "floating point exception",
+            "sigfpe",
+            "asan",
+            "ubsan",
+            "sanitizer",
+            "killed",
+        ]
+    ):
+        return "runtime_error"
+    if not actual_text and error:
+        return "runtime_error"
+    return "wrong_answer"
+
+
+
+def _classify_repair_subtype(test: Dict[str, Any]) -> str:
+    status = _classify_failure_status(test)
+    error = str(test.get("error") or "")
+    error_lower = error.lower()
+    input_text = str(test.get("input", "") or "")
+    expected_text = str(test.get("expected", "") or "")
+    actual_text = str(test.get("actual", "") or "")
+    expected_tokens = _normalize_output_tokens(expected_text)
+    actual_tokens = _normalize_output_tokens(actual_text)
+
+    if status == "memory_limit_exceeded":
+        return "mle_large_allocation"
+    if status == "timeout":
+        return "tle_small_input" if len(input_text) <= 48 else "tle_full_input_only"
+    if status == "runtime_error":
+        if any(
+            token in error_lower
+            for token in ["segmentation fault", "sigsegv", "asan", "ubsan", "sanitizer", "floating point exception", "sigfpe"]
+        ):
+            return "re_signal_crash"
+        return "re_exception_or_abort"
+    if status == "checker":
+        if expected_text and actual_text and _normalize_space(expected_text) == _normalize_space(actual_text) and expected_text != actual_text:
+            return "wa_formatting"
+        if expected_tokens and actual_tokens and Counter(expected_tokens) == Counter(actual_tokens) and expected_tokens != actual_tokens:
+            return "wa_ordering"
+        return "wa_checker_semantics"
+
+    if not actual_text.strip():
+        return "wa_empty_output"
+    if expected_text and _normalize_space(expected_text) == _normalize_space(actual_text) and expected_text != actual_text:
+        return "wa_formatting"
+    if expected_tokens and actual_tokens and len(actual_tokens) < len(expected_tokens) and expected_tokens[:len(actual_tokens)] == actual_tokens:
+        return "wa_partial_output"
+    if expected_tokens and actual_tokens and Counter(expected_tokens) == Counter(actual_tokens) and expected_tokens != actual_tokens:
+        return "wa_ordering"
+
+    actual_numbers = _parse_numeric_tokens(actual_text)
+    expected_numbers = _parse_numeric_tokens(expected_text)
+    if actual_numbers and expected_numbers and len(actual_numbers) == len(expected_numbers):
+        diffs = [actual - expected for actual, expected in zip(actual_numbers, expected_numbers)]
+        nonzero_diffs = [diff for diff in diffs if abs(diff) > 1e-9]
+        if nonzero_diffs:
+            if all(diff < 0 for diff in nonzero_diffs):
+                return "wa_numeric_too_small"
+            if all(diff > 0 for diff in nonzero_diffs):
+                return "wa_numeric_too_large"
+            return "wa_numeric_mixed"
+
+    if len(input_text) <= 48:
+        return "wa_edge_case_small"
+    return "wa_logic_or_formula"
+
+
+
+def _traceability_key(test: Dict[str, Any]) -> tuple:
+    subtype = _classify_repair_subtype(test)
+    status = _classify_failure_status(test)
+    input_len = len(str(test.get("input", "") or ""))
+
+    subtype_rank = {
+        "wa_edge_case_small": 0,
+        "wa_formatting": 0,
+        "wa_ordering": 0,
+        "wa_checker_semantics": 0,
+        "wa_empty_output": 1,
+        "wa_partial_output": 1,
+        "wa_numeric_too_small": 1,
+        "wa_numeric_too_large": 1,
+        "wa_numeric_mixed": 1,
+        "re_signal_crash": 2,
+        "tle_small_input": 3,
+        "re_exception_or_abort": 3,
+        "wa_logic_or_formula": 4,
+        "tle_full_input_only": 4,
+        "mle_large_allocation": 5,
+    }
+    status_rank = {
+        "checker": 0,
+        "wrong_answer": 1,
+        "runtime_error": 2,
+        "timeout": 3,
+        "memory_limit_exceeded": 4,
+    }
+    return (
+        subtype_rank.get(subtype, 9),
+        input_len,
+        status_rank.get(status, 9),
+    )
+
 
 
 def _select_representative_failures(failed_tests: List[Dict], max_count: int = 10) -> List[Dict]:
     """
-    Select up to max_count representative failures covering:
-    - Different error types (Timeout, RE, WA, Checker)
-    - Shortest inputs (traceable)
-    - Largest diffs (numeric)
-    - Different input scales (small/large)
+    Select up to max_count representative failures, with smallest traceable
+    counterexamples first while preserving coverage across judge-status and
+    repair-subtype buckets.
     """
     if not failed_tests:
         return []
-    
-    selected = []
+
+    selected: List[Dict[str, Any]] = []
     selected_ids = set()
-    
-    # Helper to add unique test
-    def add_test(test):
+
+    def add_test(test: Dict[str, Any]) -> bool:
         test_id = id(test)
-        if test_id not in selected_ids:
-            selected.append(test)
-            selected_ids.add(test_id)
-            return True
-        return False
-    
-    # 1. Priority: Different error types
-    error_types = {}
-    for t in failed_tests:
-        error = str(t.get('error') or '')
-        if 'Timeout' in error or 'timeout' in error.lower():
-            error_types.setdefault('timeout', []).append(t)
-        elif t.get('passed') == False and t.get('actual') == '':
-            error_types.setdefault('runtime_error', []).append(t)
-        elif 'Checker' in error:
-            error_types.setdefault('checker', []).append(t)
-        else:
-            error_types.setdefault('wrong_answer', []).append(t)
-    
-    # Add one from each error type
-    for error_type in ['timeout', 'runtime_error', 'checker', 'wrong_answer']:
-        if error_type in error_types and error_types[error_type]:
-            add_test(error_types[error_type][0])
+        if test_id in selected_ids:
+            return False
+        selected.append(test)
+        selected_ids.add(test_id)
+        return True
+
+    for test in sorted(failed_tests, key=_traceability_key)[:2]:
+        add_test(test)
+        if len(selected) >= max_count:
+            return selected
+
+    status_priority = ["checker", "wrong_answer", "runtime_error", "timeout", "memory_limit_exceeded"]
+    for status in status_priority:
+        bucket = [test for test in failed_tests if _classify_failure_status(test) == status]
+        if bucket:
+            add_test(min(bucket, key=_traceability_key))
             if len(selected) >= max_count:
                 return selected
-    
-    # 2. Priority: Shortest inputs (easiest to trace)
-    remaining = [t for t in failed_tests if id(t) not in selected_ids]
-    remaining.sort(key=lambda t: len(str(t.get('input', ''))))
-    
-    for t in remaining[:3]:  # Add up to 3 shortest
-        add_test(t)
+
+    informative_subtypes = {
+        "wa_numeric_too_small",
+        "wa_numeric_too_large",
+        "wa_numeric_mixed",
+        "wa_partial_output",
+        "wa_empty_output",
+        "wa_formatting",
+        "wa_ordering",
+        "wa_checker_semantics",
+        "re_signal_crash",
+        "re_exception_or_abort",
+        "tle_small_input",
+        "mle_large_allocation",
+    }
+    subtype_buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for test in failed_tests:
+        subtype = _classify_repair_subtype(test)
+        if subtype in informative_subtypes:
+            subtype_buckets.setdefault(subtype, []).append(test)
+
+    ordered_subtypes = sorted(
+        subtype_buckets,
+        key=lambda subtype: _traceability_key(min(subtype_buckets[subtype], key=_traceability_key)),
+    )
+    for subtype in ordered_subtypes:
+        add_test(min(subtype_buckets[subtype], key=_traceability_key))
         if len(selected) >= max_count:
             return selected
-    
-    # 3. Priority: Largest numeric errors
-    remaining = [t for t in failed_tests if id(t) not in selected_ids]
-    numeric_errors = []
-    for t in remaining:
-        try:
-            act = float(t.get('actual', 0))
-            exp = float(t.get('expected', 0))
-            err = abs(act - exp)
-            numeric_errors.append((err, t))
-        except:
-            pass
-    
-    numeric_errors.sort(key=lambda x: x[0], reverse=True)
-    for _, t in numeric_errors[:2]:  # Add up to 2 with largest errors
-        add_test(t)
+
+    remaining = [test for test in failed_tests if id(test) not in selected_ids]
+    remaining.sort(key=lambda test: (_traceability_key(test), len(str(test.get("error", "") or ""))))
+    for test in remaining:
+        add_test(test)
         if len(selected) >= max_count:
-            return selected
-    
-    # 4. Fill remaining slots with diverse input sizes
-    remaining = [t for t in failed_tests if id(t) not in selected_ids]
-    if remaining:
-        # Sort by input length and pick evenly spaced
-        remaining.sort(key=lambda t: len(str(t.get('input', ''))))
-        step = max(1, len(remaining) // (max_count - len(selected)))
-        for i in range(0, len(remaining), step):
-            add_test(remaining[i])
-            if len(selected) >= max_count:
-                break
-    
+            break
+
     return selected
+
+
+
+def _summarize_failed_tests(failed_tests: List[Dict], max_examples_per_type: int = 3) -> Dict[str, Any]:
+    """Build aggregate failure statistics for patch prompting."""
+    if not failed_tests:
+        return {
+            "total_failed": 0,
+            "judge_status_counts": {},
+            "error_type_counts": {},
+            "repair_subtype_counts": {},
+            "input_length": {"min": 0, "max": 0, "avg": 0},
+            "representative_examples": {},
+            "numeric_diff": {},
+        }
+
+    status_counts: Counter[str] = Counter()
+    subtype_counts: Counter[str] = Counter()
+    input_lengths: List[int] = []
+    type_examples: Dict[str, List[Dict[str, Any]]] = {}
+    numeric_diffs: List[float] = []
+
+    for test in failed_tests:
+        status = _classify_failure_status(test)
+        subtype = _classify_repair_subtype(test)
+        status_counts[status] += 1
+        subtype_counts[subtype] += 1
+        input_lengths.append(len(str(test.get("input", ""))))
+
+        bucket = type_examples.setdefault(status, [])
+        if len(bucket) < max_examples_per_type:
+            bucket.append(
+                {
+                    "input": truncate_for_prompt(str(test.get("input", "")), 240, "AGG_FAIL_INPUT"),
+                    "expected": truncate_for_prompt(str(test.get("expected", "")), 160, "AGG_FAIL_EXPECTED"),
+                    "actual": truncate_for_prompt(str(test.get("actual", "")), 160, "AGG_FAIL_ACTUAL"),
+                    "error": truncate_for_prompt(str(test.get("error", "")), 160, "AGG_FAIL_ERROR"),
+                    "repair_subtype": subtype,
+                }
+            )
+
+        actual_numbers = _parse_numeric_tokens(test.get("actual", ""))
+        expected_numbers = _parse_numeric_tokens(test.get("expected", ""))
+        if actual_numbers and expected_numbers and len(actual_numbers) == len(expected_numbers):
+            numeric_diffs.extend(actual - expected for actual, expected in zip(actual_numbers, expected_numbers))
+
+    avg_len = sum(input_lengths) / len(input_lengths) if input_lengths else 0.0
+    numeric_summary: Dict[str, Any] = {}
+    if numeric_diffs:
+        numeric_summary = {
+            "count": len(numeric_diffs),
+            "avg_diff": sum(numeric_diffs) / len(numeric_diffs),
+            "min_diff": min(numeric_diffs),
+            "max_diff": max(numeric_diffs),
+        }
+
+    status_counts_dict = dict(status_counts)
+    return {
+        "total_failed": len(failed_tests),
+        "judge_status_counts": status_counts_dict,
+        "error_type_counts": status_counts_dict,
+        "repair_subtype_counts": dict(subtype_counts),
+        "input_length": {
+            "min": min(input_lengths) if input_lengths else 0,
+            "max": max(input_lengths) if input_lengths else 0,
+            "avg": round(avg_len, 2),
+        },
+        "representative_examples": type_examples,
+        "numeric_diff": numeric_summary,
+    }
 
 
 def _analyze_error_pattern(failed_tests: List[Dict]) -> str:
     """Analyze error pattern: larger/smaller/random"""
     numeric_diffs = []
     valid_count = 0
-    
+
     for t in failed_tests:
         try:
             actual = float(t.get('actual', '').strip())
@@ -250,14 +556,14 @@ def _analyze_error_pattern(failed_tests: List[Dict]) -> str:
             valid_count += 1
         except (ValueError, TypeError):
             continue
-            
+
     if valid_count < 3:
         return "Non-numeric or mixed errors"
-        
+
     avg_diff = sum(numeric_diffs) / len(numeric_diffs)
     all_smaller = all(d < -1e-9 for d in numeric_diffs)
     all_larger = all(d > 1e-9 for d in numeric_diffs)
-    
+
     if all_smaller:
         return f"Outputs consistently smaller than expected (avg diff: {avg_diff:.4g}). Possible overly strict constraints or rounding down."
     elif all_larger:
@@ -269,48 +575,44 @@ def _analyze_error_pattern(failed_tests: List[Dict]) -> str:
 def _run_diagnostic_sanitizer(code: str, failed_tests: List[Dict]) -> str:
     """
     Run diagnostic compilation with sanitizers on smallest failing test.
-    
+
     Returns sanitizer output or empty string if no useful info.
     """
     if not failed_tests or not code:
         return ""
-    
-    # Pick smallest failing test
+
     smallest_test = min(failed_tests, key=lambda t: len(str(t.get('input', ''))))
     test_input = smallest_test.get('input', '')
-    
+
     if not test_input:
         return ""
-    
+
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             src_path = tmp / "diagnostic.cpp"
             exe_path = tmp / "diagnostic.exe"
-            
+
             src_path.write_text(code, encoding="utf-8")
-            
-            # Compile with sanitizers
+
             ok, compile_log = compile_cpp(
                 src_path, exe_path,
                 limits=ExecutionLimits.diagnostic_compile(),
                 diagnostic=True
             )
-            
+
             if not ok:
                 return f"Diagnostic compile failed: {compile_log[:500]}"
-            
-            # Run with sanitizers
+
             retcode, stdout, stderr = run_program(
                 exe_path,
                 input_text=test_input,
                 limits=ExecutionLimits.default_run()
             )
-            
-            # Sanitizer output is in stderr
+
             if stderr and ('sanitizer' in stderr.lower() or 'asan' in stderr.lower() or 'ubsan' in stderr.lower()):
                 return f"Sanitizer detected issues:\n{stderr[:1000]}"
-            
+
             return ""
     except Exception as e:
         logger.warning(f"Diagnostic sanitizer failed: {e}")
@@ -373,7 +675,6 @@ def _build_test_failure_prompt(
 
 def _analyze_test_failures(
     llm: UnifiedLLMClient,
-    messages_history: list,
     code: str,
     failed_tests: list[Dict],
     problem_desc: str,
@@ -381,16 +682,18 @@ def _analyze_test_failures(
     steps: List[str],
     iteration: int,
     pass_rate: float,
-    diagnostic_output: str = ""
+    diagnostic_output: str = "",
+    messages_history: Optional[list] = None,
+    compaction_context: Optional[Dict[str, Any]] = None,
+    compaction_config: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Analyze test failures with full context. Returns (feedback_dict, new_messages)."""
     if not failed_tests:
         return {'error_type': 'none', 'analysis': 'No failures', 'suggested_fixes': [], 'failures': []}, []
     selected_tests = _select_representative_failures(failed_tests, max_count=10)
     error_pattern = _analyze_error_pattern(failed_tests)
-    analysis, new_msgs = _generate_feedback_with_retry(
+    result = _call_feedback_with_history(
         llm,
-        messages_history,
         _build_test_failure_prompt,
         code,
         failed_tests,
@@ -400,7 +703,17 @@ def _analyze_test_failures(
         iteration,
         pass_rate,
         diagnostic_output,
+        messages_history=messages_history,
+        _stage="analyze_feedback.test_failure",
+        _compaction_context=compaction_context,
+        _compaction_config=compaction_config,
     )
+    if messages_history is None:
+        analysis = result
+        new_msgs = []
+    else:
+        analysis, new_msgs, persisted_messages = result
+        messages_history[:] = persisted_messages
     
     # Parse structured response
     try:
@@ -424,6 +737,7 @@ def _analyze_test_failures(
             "details": test.get("error", ""),
         })
 
+    aggregate_summary = _summarize_failed_tests(failed_tests)
     return {
         'error_type': 'test_failure',
         'failed_count': len(failed_tests),
@@ -431,18 +745,21 @@ def _analyze_test_failures(
         'error_pattern': error_pattern,
         'suggested_fixes': suggested_fixes,
         'failures': normalized_failures,
+        'aggregate_summary': aggregate_summary,
     }, new_msgs
 
 
 def _analyze_hack_failures(
     llm: UnifiedLLMClient,
-    messages_history: list,
     code: str,
     hack_failures: List[Dict],
     problem_desc: str,
     algorithm: str,
     steps: List[str],
-    iteration: int
+    iteration: int,
+    messages_history: Optional[list] = None,
+    compaction_context: Optional[Dict[str, Any]] = None,
+    compaction_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Analyze failures from the Adversarial Hack Phase"""
 
@@ -482,7 +799,16 @@ def _analyze_hack_failures(
             HACK_FAILURES_TEXT=compact_failures,
         )
 
-    response, new_msgs = _generate_feedback_with_retry(llm, messages_history, _build_hack_failure_prompt)
+    response, new_msgs, persisted_messages = _call_feedback_with_history(
+        llm,
+        _build_hack_failure_prompt,
+        messages_history=messages_history,
+        _stage="analyze_feedback.hack_failure",
+        _compaction_context=compaction_context,
+        _compaction_config=compaction_config,
+    )
+    if messages_history is not None:
+        messages_history[:] = persisted_messages
     
     try:
         analysis_data = parse_json_response(response)

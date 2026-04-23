@@ -1,10 +1,22 @@
+import json
+import pytest
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import src.nodes.generate_code as generate_code_module
 from src.llm.unified_client import PromptTooLongError
-from src.nodes.generate_code import _build_initial_prompt, _build_patch_prompt, _generate_with_compact_retry
+from src.nodes.generate_code import (
+    _build_initial_prompt,
+    _build_patch_prompt,
+    _build_repair_decision_prompt,
+    _build_verification_set,
+    _call_generate_with_history,
+    _format_aggregate_failures_text,
+    _generate_with_compact_retry,
+    _parse_repair_mode_decision,
+)
 
 
 def test_initial_prompt_requires_resource_audit():
@@ -23,6 +35,21 @@ def test_initial_prompt_requires_resource_audit():
     assert "adapt the implementation strategy" in prompt
 
 
+def test_initial_prompt_includes_self_validation_feedback():
+    prompt = _build_initial_prompt(
+        problem_desc="Count something",
+        algorithm="Prefix sums",
+        steps=["Build data structure", "Answer queries"],
+        constraints={},
+        public_tests=[],
+        generated_tests=[],
+        self_validation_feedback="Self-validation failed: 2 issues in 2/4 cases tested:\n\n  Wrong answer on test public_0:\n    Input: 1",
+    )
+
+    assert "Self-validation failed: 2 issues in 2/4 cases tested:" in prompt
+    assert "Wrong answer on test public_0" in prompt
+
+
 def test_patch_prompt_requires_rechecking_space_complexity():
     prompt = _build_patch_prompt(
         prev_code="int main() { return 0; }\n",
@@ -38,6 +65,83 @@ def test_patch_prompt_requires_rechecking_space_complexity():
     assert "dangerous product of input dimensions" in prompt
     assert "not implementable within the stated limits" in prompt
 
+
+def test_patch_prompt_includes_aggregate_failures_block():
+    aggregate_text = _format_aggregate_failures_text(
+        {
+            "total_failed": 70,
+            "judge_status_counts": {"wrong_answer": 60, "timeout": 10},
+            "error_type_counts": {"wrong_answer": 60, "timeout": 10},
+            "repair_subtype_counts": {"wa_numeric_too_small": 48, "tle_full_input_only": 10},
+            "input_length": {"min": 4, "avg": 42.5, "max": 300},
+            "numeric_diff": {"count": 8, "avg_diff": -1.5, "min_diff": -7, "max_diff": 1},
+            "representative_examples": {
+                "wrong_answer": [
+                    {
+                        "input": "1 2 3",
+                        "expected": "7",
+                        "actual": "6",
+                        "error": "mismatch",
+                        "repair_subtype": "wa_numeric_too_small",
+                    }
+                ]
+            },
+        }
+    )
+
+    prompt = _build_patch_prompt(
+        prev_code="int main() { return 0; }\n",
+        problem_desc="Count something",
+        algorithm="Prefix sums",
+        steps=["Build data structure", "Answer queries"],
+        specific_failures=[],
+        suggested_fixes=[],
+        feedback_text="analysis",
+        aggregate_failures_text=aggregate_text,
+    )
+
+    assert "Aggregate failure summary across internal tests:" in prompt
+    assert "Total failed tests: 70" in prompt
+    assert "Judge status counts:" in prompt
+    assert "wrong_answer: 60" in prompt
+    assert "timeout: 10" in prompt
+    assert "Repair subtype counts:" in prompt
+    assert "wa_numeric_too_small: 48" in prompt
+    assert "Repair subtype: wa_numeric_too_small" in prompt
+
+
+def test_repair_decision_prompt_requires_scope_judgment_first():
+    prompt = _build_repair_decision_prompt(
+        prev_code="int main() { return 0; }\n",
+        problem_desc="Count something",
+        algorithm="Prefix sums",
+        steps=["Build data structure", "Answer queries"],
+        specific_failures=[],
+        suggested_fixes=[],
+        feedback_text="analysis",
+        aggregate_failures_text="",
+        diagnostic_text="",
+    )
+
+    assert "localized bug or a systemic/global flaw" in prompt
+    assert "objective evidence" in prompt
+    assert '"mode":"patch|full_regen"' in prompt
+
+
+def test_parse_repair_mode_decision_defaults_to_patch_on_invalid_json():
+    assert _parse_repair_mode_decision("not-json") == {
+        "mode": "patch",
+        "confidence": "low",
+        "reason": "fallback-to-patch",
+    }
+
+
+def test_parse_repair_mode_decision_normalizes_invalid_mode_to_patch():
+    assert _parse_repair_mode_decision(json.dumps({"mode": "weird", "confidence": "high", "reason": "x"})) == {
+        "mode": "patch",
+        "confidence": "high",
+        "reason": "x",
+    }
 
 def test_initial_prompt_truncates_large_context():
     prompt = _build_initial_prompt(
@@ -68,6 +172,87 @@ def test_patch_prompt_truncates_large_context():
     assert len(prompt) < 40000
 
 
+def test_generate_code_wrapper_forwards_compaction_kwargs(monkeypatch):
+    captured = {}
+
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        captured.update(kwargs)
+        return "reply", [], []
+
+    monkeypatch.setattr(generate_code_module, "_generate_with_compact_retry", fake_retry)
+
+    response, new_messages, persisted_messages = _call_generate_with_history(
+        object(),
+        _build_initial_prompt,
+        "Count something",
+        "Prefix sums",
+        ["Build", "Answer"],
+        {},
+        [],
+        [],
+        messages_history=[{"role": "assistant", "content": "old"}],
+        _stage="generate_code.initial",
+        _compaction_context={"node_name": "generate_code"},
+        _compaction_config={"message_compaction": {"enabled": True}},
+    )
+
+    assert response == "reply"
+    assert new_messages == []
+    assert persisted_messages == []
+    assert captured["_messages_history"] == [{"role": "assistant", "content": "old"}]
+    assert captured["_compaction_context"] == {"node_name": "generate_code"}
+    assert captured["_compaction_config"] == {"message_compaction": {"enabled": True}}
+
+
+def test_generate_code_wrapper_requires_history_aware_retry_signature(monkeypatch):
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        raise TypeError("fake_retry() got an unexpected keyword argument '_messages_history'")
+
+    monkeypatch.setattr(generate_code_module, "_generate_with_compact_retry", fake_retry)
+
+    with pytest.raises(TypeError):
+        _call_generate_with_history(
+            object(),
+            _build_initial_prompt,
+            "Count something",
+            "Prefix sums",
+            ["Build", "Answer"],
+            {},
+            [],
+            [],
+            messages_history=[{"role": "assistant", "content": "old"}],
+            _stage="generate_code.initial",
+            _compaction_context={"node_name": "generate_code"},
+            _compaction_config={"message_compaction": {"enabled": True}},
+        )
+
+
+def test_generate_code_logs_prompt_body(monkeypatch):
+    class FakeLLM:
+        def generate(self, prompt, **kwargs):
+            return "int main() { return 0; }"
+
+    messages = []
+    monkeypatch.setattr(generate_code_module.logger, "debug", lambda msg: messages.append(msg))
+
+    llm = FakeLLM()
+    _generate_with_compact_retry(
+        llm,
+        _build_initial_prompt,
+        "Count something",
+        "Prefix sums",
+        ["Build", "Answer"],
+        {},
+        [],
+        [],
+        _stage="generate_code.initial",
+    )
+
+    assert messages
+    assert "[PROMPT_BODY:generate_code.initial] compact=0" in messages[0]
+    assert "Count something" in messages[0]
+
+
 def test_generate_code_retries_with_compact_prompt_on_prompt_too_long():
     class FakeLLM:
         def __init__(self):
@@ -95,3 +280,4 @@ def test_generate_code_retries_with_compact_prompt_on_prompt_too_long():
     assert result == "int main() { return 0; }"
     assert len(llm.prompts) == 2
     assert "[TRUNCATED" in llm.prompts[1]
+

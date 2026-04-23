@@ -7,7 +7,7 @@ from pathlib import Path
 from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
-from src.nodes._chat_utils import chat_with_history
+from src.nodes._chat_utils import build_chat_compaction_context, chat_with_history, normalize_chat_history_result
 from src.utils.cpp_execution import (
     sanitize_cpp,
     compile_cpp,
@@ -16,6 +16,7 @@ from src.utils.cpp_execution import (
     cleanup_tempdir,
 )
 from src.utils.output_judging import judge_output_against_certified_expected
+from src.utils.json_utils import parse_json_response
 from src.utils.patch_utils import parse_search_replace_blocks, apply_search_replace_blocks, compute_unified_diff
 from src.memory import MemoryClient, MemoryNamespace
 from src.utils.problem_utils import extract_problem_code
@@ -46,6 +47,7 @@ def _build_initial_prompt(
     compact: bool = False,
     solver_graph_block: str = "",
     abstract_tags_level2_block: str = "",
+    self_validation_feedback: str = "",
 ) -> str:
     """Build prompt for initial code generation (no previous code)."""
     desc_chars = 10000 if not compact else 5000
@@ -84,6 +86,7 @@ def _build_initial_prompt(
         )
 
     memory_block = f"\n{memory_advice}\n" if memory_advice else ""
+    self_validation_block = f"\n{self_validation_feedback.strip()}\n" if self_validation_feedback.strip() else ""
     solver_section = ""
     if (solver_graph_block or "").strip():
         solver_section = solver_graph_block.strip() + "\n\n"
@@ -105,6 +108,7 @@ def _build_initial_prompt(
             "PUBLIC_BLOCK": public_block,
             "GEN_BLOCK": gen_block,
             "SOLVER_GRAPH_BLOCK": solver_section,
+            "SELF_VALIDATION_BLOCK": self_validation_block,
             "MEMORY_ADVICE": memory_block,
         },
     )
@@ -118,6 +122,7 @@ def _build_patch_prompt(
     specific_failures: List[Dict],
     suggested_fixes: List[str],
     feedback_text: str,
+    aggregate_failures_text: str = "",
     memory_advice: str = "",
     compact: bool = False,
     abstract_tags_level2_block: str = "",
@@ -126,6 +131,11 @@ def _build_patch_prompt(
     prev_code = truncate_for_prompt(prev_code, 16000 if not compact else 8000, "PREV_CODE")
     problem_desc = truncate_for_prompt(problem_desc, 9000 if not compact else 4500, "PROBLEM_DESC")
     feedback_text = truncate_for_prompt(feedback_text, 5000 if not compact else 2000, "FEEDBACK_TEXT")
+    aggregate_failures_text = truncate_for_prompt(
+        aggregate_failures_text,
+        4000 if not compact else 1600,
+        "AGGREGATE_FAILURES_TEXT",
+    )
 
     failures_block = ""
     if specific_failures:
@@ -175,6 +185,7 @@ def _build_patch_prompt(
             "PREV_CODE": prev_code,
             "FAILURES_BLOCK": failures_block,
             "FEEDBACK_TEXT": feedback_text,
+            "AGGREGATE_FAILURES_BLOCK": aggregate_failures_text,
             "FIXES_BLOCK": fixes_block,
             "MEMORY_ADVICE": memory_block,
         },
@@ -276,24 +287,262 @@ def _build_regenerate_prompt(
     )
 
 
+def _format_aggregate_failures_text(aggregate_summary: Dict[str, Any]) -> str:
+    """Format aggregate failure statistics for patch prompting."""
+    if not aggregate_summary or not aggregate_summary.get("total_failed"):
+        return ""
+
+    lines = [
+        "Aggregate failure summary across internal tests:",
+        f"- Total failed tests: {aggregate_summary.get('total_failed', 0)}",
+    ]
+
+    judge_status_counts = aggregate_summary.get("judge_status_counts") or aggregate_summary.get("error_type_counts") or {}
+    if judge_status_counts:
+        lines.append("- Judge status counts:")
+        for key, value in sorted(judge_status_counts.items()):
+            lines.append(f"  - {key}: {value}")
+
+    repair_subtype_counts = aggregate_summary.get("repair_subtype_counts") or {}
+    if repair_subtype_counts:
+        lines.append("- Repair subtype counts:")
+        for key, value in sorted(repair_subtype_counts.items()):
+            lines.append(f"  - {key}: {value}")
+
+    input_length = aggregate_summary.get("input_length") or {}
+    if input_length:
+        lines.append(
+            "- Failed input length stats: "
+            f"min={input_length.get('min', 0)}, "
+            f"avg={input_length.get('avg', 0)}, "
+            f"max={input_length.get('max', 0)}"
+        )
+
+    numeric_diff = aggregate_summary.get("numeric_diff") or {}
+    if numeric_diff:
+        lines.append(
+            "- Numeric diff summary: "
+            f"count={numeric_diff.get('count', 0)}, "
+            f"avg={numeric_diff.get('avg_diff', 0):.4g}, "
+            f"min={numeric_diff.get('min_diff', 0):.4g}, "
+            f"max={numeric_diff.get('max_diff', 0):.4g}"
+        )
+
+    representative_examples = aggregate_summary.get("representative_examples") or {}
+    if representative_examples:
+        lines.append("- Representative grouped examples:")
+        for failure_type, examples in sorted(representative_examples.items()):
+            lines.append(f"  {failure_type}:")
+            for idx, example in enumerate(examples[:2], start=1):
+                lines.append(f"    Example {idx} input: {example.get('input', '')}")
+                if example.get("expected"):
+                    lines.append(f"    Expected: {example.get('expected', '')}")
+                if example.get("actual"):
+                    lines.append(f"    Actual: {example.get('actual', '')}")
+                if example.get("error"):
+                    lines.append(f"    Error: {example.get('error', '')}")
+                if example.get("repair_subtype"):
+                    lines.append(f"    Repair subtype: {example.get('repair_subtype', '')}")
+
+    return "\n".join(lines)
+
+def _build_repair_decision_prompt(
+    prev_code: str,
+    problem_desc: str,
+    algorithm: str,
+    steps: List[str],
+    specific_failures: List[Dict],
+    suggested_fixes: List[str],
+    feedback_text: str,
+    aggregate_failures_text: str = "",
+    diagnostic_text: str = "",
+    memory_advice: str = "",
+    compact: bool = False,
+    abstract_tags_level2_block: str = "",
+) -> str:
+    prev_code = truncate_for_prompt(prev_code, 16000 if not compact else 8000, "PREV_CODE")
+    problem_desc = truncate_for_prompt(problem_desc, 9000 if not compact else 4500, "PROBLEM_DESC")
+    feedback_text = truncate_for_prompt(feedback_text, 5000 if not compact else 2000, "FEEDBACK_TEXT")
+    aggregate_failures_text = truncate_for_prompt(
+        aggregate_failures_text,
+        4000 if not compact else 1600,
+        "AGGREGATE_FAILURES_TEXT",
+    )
+    diagnostic_text = truncate_for_prompt(diagnostic_text, 4000 if not compact else 1600, "DIAGNOSTIC_TEXT")
+
+    failures_block = ""
+    if specific_failures:
+        parts = ["Representative failures:"]
+        for i, fail in enumerate(specific_failures[:10]):
+            parts.append(f"\nFailure {i+1} ({fail.get('type', 'Unknown Error')}):")
+            inp = truncate_for_prompt(str(fail.get("input", "")), 300 if not compact else 150, f"FAIL_INPUT_{i+1}")
+            parts.append(f"  Input:\n{_indent(inp, 4)}")
+            if fail.get("expected"):
+                exp = truncate_for_prompt(str(fail.get("expected", "")), 220 if not compact else 120, f"FAIL_EXPECTED_{i+1}")
+                parts.append(f"  Expected:\n{_indent(exp, 4)}")
+            if fail.get("output"):
+                out = truncate_for_prompt(str(fail.get("output", "")), 220 if not compact else 120, f"FAIL_OUTPUT_{i+1}")
+                parts.append(f"  Actual Output:\n{_indent(out, 4)}")
+            if fail.get("details"):
+                details = truncate_for_prompt(str(fail.get("details", "")), 220 if not compact else 120, f"FAIL_DETAILS_{i+1}")
+                parts.append(f"  Details:\n{_indent(details, 4)}")
+        failures_block = "\n".join(parts)
+
+    fixes_block = ""
+    if suggested_fixes:
+        fixes_block = "Suggested Fixes:\n" + "\n".join([f"- {fix}" for fix in suggested_fixes])
+
+    diagnostic_block = diagnostic_text.strip()
+    if diagnostic_block:
+        diagnostic_block = "## Diagnostic Evidence\n" + diagnostic_block
+
+    memory_block = f"\n{memory_advice}\n" if memory_advice else ""
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.patch_decision")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.patch_decision must be a string template")
+
+    steps_block = "\n".join(steps)
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "ABSTRACT_TAGS_LEVEL2_BLOCK": abstract_tags_level2_block,
+            "ALGORITHM": algorithm,
+            "STEPS": steps_block,
+            "PREV_CODE": prev_code,
+            "FAILURES_BLOCK": failures_block,
+            "AGGREGATE_FAILURES_BLOCK": aggregate_failures_text,
+            "DIAGNOSTIC_BLOCK": diagnostic_block,
+            "FEEDBACK_TEXT": feedback_text,
+            "FIXES_BLOCK": fixes_block,
+            "MEMORY_ADVICE": memory_block,
+        },
+    )
+
+
+def _parse_repair_mode_decision(raw: str) -> Dict[str, str]:
+    fallback = {"mode": "patch", "confidence": "low", "reason": "fallback-to-patch"}
+    try:
+        parsed = parse_json_response(raw)
+    except Exception:
+        return fallback
+    mode = str(parsed.get("mode", "patch") or "patch").strip().lower()
+    confidence = str(parsed.get("confidence", "low") or "low").strip().lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    reason = str(parsed.get("reason", "") or "").strip() or fallback["reason"]
+    if mode not in {"patch", "full_regen"}:
+        mode = "patch"
+    return {"mode": mode, "confidence": confidence, "reason": reason}
+
+
+def _choose_repair_mode(
+    llm: UnifiedLLMClient,
+    prev_code: str,
+    problem_desc: str,
+    algorithm: str,
+    steps: List[str],
+    specific_failures: List[Dict],
+    suggested_fixes: List[str],
+    feedback_text: str,
+    aggregate_failures_text: str,
+    diagnostic_text: str,
+    memory_advice: str,
+    abstract_tags_level2_block: str,
+    *,
+    messages_history: Optional[list],
+    compaction_context: Optional[Dict[str, Any]],
+    compaction_config: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, str], List[Dict[str, str]], List[Dict[str, str]]]:
+    response, new_messages, persisted_messages = _call_generate_with_history(
+        llm,
+        _build_repair_decision_prompt,
+        prev_code,
+        problem_desc,
+        algorithm,
+        steps,
+        specific_failures,
+        suggested_fixes,
+        feedback_text,
+        aggregate_failures_text,
+        diagnostic_text,
+        memory_advice=memory_advice,
+        abstract_tags_level2_block=abstract_tags_level2_block,
+        messages_history=messages_history,
+        _stage="generate_code.patch_decision",
+        _compaction_context=compaction_context,
+        _compaction_config=compaction_config,
+    )
+    return _parse_repair_mode_decision(response), new_messages, persisted_messages
+
+
+def _log_prompt(stage: str, prompt: str, compact: bool) -> None:
+    logger.debug(f"[PROMPT_BODY:{stage}] compact={int(compact)}\n{prompt}")
+
+
 def _generate_with_compact_retry(
     llm: UnifiedLLMClient,
-    messages_history: list,
     prompt_builder,
     *args,
+    _messages_history: Optional[list] = None,
+    _stage: str = "generate_code",
+    _compaction_context: Optional[Dict[str, Any]] = None,
+    _compaction_config: Optional[Dict[str, Any]] = None,
     **kwargs,
-) -> tuple:
-    """Build prompt, call LLM with history, return (response, new_messages).
-
-    On PromptTooLongError, retries with compact=True.
-    """
+) -> tuple | str:
+    """Build prompt, call LLM, and optionally thread conversation history."""
+    history = _messages_history if _messages_history is not None else []
     prompt = prompt_builder(*args, compact=False, **kwargs)
+    _log_prompt(_stage, prompt, compact=False)
     try:
-        return chat_with_history(llm, messages_history, prompt)
+        if _messages_history is None:
+            return llm.generate(prompt)
+        return chat_with_history(
+            llm,
+            history,
+            prompt,
+            compaction_context=_compaction_context,
+            compaction_config=_compaction_config,
+        )
     except PromptTooLongError:
         compact_prompt = prompt_builder(*args, compact=True, **kwargs)
+        _log_prompt(_stage, compact_prompt, compact=True)
         logger.warning("[GenCode] Prompt exceeded max tokens, retrying with compact prompt")
-        return chat_with_history(llm, messages_history, compact_prompt)
+        if _messages_history is None:
+            return llm.generate(compact_prompt)
+        return chat_with_history(
+            llm,
+            history,
+            compact_prompt,
+            compaction_context=_compaction_context,
+            compaction_config=_compaction_config,
+        )
+
+
+def _call_generate_with_history(
+    llm: UnifiedLLMClient,
+    prompt_builder,
+    *args,
+    messages_history: Optional[list] = None,
+    _stage: str = "generate_code",
+    _compaction_context: Optional[Dict[str, Any]] = None,
+    _compaction_config: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
+    result = _generate_with_compact_retry(
+        llm,
+        prompt_builder,
+        *args,
+        _messages_history=messages_history,
+        _stage=_stage,
+        _compaction_context=_compaction_context,
+        _compaction_config=_compaction_config,
+        **kwargs,
+    )
+    if messages_history is None:
+        return str(result), [], []
+    return normalize_chat_history_result(result)
 
 
 def _indent(text: str, n: int) -> str:
@@ -302,9 +551,11 @@ def _indent(text: str, n: int) -> str:
 
 
 def _build_verification_set(
-    public_tests: List[Dict], generated_tests: List[Dict]
+    public_tests: List[Dict],
+    generated_tests: List[Dict],
+    max_generated_tests: int = 5,
 ) -> List[Dict]:
-    """Build the verification set: public tests + up to 5 generated tests with expected_output."""
+    """Build the verification set: public tests + configurable generated tests with expected_output."""
     verify = []
     for i, t in enumerate(public_tests):
         verify.append({
@@ -313,10 +564,9 @@ def _build_verification_set(
             "expected_output": t.get("output", ""),
         })
 
-    # Add up to 5 generated tests with expected_output
     count = 0
     for i, t in enumerate(generated_tests):
-        if count >= 5:
+        if count >= max_generated_tests:
             break
         eo = t.get("expected_output", "")
         if eo:
@@ -513,6 +763,9 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     constraints = state["problem"].get("constraints", {})
     public_tests = state["problem"].get("public_tests", [])
     generated_tests = state.get("tests", {}).get("generated_tests", [])
+    max_verification_generated_tests = int(
+        (state.get("config", {}) or {}).get("generate_code_verification_generated_tests", 5)
+    )
     iteration = state.get("iteration", 0)
 
     raw_l2 = state["problem"].get("tags_level2_selected") or []
@@ -546,7 +799,11 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     )
 
     # Build verification set
-    verify_set = _build_verification_set(public_tests, generated_tests)
+    verify_set = _build_verification_set(
+        public_tests,
+        generated_tests,
+        max_generated_tests=max_verification_generated_tests,
+    )
     checker_exe_str = state.get("tests", {}).get("checker_exe")
     checker_exe = Path(checker_exe_str) if checker_exe_str else None
 
@@ -556,6 +813,8 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     prev_code = state["solution"].get("code", "")
     all_new_messages: List[Dict[str, str]] = []
     history = list(state.get("messages", []))
+    compaction_context = build_chat_compaction_context(state, node_name="generate_code")
+    compaction_config = state.get("config")
 
     # Determine if this is initial generation or patch iteration
     is_initial = (iteration == 0 or not prev_code)
@@ -573,20 +832,25 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
         # First time: generate complete code
         logger.info("[GenCode] Initial generation (no previous code)")
         
+        initial_self_validation_feedback = ""
         for attempt in range(1, max_self_attempts + 1):
-            response, new_msgs = _generate_with_compact_retry(
+            response, new_msgs, persisted_messages = _call_generate_with_history(
                 llm,
-                history,
                 _build_initial_prompt,
                 problem_desc, algorithm, steps,
                 constraints, public_tests, generated_tests,
                 memory_advice=memory_advice,
                 solver_graph_block=solver_graph_block,
                 abstract_tags_level2_block=abstract_tags_level2_block,
+                self_validation_feedback=initial_self_validation_feedback,
+                messages_history=history,
+                _stage="generate_code.initial",
+                _compaction_context=compaction_context,
+                _compaction_config=compaction_config,
             )
             llm_calls += 1
             all_new_messages.extend(new_msgs)
-            history.extend(new_msgs)
+            history = list(persisted_messages)
             code = sanitize_cpp(response)
 
             # Self-validate
@@ -604,85 +868,103 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
             logger.info(f"[GenCode] {fail_summary}")
 
             if attempt < max_self_attempts:
-                # For next attempt within initial generation, still regenerate complete code
-                # but inject failure info
-                pass
+                initial_self_validation_feedback = _format_self_validation_feedback(
+                    failures,
+                    total_run,
+                    len(verify_set),
+                )
     
     else:
-        revision_mode = str(((state.get("config") or {}).get("codegen", {}) or {}).get("revision_mode", "patch")).strip().lower()
-        if revision_mode not in {"patch", "full_regen"}:
-            revision_mode = "patch"
-        mode_label = revision_mode
-        if revision_mode == "patch":
-            # Patch mode: use SEARCH/REPLACE to fix previous code
-            logger.info("[GenCode] Patch mode (fixing previous code)")
-        else:
-            # Regeneration mode: rewrite full code on repair iterations
-            logger.info("[GenCode] Full regeneration mode (rewriting entire code)")
-        
         # Extract feedback from previous iteration
         feedback_text = ""
         specific_failures = []
         suggested_fixes = []
-        
+        aggregate_failures_text = ""
+        diagnostic_text = ""
+        code = prev_code
+
         if iteration > 0:
             feedback_data = state.get("feedback", {}).get("feedback", {})
             specific_failures = feedback_data.get("failures", [])
+            aggregate_summary = feedback_data.get("aggregate_summary", {})
+            aggregate_failures_text = _format_aggregate_failures_text(aggregate_summary)
             suggested_fixes = state.get("feedback", {}).get("suggested_fixes", [])
-            
+
             analysis = feedback_data.get("analysis", "")
             error_pattern = feedback_data.get("error_pattern", "")
             if analysis:
                 feedback_text = f"Analysis: {analysis}\nError Pattern: {error_pattern}"
-        
+
         for attempt in range(1, max_self_attempts + 1):
+            decision, decision_msgs, decision_persisted = _choose_repair_mode(
+                llm,
+                code,
+                problem_desc,
+                algorithm,
+                steps,
+                specific_failures,
+                suggested_fixes,
+                feedback_text,
+                aggregate_failures_text,
+                diagnostic_text,
+                memory_advice,
+                abstract_tags_level2_block,
+                messages_history=history,
+                compaction_context=compaction_context,
+                compaction_config=compaction_config,
+            )
+            llm_calls += 1
+            all_new_messages.extend(decision_msgs)
+            history = list(decision_persisted)
+            revision_mode = decision["mode"]
+            mode_label = revision_mode
+            self_validation_log.append(
+                f"Decision attempt {attempt}: {revision_mode} ({decision['confidence']}) - {decision['reason']}"
+            )
+
             if revision_mode == "patch":
-                llm_response, new_msgs = _generate_with_compact_retry(
+                llm_response, new_msgs, persisted_messages = _call_generate_with_history(
                     llm,
-                    history,
                     _build_patch_prompt,
-                    prev_code,
+                    code,
                     problem_desc,
                     algorithm,
                     steps,
                     specific_failures,
                     suggested_fixes,
                     feedback_text,
+                    aggregate_failures_text,
                     memory_advice=memory_advice,
                     abstract_tags_level2_block=abstract_tags_level2_block,
+                    messages_history=history,
+                    _stage="generate_code.patch",
+                    _compaction_context=compaction_context,
+                    _compaction_config=compaction_config,
                 )
                 llm_calls += 1
                 all_new_messages.extend(new_msgs)
-                history.extend(new_msgs)
+                history = list(persisted_messages)
 
-                # Parse SEARCH/REPLACE blocks
                 blocks = parse_search_replace_blocks(llm_response)
-
                 if not blocks:
                     logger.warning(f"[GenCode] No SEARCH/REPLACE blocks found in LLM response (attempt {attempt})")
                     self_validation_log.append(f"Patch attempt {attempt}: No valid SEARCH/REPLACE blocks found")
-                    code = prev_code  # Keep previous code
                     continue
 
-                # Apply patches
-                success, patched_code, error_msg = apply_search_replace_blocks(prev_code, blocks)
-
+                success, patched_code, error_msg = apply_search_replace_blocks(code, blocks)
                 if not success:
                     logger.warning(f"[GenCode] Patch application failed: {error_msg} (attempt {attempt})")
                     self_validation_log.append(f"Patch attempt {attempt}: Failed to apply - {error_msg}")
-                    code = prev_code  # Keep previous code
                     continue
 
-                # Log the diff for traceability
-                diff = compute_unified_diff(prev_code, patched_code)
+                diff = compute_unified_diff(code, patched_code)
                 logger.debug(f"[GenCode] Patch diff:\n{diff}")
                 code = patched_code
             else:
-                response, new_msgs = _generate_with_compact_retry(
+                response, new_msgs, persisted_messages = _call_generate_with_history(
                     llm,
-                    history,
                     _build_regenerate_prompt,
-                    prev_code,
+                    code,
                     problem_desc,
                     algorithm,
                     steps,
@@ -694,13 +976,16 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
                     generated_tests,
                     memory_advice=memory_advice,
                     abstract_tags_level2_block=abstract_tags_level2_block,
+                    messages_history=history,
+                    _stage="generate_code.regenerate",
+                    _compaction_context=compaction_context,
+                    _compaction_config=compaction_config,
                 )
                 llm_calls += 1
                 all_new_messages.extend(new_msgs)
-                history.extend(new_msgs)
+                history = list(persisted_messages)
                 code = sanitize_cpp(response)
 
-            # Self-validate repaired code
             passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
 
             if passed:
@@ -730,8 +1015,8 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
             logger.info(f"[GenCode] {fail_summary}")
 
             if attempt < max_self_attempts:
-                # For next repair attempt, inject validation failures
                 feedback_text = _format_self_validation_feedback(failures, total_run, len(verify_set))
+                aggregate_failures_text = ""
                 specific_failures = [
                     {
                         "type": f.get("type", "unknown"),

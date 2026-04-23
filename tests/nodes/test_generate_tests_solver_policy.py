@@ -1,8 +1,10 @@
+import pytest
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import src.nodes.generate_tests as gt
 from src.nodes.generate_tests import (
     build_solver_prompt,
     summarize_public_solver_failure,
@@ -172,14 +174,124 @@ def test_safe_mode_prefers_abstain_when_confidence_missing():
     assert artifact is None
 
 
-def test_route_b_requires_checker_bundle_when_accepted():
-    artifact = _apply_oracle_acceptance_gate(
-        route="trusted_checker_backed_multi_answer",
-        generated_inputs=["1\n"],
-        generated_outputs=["2 1\n"],
-        confidence=1.0,
-        threshold=0.80,
-        trusted_checker_provenance={"kind": "official_checker", "source_id": "dataset://checker/demo"},
+
+
+def test_generate_tests_wrapper_forwards_compaction_kwargs(monkeypatch):
+    captured = {}
+
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        captured.update(kwargs)
+        return "solver reply", [], []
+
+    monkeypatch.setattr(gt, "_generate_with_compact_retry", fake_retry)
+
+    response, new_messages, persisted_messages = gt._call_generate_with_history(
+        object(),
+        gt.build_solver_prompt,
+        "desc",
+        {},
+        [],
+        "advice",
+        "feedback",
+        messages_history=[{"role": "assistant", "content": "old"}],
+        _telemetry={"prompt_char_stats": {}},
+        _stage="solver",
+        _compaction_context={"node_name": "generate_tests"},
+        _compaction_config={"message_compaction": {"enabled": True}},
     )
-    assert artifact is not None
-    assert artifact["kind"] == AcceptedArtifactKind.CHECKER_BUNDLE.value
+
+    assert response == "solver reply"
+    assert new_messages == []
+    assert persisted_messages == []
+    assert captured["_messages_history"] == [{"role": "assistant", "content": "old"}]
+    assert captured["_compaction_context"] == {"node_name": "generate_tests"}
+    assert captured["_compaction_config"] == {"message_compaction": {"enabled": True}}
+
+
+def test_generate_tests_wrapper_requires_history_aware_retry_signature(monkeypatch):
+    seen = {}
+
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        seen.setdefault("calls", 0)
+        seen["calls"] += 1
+        if "_messages_history" in kwargs:
+            raise TypeError("fake_retry() got an unexpected keyword argument '_messages_history'")
+        return "legacy reply"
+
+    monkeypatch.setattr(gt, "_generate_with_compact_retry", fake_retry)
+
+    with pytest.raises(TypeError):
+        gt._call_generate_with_history(
+            object(),
+            gt.build_solver_prompt,
+            "desc",
+            {},
+            [],
+            "advice",
+            "feedback",
+            messages_history=[{"role": "assistant", "content": "old"}],
+            _telemetry={"prompt_char_stats": {}},
+            _stage="solver",
+            _compaction_context={"node_name": "generate_tests"},
+            _compaction_config={"message_compaction": {"enabled": True}},
+        )
+
+
+def test_generate_tests_node_respects_configured_no_ac_target_cap(monkeypatch, tmp_path):
+    from src.graph.state import create_initial_state
+    from src.nodes import generate_tests as gt
+
+    class FakeLLM:
+        @staticmethod
+        def build_role_config(config, role):
+            return {}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stderr = "generator failed"
+
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        if prompt_builder is gt.build_generator_prompt:
+            return '{"generator_cpp": "int main() { return 0; }"}', [], []
+        if prompt_builder is gt.build_validator_prompt:
+            return '{"validator_cpp": "int main() { return 0; }"}', [], []
+        raise AssertionError(f"unexpected prompt builder: {prompt_builder}")
+
+    def fake_compile_cpp(_src, _exe, include_testlib=False, diagnostic=False):
+        return True, ""
+
+    def fake_subprocess_run(*args, **kwargs):
+        stdout = kwargs.get("stdout")
+        if stdout is not None:
+            stdout.write("")
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(gt, "UnifiedLLMClient", FakeLLM)
+    monkeypatch.setattr(gt, "_generate_with_compact_retry", fake_retry)
+    monkeypatch.setattr(gt, "compile_cpp", fake_compile_cpp)
+    monkeypatch.setattr(gt.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gt, "_resolve_data_root", lambda config: tmp_path)
+
+    state = create_initial_state(
+        {"description": "demo", "public_tests": [{"input": "1\n", "output": "1\n"}]},
+        {
+            "generate_tests_target_count": 200,
+            "generate_tests_target_count_without_ac": 7,
+        },
+    )
+
+    out = gt.generate_tests_node(state)
+
+    assert out["tests"]["certified_target_count"] == 7
+    assert out["tests"]["generated_tests"] == [
+        {
+            "input": "1\n",
+            "expected_output": "1\n",
+            "type": "public",
+            "description": "Public test case",
+        }
+    ]

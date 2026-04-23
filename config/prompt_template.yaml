@@ -142,6 +142,8 @@ generate_code:
 
     <SOLVER_GRAPH_BLOCK>
 
+    <SELF_VALIDATION_BLOCK>
+
     <MEMORY_ADVICE>
 
     Requirements:
@@ -160,6 +162,54 @@ generate_code:
     - The final code must be realistic for competitive-programming limits, not just mathematically plausible
 
     Generate ONLY the complete C++ code, no explanations.
+
+  patch_decision: |
+    You are choosing the repair mode for a failing C++ solution.
+
+    Problem:
+    <PROBLEM_DESC>
+
+    <ABSTRACT_TAGS_LEVEL2_BLOCK>
+
+    Algorithm:
+    <ALGORITHM>
+
+    Implementation steps:
+    <STEPS>
+
+    ## Current Code:
+    ```cpp
+    <PREV_CODE>
+    ```
+
+    ## Objective Failure Evidence:
+    <FAILURES_BLOCK>
+
+    <AGGREGATE_FAILURES_BLOCK>
+
+    <DIAGNOSTIC_BLOCK>
+
+    ## Auxiliary References (use only as secondary hints):
+    <FEEDBACK_TEXT>
+
+    <FIXES_BLOCK>
+
+    <MEMORY_ADVICE>
+
+    ## Your Task
+    Based on the objective evidence above:
+    1. First judge whether the failures indicate a localized bug or a systemic/global flaw.
+    2. Then identify the most likely error type.
+    3. Choose the better repair mode:
+       - `patch` if the overall approach is still sound and the issue is localized.
+       - `full_regen` if the overall approach is likely wrong or patching would keep drifting further.
+
+    Rules:
+    - Base the decision primarily on the objective evidence and current code.
+    - Treat the auxiliary references as secondary hints only.
+    - Do not guess beyond the provided evidence.
+    - Return ONLY valid JSON with this schema:
+      {"mode":"patch|full_regen","confidence":"low|medium|high","reason":"one short sentence"}
 
   patch: |
     You are debugging a C++ solution that is FAILING tests. Your task is to generate SEARCH/REPLACE edits to fix the bugs.
@@ -183,6 +233,8 @@ generate_code:
     ## Test Failures:
     <FAILURES_BLOCK>
 
+    <AGGREGATE_FAILURES_BLOCK>
+
     <FEEDBACK_TEXT>
 
     <FIXES_BLOCK>
@@ -191,6 +243,7 @@ generate_code:
 
     ## Your Task:
     Analyze the failures and generate *SEARCH/REPLACE* edits to fix the bugs.
+    Before proposing edits, first judge whether the evidence indicates a localized bug or a systemic/global flaw, then identify the likely error type. Base that judgment primarily on the current code and objective evidence above; treat auxiliary references only as secondary hints. If the evidence supports only localized repair, make the smallest necessary change. If the evidence indicates the current direction is globally wrong, do not preserve it just because it matches the existing plan.
 
     Every *SEARCH/REPLACE* edit must use this EXACT format:
     <<<<<<< SEARCH

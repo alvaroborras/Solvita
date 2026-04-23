@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Tuple
 from loguru import logger
 
 from src.llm import UnifiedLLMClient
-from src.nodes._chat_utils import chat_with_history
+from src.nodes._chat_utils import chat_with_history, build_chat_compaction_context
 from src.nodes.generator_common import (
     apply_patch_response,
     parse_repair_checklist,
@@ -102,7 +102,15 @@ def generate_stress_test_program(
 
     prompt = build_stress_generator_prompt(problem_desc, constraints_text)
     history = list(messages_history) if messages_history else []
-    cpp_source, new_msgs = chat_with_history(llm, history, prompt)
+    compaction_context = build_chat_compaction_context(state, node_name="generator_stress")
+    compaction_config = state.get("config")
+    cpp_source, new_msgs, persisted_messages = chat_with_history(
+        llm,
+        history,
+        prompt,
+        compaction_context=compaction_context,
+        compaction_config=compaction_config,
+    )
 
     from src.utils.cpp_execution import sanitize_cpp
 
@@ -133,6 +141,8 @@ def repair_stress_test_program(
     constraints_text = render_input_validity_constraints(state)
     history = list(messages_history) if messages_history else []
     all_new_msgs: List[Dict[str, str]] = []
+    compaction_context = build_chat_compaction_context(state, node_name="generator_stress")
+    compaction_config = state.get("config")
 
     checklist_prompt = build_stress_checklist_prompt(
         problem_desc, constraints_text,
@@ -141,9 +151,15 @@ def repair_stress_test_program(
         previous_attempt_issues=previous_attempt_issues,
         previous_generated_input=previous_generated_input[:400],
     )
-    checklist_response, new_msgs = chat_with_history(llm, history, checklist_prompt)
+    checklist_response, new_msgs, persisted_messages = chat_with_history(
+        llm,
+        history,
+        checklist_prompt,
+        compaction_context=compaction_context,
+        compaction_config=compaction_config,
+    )
     all_new_msgs.extend(new_msgs)
-    history.extend(new_msgs)
+    history = list(persisted_messages)
     checklist = parse_repair_checklist(checklist_response, fallback_reason=failure_reason or previous_attempt_issues)
 
     patch_prompt = build_stress_patch_prompt(
@@ -152,7 +168,13 @@ def repair_stress_test_program(
         failure_kind=failure_kind, failure_reason=failure_reason,
         previous_generated_input=previous_generated_input[:400],
     )
-    patch_response, new_msgs = chat_with_history(llm, history, patch_prompt)
+    patch_response, new_msgs, persisted_messages = chat_with_history(
+        llm,
+        history,
+        patch_prompt,
+        compaction_context=compaction_context,
+        compaction_config=compaction_config,
+    )
     all_new_msgs.extend(new_msgs)
 
     ok, patched_cpp, patch_error = apply_patch_response(last_generator_code, patch_response)

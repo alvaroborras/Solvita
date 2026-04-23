@@ -46,6 +46,7 @@ from src.nodes import (
     join_ready_node,
     join_wait_node,
     status_routing,
+    post_codegen_routing,
     compilation_routing,
     hack_routing,
     hack_outcome_routing,
@@ -226,6 +227,7 @@ def create_codegen_subgraph():
         {
             "continue": "analyze_feedback",
             "hack": END,   # 解法通过所有测试，出 Phase 2 → 进 Phase 3
+            "finish": END,  # hacker disabled -> finish after codegen success
             "end": "restore_best_solution",    # 超出迭代次数，恢复最佳解后退出
         },
     )
@@ -351,7 +353,14 @@ def create_solvita_workflow():
     )
     workflow.add_edge("solver_skill_plan_ensemble", END)
     workflow.add_edge("solver_skill_plan", "codegen_phase")
-    workflow.add_edge("codegen_phase", "phase_transition_2")
+    workflow.add_conditional_edges(
+        "codegen_phase",
+        post_codegen_routing,
+        {
+            "to_hacker": "phase_transition_2",
+            "end": END,
+        },
+    )
     workflow.add_edge("phase_transition_2", "enter_hack_phase")
     workflow.add_edge("enter_hack_phase", "hacker_phase")
 

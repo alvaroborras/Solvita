@@ -50,6 +50,9 @@ def __getattr__(name: str):
     elif name == "status_routing":
         from .routing import status_routing
         return status_routing
+    elif name == "post_codegen_routing":
+        from .routing import post_codegen_routing
+        return post_codegen_routing
     elif name == "compilation_routing":
         from .routing import compilation_routing
         return compilation_routing
@@ -99,6 +102,7 @@ __all__ = [
     "phase_transition_node",
     "settle_hacker_memory",
     "status_routing",
+    "post_codegen_routing",
     "compilation_routing",
     "hack_test_node",
     "hack_routing",

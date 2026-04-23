@@ -12,7 +12,7 @@ from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
 from src.memory import MemoryClient, MemoryNamespace
-from src.nodes._chat_utils import chat_with_history
+from src.nodes._chat_utils import chat_with_history, build_chat_compaction_context
 from src.utils.json_utils import parse_json_response
 from src.utils.prompt_templates import (
     get_nested_template,
@@ -255,6 +255,8 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
     last_response = ""
     all_new_messages: List[Dict[str, str]] = []
     history = list(state.get("messages", []))
+    compaction_context = build_chat_compaction_context(state, node_name="abstract_problem")
+    compaction_config = cfg
 
     for attempt in range(2):
         system_msg, user_msg = _build_abstract_messages(
@@ -268,19 +270,27 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
         )
         try:
             try:
-                response, new_msgs = chat_with_history(
-                    llm, history, user_msg,
+                response, new_msgs, persisted_messages = chat_with_history(
+                    llm,
+                    history,
+                    user_msg,
                     system_content=system_msg,
                     response_format={"type": "json_object"},
+                    compaction_context=compaction_context,
+                    compaction_config=compaction_config,
                 )
             except Exception as e:
                 logger.warning(
                     "[Abstract] response_format=json_object failed (%s), retrying without",
                     e,
                 )
-                response, new_msgs = chat_with_history(
-                    llm, history, user_msg,
+                response, new_msgs, persisted_messages = chat_with_history(
+                    llm,
+                    history,
+                    user_msg,
                     system_content=system_msg,
+                    compaction_context=compaction_context,
+                    compaction_config=compaction_config,
                 )
         except PromptTooLongError:
             if prompt_compact:
@@ -291,7 +301,7 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
         llm_calls += 1
         last_response = response
         all_new_messages.extend(new_msgs)
-        history.extend(new_msgs)
+        history = list(persisted_messages)
         try:
             parsed = parse_json_response(response)
             break

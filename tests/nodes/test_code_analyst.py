@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import MagicMock
 from src.nodes.code_analyst import parse_code_analyst_response, execute_tool, run_code_analyst, build_analyst_prompt
 from src.llm.unified_client import PromptTooLongError
+from src.nodes import code_analyst
 
 def test_parse_analyst_tool_call():
     """Test parsing a valid tool call."""
@@ -439,6 +440,70 @@ def test_build_analyst_prompt_trims_old_and_large_history():
     assert "oldest entry should be dropped" not in prompt
     assert "recent entry should stay" in prompt
     assert len(prompt) < 10000
+
+
+def test_run_code_analyst_forwards_compaction_kwargs(monkeypatch):
+    observed = {}
+
+    def fake_chat_with_history(llm, messages_history, prompt, **kwargs):
+        observed["messages_history"] = list(messages_history)
+        observed["prompt"] = prompt
+        observed["system_content"] = kwargs.get("system_content")
+        observed["compaction_context"] = kwargs.get("compaction_context")
+        observed["compaction_config"] = kwargs.get("compaction_config")
+        observed["temperature"] = kwargs.get("temperature")
+        return (
+            json.dumps({
+                "bug_class": "logic_branch",
+                "confidence": "medium",
+                "evidence": ["forwarded through direct helper"],
+                "suggested_route": "semantic",
+                "input_hypothesis": ["edge_case"],
+            }),
+            [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "ok"},
+            ],
+            [
+                {"role": "assistant", "content": "previous context"},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "ok"},
+            ],
+        )
+
+    monkeypatch.setattr(code_analyst, "chat_with_history", fake_chat_with_history)
+
+    state = {
+        "current_phase": "HACK",
+        "iteration": 2,
+        "max_iterations": 5,
+        "problem": {
+            "description": "test problem",
+            "constraints": {"n": "1..10"},
+            "canonical": {"objective": "find a counterexample"},
+        },
+        "solution": {"code": "int main() {}"},
+        "plan": {
+            "memory_advice": "Prefer branching edge cases.",
+            "skill_selection_skill_ids": ["skill.branch"],
+        },
+        "feedback": {"feedback": {"analysis": "prior failure", "failures": [{"kind": "wa"}]}},
+        "execution_log": ["step1", "step2"],
+        "config": {"message_compaction": {"enabled": True, "max_history_ratio": 0.5}},
+    }
+    history = [{"role": "assistant", "content": "previous context"}]
+
+    report, new_messages = run_code_analyst(state, MagicMock(), max_rounds=1, messages_history=history)
+
+    assert report["bug_class"] == "logic_branch"
+    assert observed["messages_history"] == history
+    assert "Return ONLY valid JSON" in observed["system_content"]
+    assert observed["temperature"] == 0.0
+    assert observed["compaction_context"]["node_name"] == "code_analyst"
+    assert observed["compaction_context"]["current_objective"] == "find a counterexample"
+    assert observed["compaction_context"]["skill_selection_skill_ids"] == ["skill.branch"]
+    assert observed["compaction_config"] == state["config"]
+    assert new_messages[-1]["role"] == "assistant"
 
 
 def test_execute_tool_cpp_rejects_overlarge_probe_before_compile(monkeypatch):

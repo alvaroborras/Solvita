@@ -10,7 +10,7 @@ from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
 from src.memory import MemoryClient, MemoryNamespace
-from src.nodes._chat_utils import chat_with_history as _chat_with_history
+from src.nodes._chat_utils import build_chat_compaction_context, chat_with_history as _chat_with_history
 from src.memory.client import render_oracle_plan_to_prompt_payload, resolve_oracle_item_ids_by_family_ids
 from src.oracle.catalog import build_oracle_catalog
 from src.oracle.selector import build_rule_based_oracle_plan
@@ -78,14 +78,24 @@ def _generate_with_compact_retry(
     _telemetry: Optional[Dict[str, Any]] = None,
     _stage: Optional[str] = None,
     _messages_history: Optional[list] = None,
+    _compaction_context: Optional[Dict[str, Any]] = None,
+    _compaction_config: Optional[Dict[str, Any]] = None,
     **kwargs,
-) -> tuple:
-    """Returns (response_text, new_messages)."""
+) -> tuple | str:
+    """Return either raw text (legacy) or (response_text, new_messages) when history is threaded."""
     history = _messages_history if _messages_history is not None else []
     prompt = prompt_builder(*args, compact=False, **kwargs)
     _update_prompt_telemetry(_telemetry, _stage, prompt)
     try:
-        return _chat_with_history(llm, history, prompt)
+        if _messages_history is None:
+            return llm.generate(prompt)
+        return _chat_with_history(
+            llm,
+            history,
+            prompt,
+            compaction_context=_compaction_context,
+            compaction_config=_compaction_config,
+        )
     except PromptTooLongError:
         compact_prompt = prompt_builder(*args, compact=True, **kwargs)
         _update_prompt_telemetry(_telemetry, _stage, compact_prompt)
@@ -95,7 +105,39 @@ def _generate_with_compact_retry(
             if _stage not in stages:
                 stages.append(_stage)
         logger.warning("[TestGen] Prompt exceeded max tokens, retrying with compact prompt")
-        return _chat_with_history(llm, history, compact_prompt)
+        if _messages_history is None:
+            return llm.generate(compact_prompt)
+        return _chat_with_history(
+            llm,
+            history,
+            compact_prompt,
+            compaction_context=_compaction_context,
+            compaction_config=_compaction_config,
+        )
+
+
+def _call_generate_with_history(
+    llm: UnifiedLLMClient,
+    prompt_builder,
+    *args,
+    messages_history: Optional[list] = None,
+    _compaction_context: Optional[Dict[str, Any]] = None,
+    _compaction_config: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]]]:
+    result = _generate_with_compact_retry(
+        llm,
+        prompt_builder,
+        *args,
+        _messages_history=messages_history,
+        _compaction_context=_compaction_context,
+        _compaction_config=_compaction_config,
+        **kwargs,
+    )
+    from src.nodes._chat_utils import normalize_chat_history_result
+    if messages_history is None:
+        return str(result), [], []
+    return normalize_chat_history_result(result)
 
 
 def _compute_certification_ratio(certified_count: int, target_count: int) -> float:
@@ -772,6 +814,9 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     llm_calls = 0
     max_iter = 3
     target_count = int((state.get("config", {}) or {}).get("generate_tests_target_count", 200))
+    target_count_without_ac = int(
+        (state.get("config", {}) or {}).get("generate_tests_target_count_without_ac", 50)
+    )
     output_max_iter = 5
 
     problem_code = extract_problem_code(raw_problem)
@@ -789,7 +834,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         logger.info(f"[AC] Lookup: {ac_path} -> FOUND")
     else:
         logger.info(f"[AC] Lookup: {ac_path} -> NOT FOUND")
-        target_count = min(target_count, 50)
+        target_count = min(target_count, target_count_without_ac)
 
     certification_mode = not (ac_path and ac_path.exists())
     generator_advice = _build_generator_advice(problem_desc, certification_mode=certification_mode)
@@ -805,6 +850,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     validator_exe: Optional[Path] = None
     all_new_messages: List[Dict[str, str]] = []
     history = list(state.get("messages", []))
+    compaction_context = build_chat_compaction_context(state, node_name="generate_tests")
+    compaction_config = state.get("config")
     oracle_telemetry: Dict[str, Any] = {
         "prompt_char_stats": {},
         "compact_retry_count": 0,
@@ -812,7 +859,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     }
 
     for attempt in range(1, max_iter + 1):
-        gen_response, gen_new_msgs = _generate_with_compact_retry(
+        gen_response, gen_new_msgs, persisted_messages = _call_generate_with_history(
             gen_llm,
             build_generator_prompt,
             problem_desc,
@@ -822,11 +869,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             memory_advice=generator_advice,
             _telemetry=oracle_telemetry,
             _stage="generator",
-            _messages_history=history,
+            messages_history=history,
+            _compaction_context=compaction_context,
+            _compaction_config=compaction_config,
         )
         llm_calls += 1
         all_new_messages.extend(gen_new_msgs)
-        history.extend(gen_new_msgs)
+        history = list(persisted_messages)
         (code_dir / f"generator_{attempt}_raw.txt").write_text(gen_response, encoding="utf-8")
         try:
             gen_data = parse_json_response(gen_response)
@@ -844,7 +893,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             (code_dir / f"generator_{attempt}.log").write_text(gen_log, encoding="utf-8")
             continue
 
-        val_response, val_new_msgs = _generate_with_compact_retry(
+        val_response, val_new_msgs, persisted_messages = _call_generate_with_history(
             val_llm,
             build_validator_prompt,
             problem_desc,
@@ -853,11 +902,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
             val_feedback,
             _telemetry=oracle_telemetry,
             _stage="validator",
-            _messages_history=history,
+            messages_history=history,
+            _compaction_context=compaction_context,
+            _compaction_config=compaction_config,
         )
         llm_calls += 1
         all_new_messages.extend(val_new_msgs)
-        history.extend(val_new_msgs)
+        history = list(persisted_messages)
         logger.info(f"[GV] Validator response length: {len(val_response)}")
         (code_dir / f"validator_{attempt}_raw.txt").write_text(val_response, encoding="utf-8")
         try:
@@ -978,7 +1029,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     if generated_inputs and not generated_outputs:
         checker_feedback = ""
         for attempt in range(1, max_iter + 1):
-            checker_response, chk_new_msgs = _generate_with_compact_retry(
+            checker_response, chk_new_msgs, persisted_messages = _call_generate_with_history(
                 chk_llm,
                 build_checker_prompt,
                 problem_desc,
@@ -987,11 +1038,13 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 checker_feedback,
                 _telemetry=oracle_telemetry,
                 _stage="checker",
-                _messages_history=history,
+                messages_history=history,
+                _compaction_context=compaction_context,
+                _compaction_config=compaction_config,
             )
             llm_calls += 1
             all_new_messages.extend(chk_new_msgs)
-            history.extend(chk_new_msgs)
+            history = list(persisted_messages)
             (code_dir / f"checker_{attempt}_raw.txt").write_text(checker_response, encoding="utf-8")
             try:
                 checker_data = parse_json_response(checker_response)
@@ -1041,19 +1094,24 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         best_partial_outputs: list = []
         for attempt in range(1, output_max_iter + 1):
             solver_attempt_count = attempt
-            solver_response, solver_new_msgs = _generate_with_compact_retry(
+            solver_response, solver_new_msgs, persisted_messages = _call_generate_with_history(
                 out_llm,
                 build_solver_prompt,
-                problem_desc, constraints, public_tests, oracle_advice,
+                problem_desc,
+                constraints,
+                public_tests,
+                oracle_advice,
                 output_feedback,
                 attempt=attempt,
                 _telemetry=oracle_telemetry,
                 _stage="solver",
-                _messages_history=history,
+                messages_history=history,
+                _compaction_context=compaction_context,
+                _compaction_config=compaction_config,
             )
             llm_calls += 1
             all_new_messages.extend(solver_new_msgs)
-            history.extend(solver_new_msgs)
+            history = list(persisted_messages)
             (code_dir / f"solver_bf_{attempt}_raw.txt").write_text(solver_response, encoding="utf-8")
             try:
                 solver_data = parse_json_response(solver_response)

@@ -133,10 +133,17 @@ def flatten_message_content(content: Any) -> str:
                 else:
                     parts.append(json.dumps(item, ensure_ascii=False, sort_keys=True))
                 continue
+            text_attr = getattr(item, "text", None)
+            if text_attr is not None:
+                parts.append(str(text_attr))
+                continue
             parts.append(str(item))
         return "\n".join(part for part in parts if part)
     if isinstance(content, dict):
         return json.dumps(content, ensure_ascii=False, sort_keys=True)
+    text_attr = getattr(content, "text", None)
+    if text_attr is not None:
+        return str(text_attr)
     return str(content)
 
 
@@ -172,6 +179,9 @@ def extract_usage_counts(response: Any) -> Dict[str, int | None]:
 def extract_completion_text(response: Any) -> str:
     if isinstance(response, str):
         return response
+    content = _get_field(response, "content")
+    if content:
+        return flatten_message_content(content)
     choices = _get_field(response, "choices") or []
     if not choices:
         return ""

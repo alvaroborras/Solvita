@@ -20,6 +20,13 @@ from src.benchmark.dataset import load_benchmark_manifest
 from src.benchmark.modes.single_pass import run_single_pass_case
 from src.benchmark.modes.pipeline import run_pipeline_benchmark_case
 from src.benchmark.reporting import write_summary_outputs
+from src.benchmark.results_resume import (
+    iter_parseable_result_rows,
+    load_resume_index,
+    normalize_result_rows,
+    problem_fully_resumed,
+    write_normalized_results_jsonl,
+)
 
 
 MODE_RUNNERS = {
@@ -51,6 +58,12 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(MODE_RUNNERS.keys()),
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Number of independent repeats per problem.",
+    )
     parser.add_argument(
         "--apps-difficulty",
         type=str,
@@ -117,6 +130,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Disable oracle sub-network within trainable_memory.",
     )
+    parser.add_argument(
+        "--disable-hacker",
+        action="store_true",
+        default=False,
+        help="Disable the workflow hacker phase for pipeline mode.",
+    )
     return parser.parse_args()
 
 
@@ -128,16 +147,20 @@ def _run_problem_modes(
     item: Any,
     modes: List[str],
     config: Dict[str, Any],
+    repeat_index: int = 1,
 ) -> List[Dict[str, Any]]:
     payload = load_problem_payload(item.problem_payload_path)
     rows: List[Dict[str, Any]] = []
+    run_config = dict(config)
+    run_config["benchmark_repeat_index"] = repeat_index
 
     for mode in modes:
         runner = MODE_RUNNERS[mode]
         try:
-            result = runner(problem_payload=payload, config=config)
+            result = runner(problem_payload=payload, config=run_config)
             row = {
                 "problem_id": result.problem_id,
+                "repeat_index": repeat_index,
                 "mode": result.mode,
                 "status": result.status,
                 "compile_success": result.compile_success,
@@ -159,6 +182,7 @@ def _run_problem_modes(
         except Exception as exc:
             row = {
                 "problem_id": item.problem_id,
+                "repeat_index": repeat_index,
                 "mode": mode,
                 "status": "error",
                 "compile_success": False,
@@ -190,10 +214,12 @@ def _run_single_manifest(
     config_path: str,
     max_workers: int,
     limit: int | None = None,
+    repeat: int = 1,
     solver_network: bool = False,
     trainable_memory: bool = False,
     tm_hacker_enabled: bool | None = None,
     tm_oracle_enabled: bool | None = None,
+    hacker_enabled: bool = True,
 ) -> Dict[str, Any]:
     items = load_benchmark_manifest(manifest)
     if limit is not None:
@@ -212,65 +238,97 @@ def _run_single_manifest(
         "benchmark_output_dir": str(output_dir),
         "solver_network": {"enabled": solver_network},
         "trainable_memory": tm_config,
+        "hacker_enabled": hacker_enabled,
     }
     rows: List[Dict[str, Any]] = []
     worker_count = max(1, int(max_workers))
+    total_repeats = max(1, int(repeat))
+    repeat_aware = total_repeats > 1
 
-    # Resume support: skip problems already in results.jsonl
-    completed_ids: set[str] = set()
     if results_path.exists():
-        for line in results_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                completed_ids.add(json.loads(line)["problem_id"])
-            except (json.JSONDecodeError, KeyError):
-                continue
-    if completed_ids:
-        before = len(items)
-        items = [it for it in items if it.problem_id not in completed_ids]
-        logger.info("[Resume] Skipping {}/{} already-completed problems", before - len(items), before)
-    if not items:
+        historical_rows = list(iter_parseable_result_rows(results_path))
+        resumable_index = load_resume_index(
+            results_path,
+            modes=tuple(modes),
+            repeat_aware=repeat_aware,
+        )
+    else:
+        historical_rows = []
+        resumable_index = {}
+
+    jobs = []
+    skipped_jobs = 0
+    for repeat_index in range(1, total_repeats + 1):
+        for item in items:
+            if problem_fully_resumed(
+                item.problem_id,
+                tuple(modes),
+                resumable_index,
+                repeat_index=repeat_index,
+                repeat_aware=repeat_aware,
+            ):
+                skipped_jobs += 1
+            else:
+                completed_modes = {
+                    row["mode"]
+                    for key, row in resumable_index.items()
+                    if key[:1] == (item.problem_id,) and (not repeat_aware or key[2] == repeat_index)
+                }
+                pending_modes = [mode for mode in modes if mode not in completed_modes]
+                jobs.append((item, repeat_index, pending_modes))
+
+    if skipped_jobs:
+        logger.info(
+            "[Resume] Skipping {}/{} already-completed problem repeats",
+            skipped_jobs,
+            len(items) * total_repeats,
+        )
+
+    if not jobs:
         logger.info("[Resume] All problems already completed, nothing to do.")
         if results_path.exists():
-            for line in results_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line:
-                    try:
-                        rows.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+            rows = normalize_result_rows(iter_parseable_result_rows(results_path), repeat_aware=repeat_aware)
         else:
             results_path.touch()
-        write_summary_outputs(output_dir, rows)
+        write_normalized_results_jsonl(results_path, rows, repeat_aware=repeat_aware)
+        write_summary_outputs(output_dir, rows, repeats=repeat)
         return {"results_path": str(results_path), "total": len(rows)}
 
+    prefilled_rows = []
+    if results_path.exists():
+        prefilled_rows = list(iter_parseable_result_rows(results_path))
+    rows = list(prefilled_rows)
+
     with results_path.open("a", encoding="utf-8") as fh:
-        if worker_count == 1 or len(items) <= 1:
-            for item in items:
-                for row in _run_problem_modes(item, modes, config):
+        if worker_count == 1 or len(jobs) <= 1:
+            for item, repeat_index, pending_modes in jobs:
+                for row in _run_problem_modes(item, pending_modes, config, repeat_index=repeat_index):
                     rows.append(row)
                     fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                     fh.flush()
         else:
-            worker_count = min(worker_count, len(items), os.cpu_count() or worker_count)
+            worker_count = min(worker_count, len(jobs), os.cpu_count() or worker_count)
             with ProcessPoolExecutor(max_workers=worker_count) as executor:
                 future_to_problem = {
-                    executor.submit(_run_problem_modes, item, modes, config): item.problem_id
-                    for item in items
+                    executor.submit(_run_problem_modes, item, pending_modes, config, repeat_index): (
+                        item.problem_id,
+                        repeat_index,
+                        pending_modes,
+                    )
+                    for item, repeat_index, pending_modes in jobs
                 }
                 for future in as_completed(future_to_problem):
-                    problem_id = future_to_problem[future]
+                    problem_id, repeat_index, pending_modes = future_to_problem[future]
                     try:
                         result_rows = future.result()
                     except Exception as exc:
                         logger.error(
-                            "[Benchmark] Worker crashed for {}: {}", problem_id, exc,
+                            "[Benchmark] Worker crashed for {} repeat {}: {}", problem_id, repeat_index, exc,
                         )
                         result_rows = [
                             {
                                 "problem_id": problem_id,
+                                "repeat_index": repeat_index,
                                 "mode": m,
                                 "status": "error",
                                 "compile_success": False,
@@ -289,27 +347,20 @@ def _run_single_manifest(
                                 "generator_failure_reason": None,
                                 "workflow_log_path": None,
                             }
-                            for m in modes
+                            for m in pending_modes
                         ]
                     for row in result_rows:
                         rows.append(row)
                         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                         fh.flush()
 
-    # For summary, read ALL rows (resumed + new) from the results file
-    all_rows: List[Dict[str, Any]] = []
-    for line in results_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                all_rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    summary = write_summary_outputs(output_dir, all_rows)
+    normalized_rows = normalize_result_rows(rows, repeat_aware=repeat_aware)
+    write_normalized_results_jsonl(results_path, normalized_rows, repeat_aware=repeat_aware)
+    summary = write_summary_outputs(output_dir, normalized_rows, repeats=repeat)
     return {
         "manifest": str(manifest),
         "output_dir": str(output_dir),
-        "rows": len(all_rows),
+        "rows": len(normalized_rows),
         "summary": summary,
     }
 
@@ -596,6 +647,7 @@ def main() -> None:
         trainable_memory=tm_enabled,
         tm_hacker_enabled=tm_hacker,
         tm_oracle_enabled=tm_oracle,
+        hacker_enabled=not args.disable_hacker,
     )
 
     if args.bench is None:
@@ -606,6 +658,7 @@ def main() -> None:
             config_path=args.config_path,
             max_workers=args.max_workers,
             limit=args.limit,
+            repeat=args.repeat,
             **common_kwargs,
         )
         return
@@ -626,6 +679,7 @@ def main() -> None:
             modes=args.modes,
             config_path=args.config_path,
             max_workers=args.max_workers,
+            repeat=args.repeat,
             **common_kwargs,
         )
         run_info["bench"] = bench_name

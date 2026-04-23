@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Tuple
 from loguru import logger
 
 from src.llm import UnifiedLLMClient
-from src.nodes._chat_utils import chat_with_history
+from src.nodes._chat_utils import chat_with_history, build_chat_compaction_context
 from src.nodes.generator_common import render_input_validity_constraints
 from src.utils.prompt_templates import render_template
 
@@ -38,7 +38,15 @@ def generate_anti_hash_test_program(
 
     prompt = build_anti_hash_generator_prompt(problem_desc, constraints_text, analyst_report)
     history = list(messages_history) if messages_history else []
-    cpp_source, new_msgs = chat_with_history(llm, history, prompt)
+    compaction_context = build_chat_compaction_context(state, node_name="generator_anti_hash")
+    compaction_config = state.get("config")
+    cpp_source, new_msgs, persisted_messages = chat_with_history(
+        llm,
+        history,
+        prompt,
+        compaction_context=compaction_context,
+        compaction_config=compaction_config,
+    )
 
     from src.utils.cpp_execution import sanitize_cpp
     try:

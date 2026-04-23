@@ -43,7 +43,7 @@ def test_phase_transition_advances_abstract_to_testgen():
     )
 
     assert result["current_phase"] == "TESTGEN"
-    assert result["messages"] == []
+    assert "messages" not in result
 
 
 def test_phase_transition_loops_hacker_failures_back_to_codegen():
@@ -61,7 +61,7 @@ def test_phase_transition_loops_hacker_failures_back_to_codegen():
     assert result["iteration"] == 1
     assert result["hack_round"] == 0
     assert result["status"] == "pending"
-    assert result["messages"] == []
+    assert "messages" not in result
 
 
 def test_hack_outcome_routing_marks_terminal_failure_after_iteration_budget():

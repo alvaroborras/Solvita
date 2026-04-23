@@ -18,20 +18,22 @@ def _to_row_dict(row: Any) -> Dict[str, Any]:
     return dict(row)
 
 
-def summarize_results(rows: Iterable[Any]) -> Dict[str, Any]:
+def summarize_results(rows: Iterable[Any], repeats: int = 1) -> Dict[str, Any]:
     row_dicts = [_to_row_dict(row) for row in rows]
     by_mode: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    by_problem: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    by_problem_mode: Dict[str, Dict[str, List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
 
     for row in row_dicts:
         by_mode[row["mode"]].append(row)
-        by_problem[row["problem_id"]][row["mode"]] = row
+        by_problem_mode[row["problem_id"]][row["mode"]].append(row)
 
     mode_summary = {}
     for mode, items in by_mode.items():
         total = len(items)
+        problem_count = len({str(item.get("problem_id", "")) for item in items if item.get("problem_id")})
         mode_summary[mode] = {
-            "count": total,
+            "row_count": total,
+            "problem_count": problem_count,
             "compile_success_rate": (
                 sum(1 for item in items if item["compile_success"]) / total if total else 0.0
             ),
@@ -55,13 +57,13 @@ def summarize_results(rows: Iterable[Any]) -> Dict[str, Any]:
     wins_pipeline = 0
     wins_gpt52 = 0
     ties = 0
-    for _, pair in by_problem.items():
-        pipeline = pair.get("solvita_pipeline")
-        single = pair.get("single_pass") or pair.get("gpt52_single_pass")
-        if not pipeline or not single:
+    for _, pair in by_problem_mode.items():
+        pipeline_rows = sorted(pair.get("solvita_pipeline", []), key=lambda row: int(row.get("repeat_index", 1) or 1))
+        single_rows = sorted(pair.get("single_pass", []) or pair.get("gpt52_single_pass", []), key=lambda row: int(row.get("repeat_index", 1) or 1))
+        if not pipeline_rows or not single_rows:
             continue
-        p_rate = float(pipeline.get("pass_rate", 0.0))
-        s_rate = float(single.get("pass_rate", 0.0))
+        p_rate = float(pipeline_rows[0].get("pass_rate", 0.0))
+        s_rate = float(single_rows[0].get("pass_rate", 0.0))
         if p_rate > s_rate:
             wins_pipeline += 1
         elif s_rate > p_rate:
@@ -71,14 +73,66 @@ def summarize_results(rows: Iterable[Any]) -> Dict[str, Any]:
 
     return {
         "modes": mode_summary,
+        "pass_at_k": _summarize_pass_at_k(row_dicts, repeats=repeats),
         "head_to_head": {
             "wins_pipeline": wins_pipeline,
             "wins_single_pass": wins_gpt52,
             "ties": ties,
         },
         "total_rows": len(row_dicts),
-        "total_problems": len(by_problem),
+        "total_problems": len(by_problem_mode),
     }
+
+
+def _summarize_pass_at_k(row_dicts: List[Dict[str, Any]], repeats: int = 1) -> Dict[str, Dict[str, Any]]:
+    if repeats <= 1:
+        return {}
+
+    by_mode_problem: Dict[str, Dict[str, List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for row in row_dicts:
+        problem_id = row.get("problem_id")
+        mode = row.get("mode")
+        if not problem_id or not mode:
+            continue
+        by_mode_problem[str(mode)][str(problem_id)].append(row)
+
+    summary: Dict[str, Dict[str, Any]] = {}
+    for mode, problems in by_mode_problem.items():
+        total = len(problems)
+        if total == 0:
+            continue
+
+        full_pass_at_1 = 0
+        full_pass_at_k = 0
+        avg_pass_rate_at_1 = 0.0
+        avg_best_of_k_pass_rate = 0.0
+
+        for rows in problems.values():
+            ordered = sorted(rows, key=lambda row: int(row.get("repeat_index", 1) or 1))
+            first = ordered[0]
+            first_rate = float(first.get("pass_rate", 0.0) or 0.0)
+            best_rate = max(float(row.get("pass_rate", 0.0) or 0.0) for row in ordered)
+
+            if first_rate >= 1.0:
+                full_pass_at_1 += 1
+            if any(float(row.get("pass_rate", 0.0) or 0.0) >= 1.0 for row in ordered):
+                full_pass_at_k += 1
+
+            avg_pass_rate_at_1 += first_rate
+            avg_best_of_k_pass_rate += best_rate
+
+        summary[mode] = {
+            "k": repeats,
+            "problem_count": total,
+            "full_pass_at_1": full_pass_at_1,
+            "full_pass_at_k": full_pass_at_k,
+            "full_pass_at_1_rate": full_pass_at_1 / total,
+            "full_pass_at_k_rate": full_pass_at_k / total,
+            "avg_pass_rate_at_1": avg_pass_rate_at_1 / total,
+            "avg_best_of_k_pass_rate": avg_best_of_k_pass_rate / total,
+        }
+
+    return summary
 
 
 def render_markdown_report(summary: Dict[str, Any]) -> str:
@@ -93,7 +147,8 @@ def render_markdown_report(summary: Dict[str, Any]) -> str:
         lines.extend(
             [
                 f"### {mode}",
-                f"- count: {stats['count']}",
+                f"- row_count: {stats['row_count']}",
+                f"- problem_count: {stats['problem_count']}",
                 f"- compile_success_rate: {stats['compile_success_rate']:.2%}",
                 f"- avg_pass_rate: {stats['avg_pass_rate']:.2%}",
                 f"- avg_elapsed_total_s: {stats['avg_elapsed_total_s']:.2f}",
@@ -103,6 +158,28 @@ def render_markdown_report(summary: Dict[str, Any]) -> str:
                 "",
             ]
         )
+
+    pass_at_k = summary.get("pass_at_k", {})
+    if pass_at_k:
+        lines.extend([
+            "## Pass@K",
+            "",
+        ])
+        for mode, stats in pass_at_k.items():
+            lines.extend(
+                [
+                    f"### {mode}",
+                    f"- k: {stats['k']}",
+                    f"- problem_count: {stats['problem_count']}",
+                    f"- full_pass_at_1: {stats['full_pass_at_1']}",
+                    f"- full_pass_at_k: {stats['full_pass_at_k']}",
+                    f"- full_pass_at_1_rate: {stats['full_pass_at_1_rate']:.2%}",
+                    f"- full_pass_at_k_rate: {stats['full_pass_at_k_rate']:.2%}",
+                    f"- avg_pass_rate_at_1: {stats['avg_pass_rate_at_1']:.2%}",
+                    f"- avg_best_of_k_pass_rate: {stats['avg_best_of_k_pass_rate']:.2%}",
+                    "",
+                ]
+            )
 
     h2h = summary.get("head_to_head", {})
     lines.extend(
@@ -118,10 +195,10 @@ def render_markdown_report(summary: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_summary_outputs(output_dir: Path, rows: Iterable[Any]) -> Dict[str, Any]:
+def write_summary_outputs(output_dir: Path, rows: Iterable[Any], repeats: int = 1) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     row_dicts = [_to_row_dict(row) for row in rows]
-    summary = summarize_results(row_dicts)
+    summary = summarize_results(row_dicts, repeats=repeats)
 
     summary_path = output_dir / "summary.json"
     report_path = output_dir / "report.md"

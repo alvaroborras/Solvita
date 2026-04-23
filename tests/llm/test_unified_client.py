@@ -1,4 +1,5 @@
 from src.llm.unified_client import UnifiedLLMClient
+import pytest
 
 
 def test_generate_passes_request_timeout_to_chat_completion(monkeypatch):
@@ -32,86 +33,77 @@ def test_generate_passes_request_timeout_to_chat_completion(monkeypatch):
     assert captured["timeout"] == 17
 
 
-def test_anthropic_provider_calls_messages_api(monkeypatch):
-    captured = {}
+def test_api_key_mode_overrides_azure_aad(monkeypatch):
+    class DummyOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
 
-    class _Block:
-        text = "anthropic-ok"
-
-    class _Resp:
-        content = [_Block()]
-
-    class _Messages:
-        def create(self, **kwargs):
-            captured.update(kwargs)
-            return _Resp()
-
-    class _DummyAnthropicClient:
-        def __init__(self):
-            self.messages = _Messages()
-
-    monkeypatch.setattr(UnifiedLLMClient, "_initialize_client", lambda self: _DummyAnthropicClient())
+    monkeypatch.setattr("openai.OpenAI", DummyOpenAI)
 
     client = UnifiedLLMClient(
         {
-            "base_url": "http://anthropic.local",
-            "api_key": "token",
-            "model": "claude-opus-4-6-20260205",
-            "provider": "anthropic",
-            "request_timeout": 21,
+            "base_url": "https://app.ppapi.ai/v1",
+            "api_key": "secret",
+            "azure_tenant_id": "tenant",
+            "azure_scope": "scope",
+            "model": "gpt-5.4",
         }
     )
-    out = client.generate_with_system("sys", "hello")
-    assert out == "anthropic-ok"
-    assert captured["model"] == "claude-opus-4-6-20260205"
-    assert captured["timeout"] == 21
-    assert captured["system"] == "sys"
-    assert captured["messages"][0]["role"] == "user"
+
+    assert client._use_azure is False
 
 
-def test_dashscope_provider_calls_generation(monkeypatch):
-    class _Message:
-        content = "dashscope-ok"
+def test_env_model_override_skips_yaml_role_model(monkeypatch):
+    class DummyOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
 
-    class _Choice:
-        message = _Message()
-
-    class _Output:
-        choices = [_Choice()]
-
-    class _Resp:
-        status_code = 200
-        output = _Output()
-
-    captured = {}
-
-    class _DummyGeneration:
-        @staticmethod
-        def call(**kwargs):
-            captured.update(kwargs)
-            return _Resp()
-
-    import sys
-    import types
-
-    fake_dashscope = types.ModuleType("dashscope")
-    fake_dashscope.Generation = _DummyGeneration
-    monkeypatch.setitem(sys.modules, "dashscope", fake_dashscope)
-    monkeypatch.setattr(UnifiedLLMClient, "_initialize_client", lambda self: object())
-
-    client = UnifiedLLMClient(
-        {
-            "base_url": "http://dashscope.local",
-            "api_key": "token",
-            "model": "qwen3.6-plus",
-            "provider": "dashscope",
-            "max_tokens": 321,
-            "temperature": 0.3,
-        }
+    monkeypatch.setenv("SOLVITA_BASE_URL", "https://app.ppapi.ai/v1")
+    monkeypatch.setenv("SOLVITA_API_KEY", "secret")
+    monkeypatch.setenv("SOLVITA_MODEL", "gpt-5.4")
+    monkeypatch.setattr("openai.OpenAI", DummyOpenAI)
+    monkeypatch.setattr(
+        UnifiedLLMClient,
+        "_load_yaml_root",
+        classmethod(
+            lambda cls, config: {
+                "llm": {
+                    "model": "gpt-5.4-20260305",
+                    "roles": {"generator": {"model": "gpt-5.4-20260305"}},
+                }
+            }
+        ),
     )
-    out = client.generate("hello")
-    assert out == "dashscope-ok"
-    assert captured["model"] == "qwen3.6-plus"
-    assert captured["max_tokens"] == 321
-    assert captured["temperature"] == 0.3
-    assert captured["messages"][0]["content"] == "hello"
+
+    role_cfg = UnifiedLLMClient.build_role_config({}, "generator")
+    client = UnifiedLLMClient(role_cfg)
+
+    assert client.current_model == "gpt-5.4"
+    assert client._use_azure is False
+
+
+def test_provider_env_aliases_both_supported(monkeypatch):
+    class DummyOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("openai.OpenAI", DummyOpenAI)
+    monkeypatch.setenv("SOLVITA_BASE_URL", "https://app.ppapi.ai/v1")
+    monkeypatch.setenv("SOLVITA_API_KEY", "secret")
+    monkeypatch.setenv("SOLVITA_PROVIDER", "openai_compatible")
+
+    client = UnifiedLLMClient({"model": "gpt-5.4"})
+    assert client.provider == "openai"
+
+    monkeypatch.delenv("SOLVITA_PROVIDER")
+    monkeypatch.setenv("SOLVITA_LLM_PROVIDER", "openai_compatible")
+    client = UnifiedLLMClient({"model": "gpt-5.4"})
+    assert client.provider == "openai"
+
+
+def test_unknown_provider_fails_fast(monkeypatch):
+    monkeypatch.setenv("SOLVITA_BASE_URL", "https://app.ppapi.ai/v1")
+    monkeypatch.setenv("SOLVITA_API_KEY", "secret")
+    with pytest.raises(UnifiedLLMClient.ConfigurationError):
+        UnifiedLLMClient({"model": "gpt-5.4", "provider": "unknown-provider"})
+
