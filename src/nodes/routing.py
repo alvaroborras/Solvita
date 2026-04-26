@@ -45,9 +45,14 @@ def compilation_routing(state: Dict[str, Any]) -> str:
     Returns:
       - "success": compilation ok -> proceed to run_tests
       - "failed": compilation failed -> analyze_feedback
+      - "exhausted": too many consecutive compile failures -> give up
     """
     if state["solution"].get("compilation_success", False):
         return "success"
+    streak = int(state.get("solution", {}).get("compile_fail_streak", 0) or 0)
+    cap = int((state.get("config", {}) or {}).get("max_compile_fail_streak", 8))
+    if streak >= cap:
+        return "exhausted"
     return "failed"
 
 

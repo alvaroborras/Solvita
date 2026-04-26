@@ -85,6 +85,12 @@ def run_pipeline_benchmark_case(
         "token_usage_source": final_state.get("token_usage_source"),
     }
     solution_code = ((final_state.get("solution") or {}).get("code") or "")
+    status_str = str(final_state.get("status", "unknown"))
+    if status_str != "success":
+        best = final_state.get("best_solution") or {}
+        best_code = best.get("code") or ""
+        if best_code and int(best.get("passed_tests", 0)) > 0:
+            solution_code = best_code
     if not solution_code:
         score = {
             "compile_success": False,

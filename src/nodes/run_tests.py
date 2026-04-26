@@ -142,7 +142,18 @@ def run_tests_node(state: "SolvitaState") -> Dict[str, Any]:
         "pending_execution": False,
     })
 
-    return {
+    current_code = state.get('solution', {}).get('code', '') or ''
+    prior_best = state.get('best_solution') or {}
+    update = {
         "tests": updated_tests,
         "execution_log": [f"Tests completed: {passed}/{total} passed ({pass_rate:.1%})"],
     }
+    if current_code and passed > int(prior_best.get('passed_tests', -1)):
+        update["best_solution"] = {
+            "code": current_code,
+            "passed_tests": passed,
+            "total_tests": total,
+            "pass_rate": pass_rate,
+            "version": state.get('solution', {}).get('version', 0),
+        }
+    return update

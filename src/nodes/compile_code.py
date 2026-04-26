@@ -51,6 +51,7 @@ def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
             "compilation_success": True,
             "compilation_errors": [],
             "executable_path": str(exe_path),
+            "compile_fail_streak": 0,
         })
         log_msg = "Code compiled successfully"
         if diagnostic:
@@ -60,15 +61,27 @@ def compile_code_node(state: "SolvitaState") -> Dict[str, Any]:
             "execution_log": [log_msg],
         }
     else:
+        prior_streak = int(state.get("solution", {}).get("compile_fail_streak", 0) or 0)
+        new_streak = prior_streak + 1
         updated_solution.update({
             "compilation_success": False,
             "compilation_errors": errors,
             "executable_path": None,
+            "compile_fail_streak": new_streak,
         })
-        return {
+        cap = int((state.get("config", {}) or {}).get("max_compile_fail_streak", 8))
+        update: Dict[str, Any] = {
             "solution": updated_solution,
             "execution_log": [f"Compilation failed: {len(errors)} error(s)"],
         }
+        if new_streak >= cap:
+            update["status"] = "max_iterations"
+            update["iteration"] = int(state.get("max_iterations", 5))
+            update["execution_log"] = [
+                f"Compilation failed: {len(errors)} error(s)",
+                f"✗ Compile failure streak reached {new_streak} (cap={cap}); giving up.",
+            ]
+        return update
 
 def prepare_executable(code: str, lang: str, tmp_dir: Path, diagnostic: bool = False, limits: Optional[ExecutionLimits] = None) -> tuple[Optional[Path], list[str]]:
     """

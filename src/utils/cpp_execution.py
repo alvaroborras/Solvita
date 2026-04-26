@@ -181,6 +181,35 @@ def _detect_compiler() -> Optional[str]:
     return None
 
 
+def _extract_cpp_from_mixed(text: str) -> str:
+    """Extract C++ code from mixed natural-language + code output.
+
+    Strategy (in priority order):
+    1. Fenced code block (```cpp ... ``` or ``` ... ```)
+    2. Heuristic: first #include / using line through the last top-level '}'.
+    """
+    # 1. Try fenced block – pick the longest one
+    import re as _re
+    blocks = _re.findall(r"```(?:cpp|c\+\+)?\s*\n(.*?)```", text, _re.DOTALL)
+    if blocks:
+        return max(blocks, key=len).strip()
+
+    # 2. Heuristic: #include / using ... through last '}'
+    lines = text.split("\n")
+    start = None
+    end = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if start is None and (stripped.startswith("#include") or stripped.startswith("using ")):
+            start = i
+        if start is not None and stripped == "}":
+            end = i
+    if start is not None and end is not None and end > start:
+        return "\n".join(lines[start:end + 1]).strip()
+
+    return text.strip()
+
+
 def sanitize_cpp(code: str) -> str:
     """
     Strip markdown code blocks from LLM output.
@@ -195,6 +224,10 @@ def sanitize_cpp(code: str) -> str:
         if lines and lines[-1].strip() == "```":
             lines.pop()
         code = "\n".join(lines).strip()
+
+    # If the result still doesn't look like C++ code, try extracting from mixed output
+    if not code.lstrip().startswith("#") and not code.lstrip().startswith("using "):
+        code = _extract_cpp_from_mixed(code)
         
     # Security Scan (T1.2)
     dangerous_patterns = [

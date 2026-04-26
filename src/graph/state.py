@@ -79,6 +79,10 @@ class SolutionData(TypedDict, total=False):
     memory_item_ids: List[str]
     # Diagnostic mode flag (set by analyze_feedback_node when sanitizers are needed)
     diagnostic_mode: bool
+    # Number of consecutive compile failures (reset on success); bounds the
+    # generate_code → compile_code → analyze_feedback tight loop to avoid
+    # blowing past the LangGraph recursion_limit.
+    compile_fail_streak: int
 
 
 class TestData(TypedDict, total=False):
@@ -449,6 +453,7 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             executable_path=None,
             memory_item_ids=[],
             diagnostic_mode=False,
+            compile_fail_streak=0,
         ),
         oracle_solution=None,
         buggy_solution=None,

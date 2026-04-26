@@ -262,6 +262,36 @@ def _get_embedding_client():
         )
 
 
+def _embeddings_create_with_retry(client, *, input, max_attempts: int = 8, base_sleep: float = 2.0):
+    """Wrap ``client.embeddings.create`` with additional retry on 429/5xx.
+
+    The SDK already retries internally but bursty parallel workers can exhaust
+    its budget; this wrapper layers an extra exponential backoff on top so a
+    sustained quota squeeze does not surface as a hard workflow failure.
+    """
+    import time
+    import random
+
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return client.embeddings.create(model=_EMB_MODEL, input=input)
+        except Exception as exc:  # openai.RateLimitError, APIError, etc.
+            msg = str(exc)
+            is_429 = "429" in msg or "RateLimit" in msg or "rate limit" in msg.lower()
+            is_5xx = any(code in msg for code in ("500", "502", "503", "504"))
+            if not (is_429 or is_5xx):
+                raise
+            last_exc = exc
+            if attempt == max_attempts - 1:
+                break
+            sleep_s = base_sleep * (2 ** attempt) + random.uniform(0.0, 1.0)
+            sleep_s = min(sleep_s, 60.0)
+            time.sleep(sleep_s)
+    assert last_exc is not None
+    raise last_exc
+
+
 def _get_sentence_transformer_model():
     """Return a shared SentenceTransformer model."""
     global _ST_MODEL
@@ -300,7 +330,7 @@ def _embed_text(text: str) -> np.ndarray:
         )
     elif _EMB_CONFIG.provider in ("azure_openai", "openai_compatible"):
         client = _get_embedding_client()
-        resp = client.embeddings.create(model=_EMB_MODEL, input=text)
+        resp = _embeddings_create_with_retry(client, input=text)
         vec = np.asarray(resp.data[0].embedding, dtype=np.float64)
     else:
         raise ValueError(
@@ -344,7 +374,7 @@ def warmup_embedding_cache(texts: List[str], batch_size: int = 256) -> int:
     client = _get_embedding_client()
     for i in range(0, len(to_embed), batch_size):
         batch = to_embed[i : i + batch_size]
-        resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
+        resp = _embeddings_create_with_retry(client, input=batch)
         with _EMB_CACHE_LOCK:
             for d in sorted(resp.data, key=lambda x: x.index):
                 _EMB_CACHE[batch[d.index]] = np.asarray(d.embedding, dtype=np.float64)
@@ -445,7 +475,7 @@ def encode_l2_normalized_batch(
         client = _get_embedding_client()
         for i in range(0, len(safe), eff_bs):
             batch = safe[i : i + eff_bs]
-            resp = client.embeddings.create(model=_EMB_MODEL, input=batch)
+            resp = _embeddings_create_with_retry(client, input=batch)
             for d in sorted(resp.data, key=lambda x: x.index):
                 all_embs.append(d.embedding)
     else:
