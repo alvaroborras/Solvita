@@ -29,10 +29,12 @@ def test_initial_prompt_requires_resource_audit():
         generated_tests=[],
     )
 
-    assert "Optimize for BOTH time and space complexity" in prompt
-    assert "internal resource audit" in prompt
-    assert "dense matrices / DP tables / adjacency tables" in prompt
-    assert "adapt the implementation strategy" in prompt
+    # New skill-based prompt: check for HARD-GATE, design-before-code, and complexity audit
+    assert "HARD-GATE" in prompt
+    assert "Design Before Implementation" in prompt
+    assert "Complexity" in prompt
+    assert "Memory" in prompt or "memory limit" in prompt.lower()
+    assert "adapt" in prompt
 
 
 def test_initial_prompt_includes_self_validation_feedback():
@@ -281,3 +283,65 @@ def test_generate_code_retries_with_compact_prompt_on_prompt_too_long():
     assert len(llm.prompts) == 2
     assert "[TRUNCATED" in llm.prompts[1]
 
+
+
+# ── Multi-turn prompt builder tests ──────────────────────────────────────────
+
+def test_think_prompt_forbids_code_and_has_required_sections():
+    """Think prompt must forbid C++ code and include algorithm/complexity/trace sections."""
+    from src.nodes.generate_code import _build_think_prompt
+
+    prompt = _build_think_prompt(
+        problem_desc="Given N integers, find the maximum subarray sum.",
+        algorithm="",
+        steps=[],
+        constraints={"time_limit": 2000, "space_limit": 256},
+        public_tests=[{"input": "5\n-2 1 -3 4 -1", "output": "4"}],
+        abstract_tags_level2_block="",
+        memory_advice="",
+    )
+
+    lower = prompt.lower()
+    assert "do not" in lower or "no code" in lower, "Think prompt must forbid code output"
+    assert "algorithm" in lower
+    assert "complexity" in lower or "tle" in lower or "10^8" in lower
+    assert "sample" in lower or "trace" in lower
+    assert "sketch" in lower or "implementation" in lower
+    assert "solution.cpp" not in prompt
+    assert "```cpp" not in prompt
+
+
+def test_think_prompt_includes_algorithm_hint():
+    """Think prompt should include the algorithm hint when provided."""
+    from src.nodes.generate_code import _build_think_prompt
+
+    prompt = _build_think_prompt(
+        problem_desc="Sum array elements",
+        algorithm="Prefix sums",
+        steps=["Build prefix array"],
+        constraints={"time_limit": 1000, "space_limit": 256},
+        public_tests=[],
+        abstract_tags_level2_block="",
+        memory_advice="",
+    )
+    assert "Prefix sums" in prompt
+
+
+def test_code_only_prompt_has_no_hard_gate():
+    """code_only prompt must not contain the HARD-GATE design block."""
+    from src.nodes.generate_code import _build_code_only_prompt
+
+    prompt = _build_code_only_prompt(
+        problem_desc="Sum array elements.",
+        constraints={"time_limit": 1000, "space_limit": 256},
+        public_tests=[{"input": "3\n1 2 3", "output": "6"}],
+        generated_tests=[],
+        memory_advice="",
+        self_validation_feedback="",
+    )
+
+    assert "HARD-GATE" not in prompt
+    assert "Do NOT write any C++ code until" not in prompt
+    assert "C++17" in prompt or "c++17" in prompt.lower()
+    assert "SELF_VALIDATION_BLOCK" not in prompt  # placeholder rendered away
+    assert "Solution" in prompt

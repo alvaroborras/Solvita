@@ -88,6 +88,8 @@ class UnifiedLLMClient:
         self.max_tokens: int = self._resolved["max_tokens"]
         self.request_timeout: Optional[float] = self._resolved["request_timeout"]
         self.provider: str = str(self._resolved.get("provider") or "openai").strip().lower()
+        self.use_responses_api: bool = bool(self._resolved.get("use_responses_api", False))
+        self.reasoning_effort: Optional[str] = self._resolved.get("reasoning_effort")
 
         self._usage_accumulator = ensure_token_usage_accumulator(self.config)
         self._last_usage = {
@@ -347,6 +349,15 @@ class UnifiedLLMClient:
                 "Azure OpenAI requires base_url (e.g. https://<azure-endpoint>)"
             )
 
+        # Responses API + reasoning effort (optional, OpenAI-style)
+        cfg = self.config or {}
+        resolved["use_responses_api"] = bool(cfg.get("use_responses_api", False))
+        env_reasoning = os.environ.get("SOLVITA_REASONING_EFFORT")
+        resolved["reasoning_effort"] = env_reasoning or cfg.get("reasoning_effort")
+        env_use_responses = os.environ.get("SOLVITA_USE_RESPONSES_API")
+        if env_use_responses:
+            resolved["use_responses_api"] = env_use_responses.lower() in ("1", "true", "yes", "on")
+
         return resolved
     def _initialize_client(self):
         """Initialize the OpenAI-compatible HTTP client.
@@ -452,6 +463,12 @@ class UnifiedLLMClient:
         if not self.client:
             return ""
 
+        # Optional dispatch to Responses API (with reasoning_effort).
+        use_responses = bool(kwargs.pop("use_responses_api", self.use_responses_api))
+        reasoning_effort = kwargs.pop("reasoning_effort", self.reasoning_effort)
+        if use_responses or reasoning_effort:
+            return self._create_response(messages, reasoning_effort=reasoning_effort, **kwargs)
+
         model = kwargs.get("model", self.model)
         timeout = kwargs.get("timeout", self.request_timeout)
 
@@ -516,6 +533,124 @@ class UnifiedLLMClient:
             _check_and_raise_fatal(e)
             logger.error(f"LLM API error: {e}")
             return ""
+
+    def _create_response(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        reasoning_effort: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """Call the OpenAI Responses API with optional reasoning_effort.
+
+        Maps our chat-message format into the Responses API input format,
+        invokes responses.create(), and extracts the assistant's final text
+        from the structured output (skipping reasoning items).
+        """
+        if not self.client:
+            return ""
+        model = kwargs.get("model", self.model)
+        timeout = kwargs.get("timeout", self.request_timeout)
+
+        instructions = None
+        input_items: List[Dict[str, Any]] = []
+        for m in messages:
+            role = (m.get("role") or "").strip()
+            content = m.get("content") or ""
+            if role == "system":
+                instructions = (instructions + "\n\n" + content) if instructions else content
+                continue
+            if role == "assistant":
+                input_items.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": str(content)}],
+                })
+            else:
+                # user / developer / tool roles all become input_text
+                api_role = role if role in ("user", "developer") else "user"
+                input_items.append({
+                    "type": "message",
+                    "role": api_role,
+                    "content": [{"type": "input_text", "text": str(content)}],
+                })
+
+        request_kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "store": False,
+        }
+        if instructions:
+            request_kwargs["instructions"] = instructions
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
+        if reasoning_effort:
+            request_kwargs["reasoning"] = {"effort": str(reasoning_effort).lower()}
+        max_tok = kwargs.get("max_tokens", self.max_tokens)
+        if max_tok:
+            request_kwargs["max_output_tokens"] = int(max_tok)
+        # Reasoning models reject temperature; only pass it if explicitly given AND not a reasoning request
+        if not reasoning_effort and "temperature" in kwargs and kwargs["temperature"] is not None:
+            request_kwargs["temperature"] = kwargs["temperature"]
+        for k in ("top_p", "tools", "tool_choice", "parallel_tool_calls"):
+            if k in kwargs and kwargs[k] is not None:
+                request_kwargs[k] = kwargs[k]
+
+        try:
+            resp = self.client.responses.create(**request_kwargs)
+        except Exception as e:
+            _check_and_raise_prompt_too_long(e)
+            _check_and_raise_fatal(e)
+            logger.error(f"LLM Responses API error: {e}")
+            return ""
+
+        # Extract assistant message text from structured output.
+        text_parts: List[str] = []
+        output = getattr(resp, "output", None) or []
+        for item in output:
+            itype = getattr(item, "type", None) or (isinstance(item, dict) and item.get("type"))
+            if itype == "message":
+                content = getattr(item, "content", None) or (isinstance(item, dict) and item.get("content")) or []
+                for c in content:
+                    ctype = getattr(c, "type", None) or (isinstance(c, dict) and c.get("type"))
+                    if ctype in ("output_text", "text"):
+                        t = getattr(c, "text", None) or (isinstance(c, dict) and c.get("text")) or ""
+                        if t:
+                            text_parts.append(str(t))
+        # Fallback: some servers expose response.output_text shortcut
+        if not text_parts:
+            shortcut = getattr(resp, "output_text", None)
+            if shortcut:
+                text_parts.append(str(shortcut))
+
+        content_text = "".join(text_parts)
+
+        # Record usage.
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            try:
+                pt = int(getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0)
+                ct = int(getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0)
+            except Exception:
+                pt = ct = 0
+            record_token_usage(
+                self._usage_accumulator,
+                prompt_tokens=pt,
+                completion_tokens=ct,
+                source="api",
+            )
+            self._last_usage = {
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "token_usage_source": "api",
+            }
+            logger.debug(
+                "[LLM Usage] model={} prompt_tokens={} completion_tokens={} source=api (responses)",
+                model,
+                pt,
+                ct,
+            )
+        return content_text
 
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate response from a single prompt."""

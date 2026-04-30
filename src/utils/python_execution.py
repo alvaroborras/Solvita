@@ -25,9 +25,9 @@ class PythonSandboxAnalyzer(ast.NodeVisitor):
     Allowed imports: math, itertools, collections.
     Disallowed calls: open, eval, exec, compile, __import__.
     """
-    # Strict arithmetic and algorithmic whitelist
-    ALLOWED_IMPORTS = {"math", "itertools", "collections", "bisect", "heapq"}
-    BANNED_BUILTIN_CALLS = {"open", "eval", "exec", "compile", "__import__", "input"}
+    # Strict arithmetic and algorithmic whitelist (sys for stdin/stdout, random for input generation)
+    ALLOWED_IMPORTS = {"math", "itertools", "collections", "bisect", "heapq", "sys", "random"}
+    BANNED_BUILTIN_CALLS = {"open", "eval", "exec", "compile", "__import__"}
 
     def visit_Import(self, node: ast.Import):
         for alias in node.names:

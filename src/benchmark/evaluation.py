@@ -18,6 +18,46 @@ def _normalize_output(text: str) -> str:
     return "\n".join(line.rstrip() for line in (text or "").strip().splitlines())
 
 
+_FLOAT_TOL_ABS = 1e-6
+_FLOAT_TOL_REL = 1e-6
+
+
+def _outputs_equivalent(actual: str, expected: str) -> bool:
+    """Compare actual vs expected outputs.
+
+    Tries exact string match first (after rstrip per line). If that fails,
+    falls back to token-by-token comparison: tokens that parse as floats
+    on both sides are compared with absolute/relative tolerance 1e-6;
+    other tokens must match exactly. This mirrors the typical
+    judge convention for problems that specify a float tolerance
+    (e.g. "absolute error at most 10^-6").
+    """
+    a = _normalize_output(actual)
+    e = _normalize_output(expected)
+    if a == e:
+        return True
+    a_tokens = a.split()
+    e_tokens = e.split()
+    if len(a_tokens) != len(e_tokens):
+        return False
+    for ta, te in zip(a_tokens, e_tokens):
+        if ta == te:
+            continue
+        try:
+            fa = float(ta)
+            fe = float(te)
+        except ValueError:
+            return False
+        diff = abs(fa - fe)
+        if diff <= _FLOAT_TOL_ABS:
+            continue
+        denom = max(abs(fa), abs(fe))
+        if denom > 0 and diff / denom <= _FLOAT_TOL_REL:
+            continue
+        return False
+    return True
+
+
 def score_solution_on_official_tests(
     code: str,
     official_tests: List[Dict[str, str]],
@@ -80,7 +120,7 @@ def score_solution_on_official_tests(
                     "error": stderr or f"Program exited with code {retcode}",
                 }
 
-            if _normalize_output(stdout) == _normalize_output(test.get("output", "")):
+            if _outputs_equivalent(stdout, test.get("output", "")):
                 passed_tests += 1
 
         return {

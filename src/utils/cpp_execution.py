@@ -225,10 +225,19 @@ def sanitize_cpp(code: str) -> str:
             lines.pop()
         code = "\n".join(lines).strip()
 
-    # If the result still doesn't look like C++ code, try extracting from mixed output
-    if not code.lstrip().startswith("#") and not code.lstrip().startswith("using "):
+    # If the result still doesn't look like C++ code, try extracting from mixed output.
+    # Guard: "#include" or "using " at the start signals real C++ code.
+    # "### " or "# " at the start signals Markdown headers (Design/reasoning blocks) — extract from those too.
+    stripped = code.lstrip()
+    looks_like_cpp = (
+        stripped.startswith("#include")
+        or stripped.startswith("using ")
+        or stripped.startswith("int main")
+        or stripped.startswith("template")
+    )
+    if not looks_like_cpp:
         code = _extract_cpp_from_mixed(code)
-        
+
     # Security Scan (T1.2)
     dangerous_patterns = [
         r"#include\s*<unistd\.h>",
@@ -242,7 +251,7 @@ def sanitize_cpp(code: str) -> str:
     for pattern in dangerous_patterns:
         if re.search(pattern, code):
             raise ValueError(f"SECURITY_VIOLATION: Detect banned pattern '{pattern}' in C++ source.")
-            
+
     return code
 
 

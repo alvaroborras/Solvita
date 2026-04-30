@@ -1,6 +1,7 @@
 """Generate Code Node - Generate C++ solution code with lightweight self-validation"""
 
 import json
+import re
 import tempfile
 from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
@@ -8,6 +9,7 @@ from loguru import logger
 from src.llm import UnifiedLLMClient
 from src.llm.unified_client import PromptTooLongError
 from src.nodes._chat_utils import build_chat_compaction_context, chat_with_history, normalize_chat_history_result
+from src.utils.python_execution import run_python
 from src.utils.cpp_execution import (
     sanitize_cpp,
     compile_cpp,
@@ -108,6 +110,652 @@ def _build_initial_prompt(
             "PUBLIC_BLOCK": public_block,
             "GEN_BLOCK": gen_block,
             "SOLVER_GRAPH_BLOCK": solver_section,
+            "SELF_VALIDATION_BLOCK": self_validation_block,
+            "MEMORY_ADVICE": memory_block,
+        },
+    )
+
+
+def _verify_brute_force_on_public_tests(
+    brute_force_script: str,
+    public_tests: List[Dict[str, str]],
+) -> Tuple[bool, List[Dict[str, Any]]]:
+    """Run a Python brute force against each public test and report mismatches.
+
+    Returns (all_passed, mismatches). Each mismatch dict has id/input/expected/actual/message.
+    Tests with empty input are skipped (no signal).
+    """
+    if not public_tests:
+        return True, []
+    mismatches: List[Dict[str, Any]] = []
+    for i, t in enumerate(public_tests):
+        inp = t.get("input", "")
+        expected = (t.get("output") or "").strip()
+        if not inp.strip():
+            continue
+        ret, stdout, stderr = _run_python_with_stdin(brute_force_script, inp)
+        if ret != 0:
+            mismatches.append({
+                "id": f"public_{i}",
+                "input": inp[:300],
+                "expected": expected[:200],
+                "actual": "",
+                "message": f"brute force exited with code {ret}: {stderr[:200]}",
+            })
+            continue
+        actual = stdout.strip()
+        # Tolerate trailing whitespace differences only
+        if "\n".join(line.rstrip() for line in actual.splitlines()) != "\n".join(line.rstrip() for line in expected.splitlines()):
+            mismatches.append({
+                "id": f"public_{i}",
+                "input": inp[:300],
+                "expected": expected[:200],
+                "actual": actual[:200],
+                "message": "brute force output disagrees with expected sample output",
+            })
+    return len(mismatches) == 0, mismatches
+
+
+def _format_brute_force_mismatch_feedback(mismatches: List[Dict[str, Any]]) -> str:
+    """Format brute-force-vs-public-test mismatches for redesign feedback."""
+    if not mismatches:
+        return ""
+    lines = [
+        "Your Python brute force was tested against the public sample inputs and disagreed with the expected outputs:"
+    ]
+    for m in mismatches[:3]:
+        lines.append(f"\n  - On test {m['id']}:")
+        lines.append(f"      Input (truncated):\n        {m['input']}")
+        lines.append(f"      Expected:\n        {m['expected']}")
+        lines.append(f"      Brute force gave:\n        {m['actual']}")
+        if m.get("message"):
+            lines.append(f"      ({m['message']})")
+    lines.append(
+        "\nThis means EITHER your brute force has a bug, OR your understanding of the problem is wrong. "
+        "Re-read the problem statement carefully and write a NEW brute force. Do NOT proceed to C++ "
+        "until your brute force matches every public sample."
+    )
+    return "\n".join(lines)
+
+
+def _build_python_oracle_prompt(
+    problem_desc: str,
+    constraints: Dict[str, Any],
+    public_tests: List[Dict],
+    feedback: str = "",
+    compact: bool = False,
+) -> str:
+    """Prompt asking LLM for Python brute_force + input_generator scripts (returned as JSON)."""
+    desc_chars = 8000 if not compact else 4000
+    constraint_chars = 1500 if not compact else 800
+    public_chars = 300 if not compact else 150
+
+    problem_desc = truncate_for_prompt(problem_desc, desc_chars, "PROBLEM_DESC")
+
+    public_block = ""
+    if public_tests:
+        parts = []
+        for i, t in enumerate(public_tests[:2]):
+            sample_input = truncate_for_prompt(t.get("input", ""), public_chars, f"PUBLIC_INPUT_{i+1}")
+            sample_output = truncate_for_prompt(t.get("output", ""), public_chars, f"PUBLIC_OUTPUT_{i+1}")
+            parts.append(f"  Sample {i+1}:")
+            parts.append(f"    Input:\n{_indent(sample_input, 6)}")
+            parts.append(f"    Output:\n{_indent(sample_output, 6)}")
+        public_block = "Public test cases:\n" + "\n".join(parts)
+
+    constraints_block = ""
+    if constraints:
+        constraints_block = f"Constraints:\n  {compact_json_for_prompt(constraints, constraint_chars, 'CONSTRAINTS')}"
+
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.python_oracle")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.python_oracle must be a string template")
+
+    feedback_block = ""
+    if feedback.strip():
+        feedback_block = f"\n## Feedback from previous attempt\n\n{feedback.strip()}\n"
+
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "CONSTRAINTS_BLOCK": constraints_block,
+            "PUBLIC_BLOCK": public_block,
+            "FEEDBACK_BLOCK": feedback_block,
+        },
+    )
+
+
+def _parse_python_oracle_response(response: str) -> Optional[Dict[str, str]]:
+    """Parse the LLM response containing brute_force + input_generator JSON.
+
+    Returns None if parsing or sanitization fails.
+    """
+    if not response:
+        return None
+    response = response.strip()
+    # tolerate markdown fences
+    if response.startswith("```"):
+        lines = response.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines.pop(0)
+        if lines and lines[-1].strip() == "```":
+            lines.pop()
+        response = "\n".join(lines).strip()
+    try:
+        obj = json.loads(response)
+    except Exception:
+        # try to extract the first JSON object substring
+        m = re.search(r"\{.*\}", response, re.DOTALL)
+        if not m:
+            return None
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            return None
+    if not isinstance(obj, dict):
+        return None
+    bf = obj.get("brute_force") or ""
+    gen = obj.get("input_generator") or ""
+    if not bf or not gen:
+        return None
+    return {"brute_force": bf.strip(), "input_generator": gen.strip()}
+
+
+def _run_brute_force_comparison(
+    cpp_exe_path: Path,
+    brute_force_script: str,
+    input_generator_script: str,
+    n_random: int = 20,
+    cpp_limits: Optional[ExecutionLimits] = None,
+) -> List[Dict[str, Any]]:
+    """Generate N random inputs, run C++ solution and Python brute force on each, return mismatches.
+
+    Each failure dict has the same shape as _self_validate failures so it can be merged.
+    Skips silently (returns []) if either Python script fails to even produce valid output.
+    """
+    failures: List[Dict[str, Any]] = []
+    for i in range(n_random):
+        gen_ret, gen_stdout, gen_stderr = run_python(input_generator_script)
+        if gen_ret != 0 or not gen_stdout.strip():
+            # Generator broken — abort; do not flag as solution failure
+            logger.debug(f"[CrossValidate] input_generator failed (iter {i}): {gen_stderr[:200]}")
+            return failures
+        random_input = gen_stdout
+
+        bf_ret, bf_stdout, bf_stderr = _run_python_with_stdin(brute_force_script, random_input)
+        if bf_ret != 0:
+            logger.debug(f"[CrossValidate] brute_force failed on iter {i}: {bf_stderr[:200]}")
+            continue  # skip this iteration; brute may not handle some random cases
+        expected = bf_stdout.strip()
+
+        try:
+            cpp_ret, cpp_stdout, cpp_stderr = run_program(
+                cpp_exe_path,
+                input_text=random_input,
+                limits=cpp_limits or ExecutionLimits.default_run(),
+            )
+        except Exception as e:
+            failures.append({
+                "id": f"crossval_{i}",
+                "type": "runtime_error",
+                "input": random_input[:200],
+                "message": str(e),
+            })
+            continue
+
+        if cpp_ret != 0:
+            failures.append({
+                "id": f"crossval_{i}",
+                "type": "runtime_error",
+                "input": random_input[:200],
+                "message": cpp_stderr[:300] if cpp_stderr else f"non-zero exit {cpp_ret}",
+            })
+            continue
+
+        actual = cpp_stdout.strip()
+        if actual != expected:
+            failures.append({
+                "id": f"crossval_{i}",
+                "type": "brute_force_mismatch",
+                "input": random_input[:200],
+                "expected": expected[:200],
+                "actual": actual[:200],
+                "message": "Cross-validation against Python brute force disagreed",
+            })
+    return failures
+
+
+def _run_python_with_stdin(script: str, stdin_text: str) -> Tuple[int, str, str]:
+    """Run a Python script in the sandbox, piping stdin_text as standard input."""
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+    import tempfile as _tempfile
+    from src.utils.cpp_execution import _make_run_kwargs, _minimal_env, _truncate_output
+    from src.utils.python_execution import sanitize_python
+
+    try:
+        clean = sanitize_python(script)
+    except Exception as e:
+        return -1, "", f"SECURITY/SYNTAX ERROR: {str(e)}"
+
+    fd, temp_path = _tempfile.mkstemp(suffix=".py", text=True)
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(clean)
+        script_path = Path(temp_path)
+        limits = ExecutionLimits(
+            cpu_seconds=5,
+            wall_seconds=6,
+            memory_bytes=256 * 1024 * 1024,
+            fsize_bytes=1024 * 1024,
+            nproc=1,
+            nofile=50,
+        )
+        run_kwargs = _make_run_kwargs(
+            limits,
+            work_dir=script_path.parent,
+            capture_output=True,
+            text=True,
+            timeout=limits.wall_seconds,
+            env=_minimal_env(),
+        )
+        result = _subprocess.run(
+            [_sys.executable, str(script_path)],
+            input=stdin_text,
+            **run_kwargs,
+        )
+        return (
+            result.returncode,
+            _truncate_output(result.stdout or "", max_chars=10000),
+            _truncate_output(result.stderr or "", max_chars=10000),
+        )
+    except _subprocess.TimeoutExpired:
+        return 124, "", f"Time Limit Exceeded after {limits.wall_seconds}s"
+    except Exception as e:
+        return -1, "", f"Execution Framework Error: {str(e)}"
+    finally:
+        try:
+            if _os.path.exists(temp_path):
+                _os.remove(temp_path)
+        except OSError:
+            pass
+
+
+_RUN_PYTHON_RE = re.compile(r"<run_python>(.*?)</run_python>", re.DOTALL | re.IGNORECASE)
+_RUN_CPP_RE = re.compile(r"<run_cpp>(.*?)</run_cpp>", re.DOTALL | re.IGNORECASE)
+_CPP_INPUT_BLOCK_RE = re.compile(
+    r"INPUT_BEGIN\s*\n(.*?)\n\s*INPUT_END\s*\n?", re.DOTALL
+)
+
+
+def _split_run_cpp_block(block: str) -> Tuple[str, str]:
+    """Split a <run_cpp> block into (stdin, cpp_source).
+
+    If the block contains an INPUT_BEGIN ... INPUT_END section, that text is
+    used as stdin and stripped from the source. Otherwise stdin is empty.
+    """
+    if not block:
+        return "", ""
+    m = _CPP_INPUT_BLOCK_RE.search(block)
+    if m:
+        stdin_text = m.group(1)
+        if not stdin_text.endswith("\n"):
+            stdin_text += "\n"
+        cpp_source = (block[: m.start()] + block[m.end():]).strip()
+        return stdin_text, cpp_source
+    return "", block.strip()
+
+
+def _extract_run_cpp_blocks(response: str) -> List[Tuple[str, str]]:
+    """Extract all <run_cpp>...</run_cpp> blocks; each becomes (stdin, source)."""
+    if not response:
+        return []
+    raw_blocks = _RUN_CPP_RE.findall(response)
+    return [_split_run_cpp_block(b) for b in raw_blocks if b.strip()]
+
+
+def _format_cpp_tool_results(
+    blocks: List[Tuple[str, str]],
+    results: List[Tuple[bool, int, str, str]],
+) -> str:
+    """Format C++ tool execution results to feed back as a user message.
+
+    Each result tuple: (compiled_ok, exit_code, stdout, stderr).
+    """
+    parts = ["C++ execution results:"]
+    for i, ((stdin_text, _src), (compiled, retcode, stdout, stderr)) in enumerate(zip(blocks, results), 1):
+        parts.append(f"\n--- Block {i} ---")
+        if not compiled:
+            parts.append("compile: FAILED")
+            parts.append(f"compiler_output:\n{stderr or stdout or '(no output)'}")
+            continue
+        parts.append(f"compile: OK    exit_code: {retcode}")
+        if stdin_text.strip():
+            parts.append(f"stdin (first 200 chars):\n{stdin_text[:200]}")
+        if stdout:
+            parts.append(f"stdout (first 1000 chars):\n{stdout[:1000]}")
+        if stderr:
+            parts.append(f"stderr (first 500 chars):\n{stderr[:500]}")
+        if not stdout and not stderr:
+            parts.append("(no output)")
+    parts.append(
+        "\nUse these results to refine your algorithm. If the C++ output is wrong "
+        "or it TLE'd on the input you provided, the algorithm/implementation needs "
+        "to change before declaring VERDICT: PROCEED. You may run more `<run_cpp>` "
+        "or `<run_python>` blocks if needed."
+    )
+    return "\n".join(parts)
+
+
+def _run_cpp_block(stdin_text: str, cpp_source: str) -> Tuple[bool, int, str, str]:
+    """Compile and run one C++ block in the sandbox; return (compiled_ok, retcode, stdout, stderr)."""
+    if not cpp_source.strip():
+        return False, -1, "", "Empty C++ source"
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        src_path = tmp / "snippet.cpp"
+        exe_path = tmp / "snippet.exe"
+        try:
+            sanitized = sanitize_cpp(cpp_source)
+        except ValueError as e:
+            return False, -1, "", f"COMPILE_PARSE_ERROR: {e}"
+        src_path.write_text(sanitized, encoding="utf-8")
+        compiled, compile_log = compile_cpp(
+            src_path,
+            exe_path,
+            limits=ExecutionLimits.default_compile(),
+        )
+        if not compiled:
+            return False, -1, "", compile_log
+        try:
+            retcode, stdout, stderr = run_program(
+                exe_path,
+                input_text=stdin_text,
+                limits=ExecutionLimits.default_run(),
+            )
+        except Exception as e:
+            return True, -1, "", f"RUNTIME_FRAMEWORK_ERROR: {e}"
+        return True, retcode, stdout, stderr
+    finally:
+        cleanup_tempdir(tmp, windows_ignore_permission_errors=True)
+
+
+def _extract_run_python_blocks(response: str) -> List[str]:
+    """Extract all <run_python>...</run_python> code blocks from an LLM response."""
+    if not response:
+        return []
+    blocks = _RUN_PYTHON_RE.findall(response)
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def _format_python_tool_results(blocks: List[str], results: List[Tuple[int, str, str]]) -> str:
+    """Format Python tool execution results to feed back as a user message."""
+    parts = ["Python execution results:"]
+    for i, (block, (retcode, stdout, stderr)) in enumerate(zip(blocks, results), 1):
+        parts.append(f"\n--- Block {i} (exit_code={retcode}) ---")
+        if stdout:
+            parts.append(f"stdout:\n{stdout}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr}")
+        if not stdout and not stderr:
+            parts.append("(no output)")
+    parts.append(
+        "\nUse these results to refine your algorithm. If your formula matched the brute force, "
+        "proceed; otherwise revise. You may run more `<run_python>` blocks if needed."
+    )
+    return "\n".join(parts)
+
+
+def _execute_think_python_tools(
+    llm: UnifiedLLMClient,
+    initial_response: str,
+    history: List[Dict[str, str]],
+    *,
+    max_iters: int = 5,
+    compaction_context: Optional[Any] = None,
+    compaction_config: Optional[Dict[str, Any]] = None,
+    enable_cpp: bool = True,
+    enable_python: bool = True,
+) -> Tuple[str, List[Dict[str, str]], List[Dict[str, str]], int, int]:
+    """Iteratively run <run_python> AND <run_cpp> blocks from think responses.
+
+    Both tool kinds are processed in lockstep: each LLM turn may include any mix
+    of `<run_python>` and `<run_cpp>` blocks; all are executed and their outputs
+    fed back as a single user message before the next LLM turn.
+
+    Returns
+    -------
+    (final_response, all_new_messages_added, persisted_messages, num_extra_llm_calls, blocks_executed)
+    """
+    response = initial_response
+    all_new: List[Dict[str, str]] = []
+    persisted = list(history)
+    extra_calls = 0
+    blocks_executed = 0
+
+    for _iter in range(max_iters):
+        py_blocks = _extract_run_python_blocks(response) if enable_python else []
+        cpp_blocks = _extract_run_cpp_blocks(response) if enable_cpp else []
+        if not py_blocks and not cpp_blocks:
+            return response, all_new, persisted, extra_calls, blocks_executed
+
+        feedback_parts: List[str] = []
+        if py_blocks:
+            logger.info(f"[GenCode] think_python_tools: executing {len(py_blocks)} Python block(s)")
+            py_results = [run_python(b) for b in py_blocks]
+            feedback_parts.append(_format_python_tool_results(py_blocks, py_results))
+            blocks_executed += len(py_blocks)
+        if cpp_blocks:
+            logger.info(f"[GenCode] think_cpp_tools: executing {len(cpp_blocks)} C++ block(s)")
+            cpp_results = [_run_cpp_block(stdin, src) for stdin, src in cpp_blocks]
+            feedback_parts.append(_format_cpp_tool_results(cpp_blocks, cpp_results))
+            blocks_executed += len(cpp_blocks)
+
+        tool_msg = "\n\n".join(feedback_parts)
+
+        new_response, new_msgs, new_persisted = chat_with_history(
+            llm,
+            persisted,
+            user_content=tool_msg,
+            compaction_context=compaction_context,
+            compaction_config=compaction_config,
+        )
+        extra_calls += 1
+        all_new.extend(new_msgs)
+        persisted = list(new_persisted)
+        response = new_response
+
+    if _extract_run_python_blocks(response) or (enable_cpp and _extract_run_cpp_blocks(response)):
+        logger.warning(
+            f"[GenCode] think tools: hit max_iters={max_iters}, model still emitting blocks; stopping"
+        )
+    return response, all_new, persisted, extra_calls, blocks_executed
+
+
+def _parse_think_verdict(response: str) -> Dict[str, Any]:
+    """Extract the VERDICT line from a think response.
+
+    Returns dict {"proceed": bool, "reason": str}. Defaults to proceed=True
+    when no VERDICT line is found (so older think outputs continue to work).
+    """
+    import re
+    if not response:
+        return {"proceed": True, "reason": ""}
+    m = re.search(
+        r"^\s*VERDICT:\s*(PROCEED|REDESIGN_NEEDED)(?:\s*[—-]\s*(.+))?\s*$",
+        response,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    if not m:
+        return {"proceed": True, "reason": ""}
+    verdict = m.group(1).upper()
+    reason = (m.group(2) or "").strip()
+    return {"proceed": verdict == "PROCEED", "reason": reason}
+
+
+def _build_think_prompt(
+    problem_desc: str,
+    algorithm: str,
+    steps: List[str],
+    constraints: Dict[str, Any],
+    public_tests: List[Dict],
+    abstract_tags_level2_block: str = "",
+    memory_advice: str = "",
+    oracle_status: str = "ok",
+    redesign_feedback: str = "",
+    require_python_tool: bool = True,
+    compact: bool = False,
+) -> str:
+    """Build the 'think' prompt for Turn 1 of multi-turn initial generation.
+
+    Produces only algorithm design, complexity analysis, and sample traces.
+    Explicitly forbids code so the model's full attention goes to
+    algorithm convergence before any implementation begins.
+    """
+    desc_chars = 8000 if not compact else 4000
+    constraint_chars = 2000 if not compact else 1000
+    public_chars = 300 if not compact else 150
+
+    problem_desc = truncate_for_prompt(problem_desc, desc_chars, "PROBLEM_DESC")
+
+    public_block = ""
+    if public_tests:
+        parts = []
+        for i, t in enumerate(public_tests[:3]):
+            sample_input = truncate_for_prompt(t.get("input", ""), public_chars, f"PUBLIC_INPUT_{i+1}")
+            sample_output = truncate_for_prompt(t.get("output", ""), public_chars, f"PUBLIC_OUTPUT_{i+1}")
+            parts.append(f"  Sample {i+1}:")
+            parts.append(f"    Input:\n{_indent(sample_input, 6)}")
+            parts.append(f"    Output:\n{_indent(sample_output, 6)}")
+        public_block = "Public test cases:\n" + "\n".join(parts)
+
+    constraints_block = ""
+    if constraints:
+        constraints_block = f"Constraints:\n  {compact_json_for_prompt(constraints, constraint_chars, 'CONSTRAINTS')}"
+
+    memory_block = f"\n{memory_advice}\n" if memory_advice else ""
+
+    oracle_status_block = ""
+    if oracle_status == "failed":
+        oracle_status_block = (
+            "**WARNING: The automated test generator could not produce a reliable "
+            "reference solver for this problem.** You have NO trusted oracle to "
+            "cross-check your formula against. Be especially rigorous: state your "
+            "correctness invariant explicitly and trace at least one non-trivial "
+            "example by hand. If your derivation has any algebraic step you are "
+            "less than fully certain about, redesign with a simpler approach you "
+            "can verify."
+        )
+
+    if redesign_feedback:
+        oracle_status_block = (
+            (oracle_status_block + "\n\n" if oracle_status_block else "")
+            + f"**REDESIGN FEEDBACK (from your previous attempt):**\n{redesign_feedback}"
+        )
+
+    hard_gate_block = ""
+    if require_python_tool:
+        hard_gate_block = (
+            "**HARD-GATE: You MUST embed at least ONE `<run_python>` block that "
+            "performs a small-input brute-force comparison against your proposed "
+            "formula BEFORE writing `VERDICT: PROCEED`. If your VERDICT line appears "
+            "without prior `<run_python>` execution, the response will be rejected "
+            "and you will be asked to add verification. This is non-negotiable: "
+            "even simple-looking formulas have hidden bugs that brute force exposes "
+            "in seconds. Pick a small input, write 5-10 lines of brute force in "
+            "the block, run it, then compare to your formula's output.**"
+        )
+
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.think")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.think must be a string template")
+
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "ABSTRACT_TAGS_LEVEL2_BLOCK": abstract_tags_level2_block,
+            "ALGORITHM": algorithm or "(no hint provided — determine the best algorithm yourself)",
+            "CONSTRAINTS_BLOCK": constraints_block,
+            "PUBLIC_BLOCK": public_block,
+            "ORACLE_STATUS_BLOCK": oracle_status_block,
+            "HARD_GATE_BLOCK": hard_gate_block,
+            "MEMORY_ADVICE": memory_block,
+        },
+    )
+
+
+def _build_code_only_prompt(
+    problem_desc: str,
+    constraints: Dict[str, Any],
+    public_tests: List[Dict],
+    generated_tests: List[Dict],
+    memory_advice: str = "",
+    self_validation_feedback: str = "",
+    compact: bool = False,
+) -> str:
+    """Build the 'code_only' prompt for Turn 2 of multi-turn initial generation.
+
+    Used after a think turn has already produced an algorithm design in the
+    conversation history. Omits the Skill 1-3 design preamble entirely;
+    those skills were handled by the think turn. Retains implementation
+    requirements, verification checklist, and self-validation feedback.
+    """
+    desc_chars = 6000 if not compact else 3000
+    constraint_chars = 1500 if not compact else 750
+    generated_chars = 300 if not compact else 150
+    public_chars = 300 if not compact else 150
+
+    problem_desc = truncate_for_prompt(problem_desc, desc_chars, "PROBLEM_DESC")
+
+    public_block = ""
+    if public_tests:
+        parts = []
+        for i, t in enumerate(public_tests[:3]):
+            sample_input = truncate_for_prompt(t.get("input", ""), public_chars, f"PUBLIC_INPUT_{i+1}")
+            sample_output = truncate_for_prompt(t.get("output", ""), public_chars, f"PUBLIC_OUTPUT_{i+1}")
+            parts.append(f"  Sample {i+1}:")
+            parts.append(f"    Input:\n{_indent(sample_input, 6)}")
+            parts.append(f"    Output:\n{_indent(sample_output, 6)}")
+        public_block = "Public test cases:\n" + "\n".join(parts)
+
+    constraints_block = ""
+    if constraints:
+        constraints_block = f"Constraints:\n  {compact_json_for_prompt(constraints, constraint_chars, 'CONSTRAINTS')}"
+
+    gen_block = ""
+    if generated_tests:
+        samples = generated_tests[:3]
+        parts = []
+        for i, t in enumerate(samples):
+            inp = t.get("input", "").strip()
+            if len(inp) > generated_chars:
+                inp = inp[:generated_chars] + "...(truncated)"
+            parts.append(f"  Generated input {i+1}:\n{_indent(inp, 4)}")
+        gen_block = (
+            "Sample generated inputs (for format/scale reference):\n"
+            + "\n".join(parts)
+        )
+
+    memory_block = f"\n{memory_advice}\n" if memory_advice else ""
+    self_validation_block = f"\n{self_validation_feedback.strip()}\n" if self_validation_feedback.strip() else ""
+
+    templates = load_prompt_templates()
+    tpl = get_nested_template(templates, "generate_code.code_only")
+    if not isinstance(tpl, str):
+        raise KeyError("generate_code.code_only must be a string template")
+
+    return render_placeholders(
+        tpl,
+        {
+            "PROBLEM_DESC": problem_desc,
+            "CONSTRAINTS_BLOCK": constraints_block,
+            "PUBLIC_BLOCK": public_block,
+            "GEN_BLOCK": gen_block,
             "SELF_VALIDATION_BLOCK": self_validation_block,
             "MEMORY_ADVICE": memory_block,
         },
@@ -581,14 +1229,24 @@ def _build_verification_set(
 
 
 def _self_validate(
-    code: str, verify_set: List[Dict], checker_exe: Optional[Path] = None
+    code: str,
+    verify_set: List[Dict],
+    checker_exe: Optional[Path] = None,
+    *,
+    brute_force_script: Optional[str] = None,
+    input_generator_script: Optional[str] = None,
+    n_random: int = 20,
 ) -> Tuple[bool, List[Dict], int]:
     """Compile and run code against verify_set.
 
     Returns (all_passed, failures, total_run).
     Early-terminates after 3 consecutive failures to avoid wasting time.
+
+    If both ``brute_force_script`` and ``input_generator_script`` are provided, ALSO
+    runs ``n_random`` cross-validation rounds against the Python brute force and
+    appends mismatches as additional failures.
     """
-    if not verify_set:
+    if not verify_set and not (brute_force_script and input_generator_script):
         return True, [], 0
 
     tmp = Path(tempfile.mkdtemp())
@@ -670,6 +1328,20 @@ def _self_validate(
                     break
             else:
                 consecutive_fails = 0
+
+        if brute_force_script and input_generator_script:
+            logger.info(f"[SelfValidate] Running cross-validation against Python brute force (n={n_random})")
+            cross_failures = _run_brute_force_comparison(
+                cpp_exe_path=exe_path,
+                brute_force_script=brute_force_script,
+                input_generator_script=input_generator_script,
+                n_random=n_random,
+            )
+            if cross_failures:
+                logger.info(f"[SelfValidate] Cross-validation found {len(cross_failures)} mismatch(es)")
+                failures.extend(cross_failures)
+                total_run += n_random
+
         return len(failures) == 0, failures, total_run
     finally:
         cleanup_tempdir(tmp, windows_ignore_permission_errors=True)
@@ -831,30 +1503,236 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     if is_initial:
         # First time: generate complete code
         logger.info("[GenCode] Initial generation (no previous code)")
-        
-        initial_self_validation_feedback = ""
-        for attempt in range(1, max_self_attempts + 1):
-            response, new_msgs, persisted_messages = _call_generate_with_history(
-                llm,
-                _build_initial_prompt,
-                problem_desc, algorithm, steps,
-                constraints, public_tests, generated_tests,
-                memory_advice=memory_advice,
-                solver_graph_block=solver_graph_block,
-                abstract_tags_level2_block=abstract_tags_level2_block,
-                self_validation_feedback=initial_self_validation_feedback,
-                messages_history=history,
-                _stage="generate_code.initial",
-                _compaction_context=compaction_context,
-                _compaction_config=compaction_config,
+        codegen_cfg = (state.get("config") or {}).get("codegen") or {}
+        multi_turn = bool(codegen_cfg.get("multi_turn_initial", True))
+        oracle_status = ((state.get("tests") or {}).get("oracle_status") or "ok")
+        if oracle_status == "failed":
+            logger.warning("[GenCode] Oracle status FAILED — propagating warning to think prompt")
+
+        if multi_turn:
+            think_max_attempts = int(codegen_cfg.get("think_max_attempts", 3))
+            think_python_tools = bool(codegen_cfg.get("think_python_tools", True))
+            think_cpp_tools = bool(codegen_cfg.get("think_cpp_tools", True))
+            think_max_tool_iters = int(codegen_cfg.get("think_max_tool_iters", 5))
+            think_require_python_tool = bool(
+                codegen_cfg.get("think_require_python_tool", True) and think_python_tools
             )
+            redesign_feedback = ""
+            think_verdict: Dict[str, Any] = {"proceed": True, "reason": ""}
+            for think_attempt in range(1, think_max_attempts + 1):
+                think_response, think_msgs, persisted_messages = _call_generate_with_history(
+                    llm,
+                    _build_think_prompt,
+                    problem_desc, algorithm, steps,
+                    constraints, public_tests,
+                    abstract_tags_level2_block=abstract_tags_level2_block,
+                    memory_advice=memory_advice,
+                    oracle_status=oracle_status,
+                    redesign_feedback=redesign_feedback,
+                    require_python_tool=think_require_python_tool,
+                    messages_history=history,
+                    _stage="generate_code.think",
+                    _compaction_context=compaction_context,
+                    _compaction_config=compaction_config,
+                )
+                llm_calls += 1
+                all_new_messages.extend(think_msgs)
+                history = list(persisted_messages)
+
+                blocks_executed = 0
+                if think_python_tools or think_cpp_tools:
+                    think_response, tool_msgs, history, n_extra_calls, blocks_executed = _execute_think_python_tools(
+                        llm,
+                        think_response,
+                        history,
+                        max_iters=think_max_tool_iters,
+                        compaction_context=compaction_context,
+                        compaction_config=compaction_config,
+                        enable_cpp=think_cpp_tools,
+                        enable_python=think_python_tools,
+                    )
+                    llm_calls += n_extra_calls
+                    all_new_messages.extend(tool_msgs)
+
+                think_verdict = _parse_think_verdict(think_response)
+
+                # HARD-GATE: if PROCEED but no tool was used, force one more turn demanding verification.
+                if (
+                    think_require_python_tool
+                    and think_verdict["proceed"]
+                    and blocks_executed == 0
+                ):
+                    logger.info(
+                        f"[GenCode] HARD-GATE: think_attempt {think_attempt} "
+                        f"emitted PROCEED without running any <run_python> verification — forcing retry"
+                    )
+                    gate_msg = (
+                        "You did not run any `<run_python>` block to verify your formula. "
+                        "Per the HARD-GATE you MUST run at least one brute-force comparison "
+                        "before declaring VERDICT: PROCEED. Write a small Python brute force "
+                        "now in a `<run_python>` block, compare it against your proposed formula "
+                        "on a few small inputs, and only then re-issue VERDICT: PROCEED if they agree."
+                    )
+                    gate_response, gate_msgs, history = chat_with_history(
+                        llm,
+                        history,
+                        user_content=gate_msg,
+                        compaction_context=compaction_context,
+                        compaction_config=compaction_config,
+                    )
+                    llm_calls += 1
+                    all_new_messages.extend(gate_msgs)
+                    history = list(history)
+                    # Continue the tool-use loop on the new response
+                    if think_python_tools or think_cpp_tools:
+                        gate_response, gate_tool_msgs, history, n_gate_calls, gate_blocks = _execute_think_python_tools(
+                            llm,
+                            gate_response,
+                            history,
+                            max_iters=think_max_tool_iters,
+                            compaction_context=compaction_context,
+                            compaction_config=compaction_config,
+                            enable_cpp=think_cpp_tools,
+                            enable_python=think_python_tools,
+                        )
+                        llm_calls += n_gate_calls
+                        all_new_messages.extend(gate_tool_msgs)
+                        blocks_executed += gate_blocks
+                    think_response = gate_response
+                    think_verdict = _parse_think_verdict(think_response)
+                    if blocks_executed == 0:
+                        logger.warning("[GenCode] HARD-GATE: model still refused to run a tool block; proceeding anyway")
+
+                if think_verdict["proceed"]:
+                    if think_attempt > 1:
+                        logger.info(f"[GenCode] Think converged on attempt {think_attempt}")
+                    break
+                logger.info(
+                    f"[GenCode] Think verdict REDESIGN_NEEDED on attempt {think_attempt}: "
+                    f"{think_verdict['reason'] or '(no reason given)'}"
+                )
+                redesign_feedback = (
+                    f"Your previous attempt was rejected because: "
+                    f"{think_verdict['reason'] or 'complexity exceeds limit or formula unverified'}. "
+                    f"Choose a fundamentally different algorithm with a different complexity class. "
+                    f"Do not revisit the same approach with minor tweaks."
+                )
+            if not think_verdict["proceed"]:
+                logger.warning(
+                    f"[GenCode] Think exhausted {think_max_attempts} attempts without PROCEED verdict; "
+                    f"proceeding to code phase regardless"
+                )
+
+        initial_self_validation_feedback = ""
+
+        # ── TDD Phase ────────────────────────────────────────────────────────
+        # BEFORE writing C++, generate a Python brute force and verify it against
+        # the public test outputs. A brute force that disagrees with public samples
+        # means problem-understanding is wrong; without this step the C++ would
+        # encode the same misunderstanding (the same LLM authored both).
+        cross_validation_enabled = bool(codegen_cfg.get("cross_validation", True))
+        cross_validation_n_random = int(codegen_cfg.get("cross_validation_n_random", 20))
+        tdd_max_attempts = int(codegen_cfg.get("tdd_max_attempts", 2))
+        tdd_enabled = bool(codegen_cfg.get("tdd_enabled", True)) and cross_validation_enabled
+        python_oracle: Optional[Dict[str, str]] = None
+
+        if tdd_enabled:
+            tdd_feedback = ""
+            for tdd_attempt in range(1, tdd_max_attempts + 1):
+                try:
+                    oracle_response, oracle_msgs, persisted_messages = _call_generate_with_history(
+                        llm,
+                        _build_python_oracle_prompt,
+                        problem_desc, constraints, public_tests,
+                        feedback=tdd_feedback,
+                        messages_history=history,
+                        _stage="generate_code.python_oracle",
+                        _compaction_context=compaction_context,
+                        _compaction_config=compaction_config,
+                    )
+                    llm_calls += 1
+                    all_new_messages.extend(oracle_msgs)
+                    history = list(persisted_messages)
+                    candidate = _parse_python_oracle_response(oracle_response)
+                except Exception as e:
+                    logger.warning(f"[GenCode] TDD: brute force generation call failed: {e}")
+                    candidate = None
+
+                if not candidate:
+                    logger.warning(
+                        f"[GenCode] TDD attempt {tdd_attempt}: brute-force response unparseable"
+                    )
+                    tdd_feedback = (
+                        "Your previous response did not contain a valid JSON object with both "
+                        "`brute_force` and `input_generator` keys. Please return ONLY valid JSON "
+                        "matching the schema."
+                    )
+                    continue
+
+                ok, mismatches = _verify_brute_force_on_public_tests(
+                    candidate["brute_force"], public_tests
+                )
+                if ok:
+                    python_oracle = candidate
+                    logger.info(
+                        f"[GenCode] TDD attempt {tdd_attempt}: brute force matches all public samples — "
+                        f"locking it in as oracle for cross-validation"
+                    )
+                    break
+                logger.info(
+                    f"[GenCode] TDD attempt {tdd_attempt}: brute force disagrees with public samples on "
+                    f"{len(mismatches)} case(s); requesting revision"
+                )
+                tdd_feedback = _format_brute_force_mismatch_feedback(mismatches)
+            if python_oracle is None:
+                logger.warning(
+                    f"[GenCode] TDD: brute force never matched all public samples after "
+                    f"{tdd_max_attempts} attempts; proceeding without verified oracle"
+                )
+
+        for attempt in range(1, max_self_attempts + 1):
+            if multi_turn:
+                response, new_msgs, persisted_messages = _call_generate_with_history(
+                    llm,
+                    _build_code_only_prompt,
+                    problem_desc,
+                    constraints, public_tests, generated_tests,
+                    memory_advice=memory_advice,
+                    self_validation_feedback=initial_self_validation_feedback,
+                    messages_history=history,
+                    _stage="generate_code.code_only",
+                    _compaction_context=compaction_context,
+                    _compaction_config=compaction_config,
+                )
+            else:
+                response, new_msgs, persisted_messages = _call_generate_with_history(
+                    llm,
+                    _build_initial_prompt,
+                    problem_desc, algorithm, steps,
+                    constraints, public_tests, generated_tests,
+                    memory_advice=memory_advice,
+                    solver_graph_block=solver_graph_block,
+                    abstract_tags_level2_block=abstract_tags_level2_block,
+                    self_validation_feedback=initial_self_validation_feedback,
+                    messages_history=history,
+                    _stage="generate_code.initial",
+                    _compaction_context=compaction_context,
+                    _compaction_config=compaction_config,
+                )
             llm_calls += 1
             all_new_messages.extend(new_msgs)
             history = list(persisted_messages)
             code = sanitize_cpp(response)
 
             # Self-validate
-            passed, failures, total_run = _self_validate(code, verify_set, checker_exe)
+            passed, failures, total_run = _self_validate(
+                code,
+                verify_set,
+                checker_exe,
+                brute_force_script=(python_oracle or {}).get("brute_force"),
+                input_generator_script=(python_oracle or {}).get("input_generator"),
+                n_random=cross_validation_n_random,
+            )
 
             if passed:
                 self_validation_log.append(

@@ -121,14 +121,16 @@ solver_skill_selection:
 
 generate_code:
   initial: |
-    Generate a complete C++ solution for this competitive programming problem:
+    You are solving a competitive programming problem. Apply the following three skills in order before writing any code.
+
+    ## Problem Context
 
     Problem:
     <PROBLEM_DESC>
 
     <ABSTRACT_TAGS_LEVEL2_BLOCK>
 
-    Algorithm to use:
+    Proposed algorithm:
     <ALGORITHM>
 
     Implementation steps:
@@ -146,22 +148,206 @@ generate_code:
 
     <MEMORY_ADVICE>
 
-    Requirements:
+    ---
+
+    ## Skill 1: Brainstorming — Design Before Implementation
+
+    <HARD-GATE>
+    Do NOT write any C++ code until you have completed the design steps below.
+    This applies regardless of how simple the problem appears.
+    </HARD-GATE>
+
+    Produce a **concise** algorithm design (target: under 400 words total) covering:
+
+    1. **Core approach**: In 1-3 sentences, name the EXACT technique and data structures. Be specific: not "tree DP" but "rerooting DP storing subtree expected values"; not "greedy" but "leftist-heap merge tracking incremental cost per frontier". If you cannot name the specific data structure and key operation in one sentence, you have not converged — try a different angle before proceeding.
+    2. **Complexity + TLE check**: State time O(?) and space O(?). Estimate operations concretely. Apply the **10^8 simple ops/sec rule for C++**: if `operations / 10^8 > time_limit_seconds`, the approach is TLE — redesign. Do not rationalize that constants will save you.
+    3. **Correctness invariant**: The one-sentence key insight that makes this approach correct.
+
+    If the proposed algorithm in "Implementation steps" above would lead to an unsafe or hard-to-implement solution, you are free and encouraged to choose a better approach instead.
+
+    ---
+
+    ## Skill 2: Test-Driven Development — Verify Algorithm Before Coding (Red Phase)
+
+    **Iron Law: NO CODE WITHOUT A VERIFIED ALGORITHM.**
+
+    Trace your chosen algorithm on each public sample input:
+    - Show key intermediate values and the final output your algorithm produces.
+    - Confirm it matches the expected output.
+
+    If any sample trace fails: **STOP. Redesign the algorithm. Do not write code for a failing approach.**
+
+    Only proceed to implementation after all samples pass the mental trace.
+
+    ---
+
+    ## Skill 3: Writing Plans — Implementation Plan Before Coding
+
+    Before writing any code, decompose the implementation into bite-sized steps. For this problem, list:
+
+    1. **Data structures to define** (e.g., struct Node, priority_queue type, etc.)
+    2. **Main function steps** in order (e.g., "read input → build trie → run DP → output")
+    3. **Any tricky sub-routine** that needs careful implementation (e.g., "merge two heaps", "BFS with state compression")
+
+    This plan is a 5-10 line outline, not prose. Write it down before touching code.
+
+    ---
+
+    ## Skill 4: Implementation (Green Phase) + Verification Before Completion
+
+    Now implement following your plan. Requirements:
     - Use standard C++ (C++17)
     - Do NOT use non-standard headers like #include <bits/stdc++.h>
-    - Include all necessary headers
+    - Include all necessary standard headers explicitly
     - Implement fast I/O
-    - Handle all edge cases
-    - Optimize for BOTH time and space complexity
-    - Before coding, do an internal resource audit using the stated constraints
-    - Every major container or table must have a size that is defensible under the maximum input bounds
-    - Avoid any implementation whose memory or time scales as the product of two large unconstrained dimensions unless you can prove it is safe
-    - Do not allocate dense matrices / DP tables / adjacency tables over max-sized dimensions by default
-    - If the provided algorithm sketch would lead to an unsafe implementation, adapt the implementation strategy instead of following the sketch literally
-    - Prefer streaming, aggregated counting, rolling-state, sparse, or compressed representations when full tables would be too large
-    - The final code must be realistic for competitive-programming limits, not just mathematically plausible
+    - Every major data structure allocation must be defensible given the maximum input bounds — state its size explicitly in a comment if non-obvious
+    - Prefer streaming, rolling-state, or sparse representations when full dense tables would exceed memory
+    - If the "Implementation steps" sketch above would lead to an unsafe implementation, adapt — do not follow it literally
 
-    Generate ONLY the complete C++ code, no explanations.
+    After writing the code, before outputting it, verify:
+    - **Time (strict)**: Count the dominant loop's iterations for maximum input. Use the **10^8 ops/sec rule**: `iterations / 10^8 ≤ time_limit_seconds`. If you wrote O(N × Q) and N=Q=10^5, that is 10^10 ops = 100s — TLE. Redesign if this check fails. Do NOT assume constants will save you.
+    - **Memory**: For each major allocation, is the total within the memory limit?
+    - **Edge cases**: Does the code handle n=1 and n=max?
+
+    If any check fails: fix the code first.
+
+    ---
+
+    Output your full response in this exact structure:
+
+    ### Design
+    [Algorithm design, sample traces, and implementation plan from Skills 1–3 above]
+
+    ### Solution
+    ```cpp
+    [Complete C++17 solution]
+    ```
+
+  think: |
+    You are analyzing a competitive programming problem. Your task is ONLY to determine the best algorithm — do NOT write any C++ code in this response.
+
+    ## Discipline (non-negotiable)
+
+    **TDD-style rule for competitive programming**: Before declaring an algorithm correct, you must demonstrate it on actual computation, not mental simulation. The Iron Law:
+
+    > NO `VERDICT: PROCEED` WITHOUT A `<run_cpp>` OR `<run_python>` BLOCK THAT EXECUTED AND PRODUCED THE EXPECTED OUTPUT IN THIS TURN.
+
+    "Mental traces" are forbidden as the sole evidence. If your reasoning concludes "and clearly the answer is X", you must run code that prints X.
+
+    **Brainstorming rule (Codex `brainstorming` skill)**: For any non-trivial problem, list 2-3 candidate algorithms with their complexity classes BEFORE picking one. State the trade-off (time vs. space vs. implementation difficulty) and pick the one that strictly fits the constraints. If only one approach fits, say so explicitly.
+
+    **Verification rule (Codex `verification-before-completion` skill)**: Evidence before claims. If you haven't run a verification command in this message, you cannot claim it passes. "It should work" is not evidence — `stdout matches expected on tests T1, T2, T3` is evidence.
+
+    **Anti-pattern: confidently wrong math.** A formula that "looks right" can hide an algebraic step that breaks under specific inputs. The cure is brute force comparison on small random inputs, not more squinting at the formula. Two-parameter parameterizations of n-parameter structures are a classic trap; if your derivation reduced parameter count, write a brute force enumerator and confirm the count agrees on n=2, n=3, n=4 before trusting your reduction.
+
+    **Anti-pattern: TLE that "should fit".** A complexity that "should run in 0.5s" often runs in 8s due to constant factors (cache misses, branch mispredictions, integer division). When in doubt, compile a draft via `<run_cpp>` on a worst-case-shaped input near the constraint bound. If it doesn't finish in 5s in the sandbox, it won't finish on the judge.
+
+    ---
+
+    ## Problem Context
+
+    Problem:
+    <PROBLEM_DESC>
+
+    <ABSTRACT_TAGS_LEVEL2_BLOCK>
+
+    Proposed algorithm hint (may be incomplete or wrong — use your own judgment):
+    <ALGORITHM>
+
+    <CONSTRAINTS_BLOCK>
+
+    <PUBLIC_BLOCK>
+
+    <ORACLE_STATUS_BLOCK>
+
+    <HARD_GATE_BLOCK>
+
+    <MEMORY_ADVICE>
+
+    ---
+
+    ## Your Task: Algorithm Convergence (NO CODE)
+
+    You can verify your reasoning by embedding tool blocks in your reply. The harness executes them and feeds the output back to you:
+
+    - `<run_python>...</run_python>` — Python sandbox (`sys`, `math`, `itertools`, `collections`, `bisect`, `heapq`, `random`); 5s CPU. Use it to write a tiny brute-force solver and check small cases.
+    - `<run_cpp>...</run_cpp>` — Real C++ compilation + execution (full standard library; the same `g++ -O2 -std=c++17` compiler the judge uses; 5s CPU). To pipe stdin, wrap it as:
+      ```
+      <run_cpp>
+      INPUT_BEGIN
+      3
+      1 2 3
+      INPUT_END
+      #include <bits/stdc++.h>
+      using namespace std;
+      int main(){ ... }
+      </run_cpp>
+      ```
+      The C++ tool is the BEST way to detect TLE early: pick a worst-case-shaped input near the constraint bound and run a candidate implementation. If it doesn't finish in 5s in the sandbox, it won't finish on the judge.
+
+    **Strongly recommended workflow**: write a Python brute force (small inputs, exponential is OK), write a candidate C++ implementation, run BOTH on the same small random inputs in tool blocks, and only declare PROCEED when their outputs agree on at least 5 random tests AND your C++ runs within budget on a worst-case-shaped input.
+
+    Think through the problem and converge on the best algorithm. Produce:
+
+    1. **Algorithm** (1-3 sentences, maximally specific): Name the exact data structure and core operation — e.g., "leftist-heap merge tracking incremental cost per trie frontier node", not just "greedy" or "DP". If you are not certain, name the best candidate and explain why it fits.
+
+    2. **Complexity + TLE check**: State O(time) and O(space). Apply the 10^8 ops/sec rule: `ops / 10^8 ≤ time_limit_seconds`. If this check fails, redesign before continuing.
+
+    3. **Correctness invariant**: One sentence stating why this approach produces the correct answer.
+
+    4. **Sample trace**: Trace your algorithm on the first public sample. Show key intermediate values and confirm the output matches.
+
+    5. **Implementation sketch** (3-5 bullets): The key data structures to define and the main function's control flow — specific enough that no further design decisions are needed when writing code.
+
+    6. **Verdict** — end your response with EXACTLY ONE of these two lines, on its own line:
+       - `VERDICT: PROCEED` — if your algorithm clearly satisfies the time/memory limits and your derivation is sound.
+       - `VERDICT: REDESIGN_NEEDED — <one-sentence reason>` — if your complexity analysis exceeds the time limit, your formula has a step you cannot verify, or you discovered an inconsistency. Be honest: choosing REDESIGN_NEEDED is preferred over forcing a flawed solution forward.
+
+    Stop here. Do NOT output any C++ code. The next step will ask for the implementation.
+
+  code_only: |
+    Based on the algorithm design you provided above, implement the complete C++ solution.
+
+    ## Problem Context (for reference)
+
+    Problem:
+    <PROBLEM_DESC>
+
+    <CONSTRAINTS_BLOCK>
+
+    <PUBLIC_BLOCK>
+
+    <GEN_BLOCK>
+
+    <SELF_VALIDATION_BLOCK>
+
+    <MEMORY_ADVICE>
+
+    ## Implementation Requirements
+
+    Write the complete C++ implementation. Requirements:
+    - Use standard C++ (C++17)
+    - Do NOT use non-standard headers like #include <bits/stdc++.h>
+    - Include all necessary standard headers explicitly
+    - Implement fast I/O
+    - Every major data structure allocation must be defensible given the maximum input bounds — state its size in a comment if non-obvious
+    - Prefer streaming, rolling-state, or sparse representations when full dense tables would exceed memory
+    - If your algorithm sketch above would lead to an unsafe implementation, adapt — follow your own analysis, not the sketch literally
+
+    After writing the code, verify:
+    - **Time (strict)**: Count dominant-loop iterations at max input. `iterations / 10^8 ≤ time_limit_seconds`. If not, redesign.
+    - **Memory**: Each major allocation within memory limit?
+    - **Edge cases**: n=1 and n=max handled?
+
+    Output your full response in this exact structure:
+
+    ### Verification
+    [Time/memory/edge-case checks]
+
+    ### Solution
+    ```cpp
+    [Complete C++17 solution]
+    ```
 
   patch_decision: |
     You are choosing the repair mode for a failing C++ solution.
@@ -211,6 +397,36 @@ generate_code:
     - Return ONLY valid JSON with this schema:
       {"mode":"patch|full_regen","confidence":"low|medium|high","reason":"one short sentence"}
 
+  python_oracle: |
+    Write a Python brute-force oracle and a small-input generator. We will:
+    1. Run your brute force on each public sample input and verify it produces the expected sample output. If it doesn't, your understanding of the problem is wrong (or your brute force is buggy) and you'll be asked to revise.
+    2. Use your input generator + brute force as a reference to cross-validate the C++ solution we will write next on N random small inputs.
+
+    Both scripts must:
+    - Be syntactically valid Python.
+    - Use ONLY: `sys`, `math`, `itertools`, `collections`, `bisect`, `heapq`, `random` (no other imports).
+    - Read input from stdin (`sys.stdin.read()`) and write to stdout (`print` or `sys.stdout.write`).
+    - Run within 5 seconds CPU per invocation.
+
+    The brute force should be **maximally simple** — exponential time is fine because we only run it on small inputs. Resist the temptation to optimize; correctness for small N matters far more than speed.
+
+    The input generator must print exactly ONE valid input matching the problem's format, with **small** parameters (e.g. n ≤ 6, values ≤ 10) so the brute force finishes quickly. Successive calls should produce different inputs.
+
+    Problem:
+    <PROBLEM_DESC>
+
+    <CONSTRAINTS_BLOCK>
+
+    <PUBLIC_BLOCK>
+
+    <FEEDBACK_BLOCK>
+
+    Output ONLY valid JSON with this schema (no markdown fence, no extra prose):
+      {
+        "brute_force": "<full Python script>",
+        "input_generator": "<full Python script>"
+      }
+
   patch: |
     You are debugging a C++ solution that is FAILING tests. Your task is to generate SEARCH/REPLACE edits to fix the bugs.
 
@@ -242,8 +458,24 @@ generate_code:
     <MEMORY_ADVICE>
 
     ## Your Task:
-    Analyze the failures and generate *SEARCH/REPLACE* edits to fix the bugs.
-    Before proposing edits, first judge whether the evidence indicates a localized bug or a systemic/global flaw, then identify the likely error type. Base that judgment primarily on the current code and objective evidence above; treat auxiliary references only as secondary hints. If the evidence supports only localized repair, make the smallest necessary change. If the evidence indicates the current direction is globally wrong, do not preserve it just because it matches the existing plan.
+    Apply systematic debugging before proposing any fix.
+
+    ## Skill: Systematic Debugging — Root Cause Before Fix
+
+    **Iron Law: NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.**
+
+    Phase 1 — Root cause investigation:
+    1. Read the failure evidence carefully. What does the wrong output tell you about where the code diverges?
+    2. Trace the failing test case through the code step by step. Track key variables at each step.
+    3. Identify the exact line or logic block where the value first goes wrong.
+    4. Name the root cause category: overflow / off-by-one / wrong formula / missing edge case / wrong data structure / TLE / MLE / other.
+
+    Phase 2 — Fix hypothesis:
+    - State one specific fix hypothesis that addresses the root cause.
+    - If the root cause is a global algorithmic flaw (not a local bug), this should be `full_regen` territory — say so rather than patching.
+    - Re-check time and space complexity after the proposed fix.
+
+    Only after completing both phases, generate the SEARCH/REPLACE edits.
 
     Every *SEARCH/REPLACE* edit must use this EXACT format:
     <<<<<<< SEARCH
@@ -276,20 +508,20 @@ generate_code:
     Generate the SEARCH/REPLACE edits now:
 
   regenerate: |
-    You are repairing a failing C++ solution. Rewrite the FULL corrected code (not patch blocks).
+    You are repairing a failing C++ solution. Apply the same design-first principles before rewriting.
 
     Problem:
     <PROBLEM_DESC>
 
     <ABSTRACT_TAGS_LEVEL2_BLOCK>
 
-    Algorithm:
+    Proposed algorithm:
     <ALGORITHM>
 
     Implementation steps:
     <STEPS>
 
-    ## Previous Code (for reference only):
+    ## Previous Code (FAILING):
     ```cpp
     <PREV_CODE>
     ```
@@ -309,11 +541,43 @@ generate_code:
 
     <MEMORY_ADVICE>
 
+    ---
+
+    ## Skill 1: Diagnose Before Rewriting
+
+    <HARD-GATE>
+    Do NOT rewrite code until you have diagnosed WHY the previous attempt failed and decided on a better approach.
+    </HARD-GATE>
+
+    1. **Root cause**: What specifically caused the failures? (wrong algorithm, wrong formula, wrong data structure, overflow, memory, TLE?)
+    2. **New approach**: If the algorithm itself is wrong, state the new correct approach with the same specificity required in initial generation. If only implementation was wrong, state what changes are needed.
+    3. **Complexity recheck**: Verify time O(?) and space O(?) for the new approach fit the constraints.
+
+    ---
+
+    ## Skill 2: Sample Verification (Red Phase)
+
+    Before rewriting, trace the new approach on the failing sample cases to confirm it would produce the correct output.
+
+    ---
+
+    ## Skill 3: Rewrite (Green Phase)
+
     Requirements:
-    - Return ONLY complete C++17 source code (no markdown fences, no explanations).
-    - Keep valid parts of previous code when possible, but you may rewrite structure if needed.
+    - Return ONLY the complete C++17 source code in a fenced block (no SEARCH/REPLACE).
+    - Keep valid parts of previous code when possible, but rewrite structure if the approach changed.
     - Fix the listed failures and avoid regressions on passing cases.
-    - Do NOT output SEARCH/REPLACE blocks or any diff format.
+    - Every major allocation must be sized within bounds; state sizes in comments if non-obvious.
+
+    Output your full response in this structure:
+
+    ### Diagnosis and New Approach
+    [Root cause analysis and new algorithm design from Skills 1 and 2]
+
+    ### Solution
+    ```cpp
+    [Complete C++17 solution]
+    ```
 
   canonical_problem_block: |
     Objective: <OBJECTIVE>

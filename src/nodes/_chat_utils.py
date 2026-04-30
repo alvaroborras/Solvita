@@ -3,6 +3,8 @@
 import json
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
+import os
+
 from loguru import logger
 
 from src.llm import UnifiedLLMClient
@@ -278,6 +280,9 @@ def chat_with_history(
         config=compaction_config,
     )
     response = llm.chat(compacted["compacted_messages"], **kwargs)
+
+    if os.environ.get("SOLVITA_DEBUG_RESPONSES"):
+        logger.debug(f"[CHAT_RESPONSE] len={len(response)}\n{response}")
 
     new_messages = [
         {"role": "user", "content": user_content},

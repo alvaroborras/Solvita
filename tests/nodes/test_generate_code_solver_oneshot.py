@@ -9,10 +9,24 @@ class _FakeMem:
         return "", []
 
 
+class _FakeLLMClient:
+    @staticmethod
+    def build_role_config(*a, **k):
+        return {}
+
+    def __init__(self, cfg):
+        pass
+
+
+def _patch_llm(monkeypatch, gc):
+    monkeypatch.setattr(gc, "UnifiedLLMClient", _FakeLLMClient)
+
+
 def test_initial_codegen_marks_solver_oneshot_spent(monkeypatch):
     from src.graph.state import create_initial_state
     from src.nodes import generate_code as gc
 
+    _patch_llm(monkeypatch, gc)
     monkeypatch.setattr(gc, "build_solver_network_block", lambda s, c: "## graph block")
     monkeypatch.setattr(gc, "_generate_with_compact_retry", lambda *a, **k: ("int main(){return 0;}", [], []))
     monkeypatch.setattr(gc, "_self_validate", lambda *a, **k: (True, [], 0))
@@ -21,7 +35,8 @@ def test_initial_codegen_marks_solver_oneshot_spent(monkeypatch):
 
     st = create_initial_state(
         {"description": "d", "public_tests": []},
-        {"max_iterations": 5, "solver_network": {"enabled": True, "graph_dir": "/tmp"}},
+        {"max_iterations": 5, "solver_network": {"enabled": True, "graph_dir": "/tmp"},
+         "codegen": {"think_require_python_tool": False}},
     )
     st["problem"]["canonical"] = {"objective": "o"}
     st["plan"]["algorithm_choice"] = "a"
@@ -35,6 +50,7 @@ def test_patch_codegen_does_not_mark_solver_oneshot(monkeypatch):
     from src.graph.state import create_initial_state
     from src.nodes import generate_code as gc
 
+    _patch_llm(monkeypatch, gc)
     calls = {"n": 0}
 
     def _track(*a, **k):
@@ -50,7 +66,8 @@ def test_patch_codegen_does_not_mark_solver_oneshot(monkeypatch):
 
     st = create_initial_state(
         {"description": "d", "public_tests": []},
-        {"max_iterations": 5, "solver_network": {"enabled": True, "graph_dir": "/tmp"}},
+        {"max_iterations": 5, "solver_network": {"enabled": True, "graph_dir": "/tmp"},
+         "codegen": {"think_require_python_tool": False}},
     )
     st["problem"]["canonical"] = {"objective": "o"}
     st["plan"]["algorithm_choice"] = "a"
@@ -67,6 +84,7 @@ def test_initial_codegen_retries_with_self_validation_feedback(monkeypatch):
     from src.graph.state import create_initial_state
     from src.nodes import generate_code as gc
 
+    _patch_llm(monkeypatch, gc)
     captured_prompts = []
     validate_calls = {"n": 0}
 
@@ -98,7 +116,7 @@ def test_initial_codegen_retries_with_self_validation_feedback(monkeypatch):
 
     st = create_initial_state(
         {"description": "d", "public_tests": [{"input": "1\n", "output": "2\n"}]},
-        {"max_iterations": 5},
+        {"max_iterations": 5, "codegen": {"multi_turn_initial": False, "tdd_enabled": False}},  # disable multi-turn for this test
     )
     st["problem"]["canonical"] = {"objective": "o"}
     st["plan"]["algorithm_choice"] = "a"
@@ -119,6 +137,7 @@ def test_patch_codegen_passes_aggregate_failures_into_prompt(monkeypatch):
     from src.graph.state import create_initial_state
     from src.nodes import generate_code as gc
 
+    _patch_llm(monkeypatch, gc)
     captured = {}
 
     def fake_retry(_llm, prompt_builder, *args, **kwargs):
@@ -166,6 +185,7 @@ def test_patch_codegen_uses_decision_mode_to_choose_regen(monkeypatch):
     from src.graph.state import create_initial_state
     from src.nodes import generate_code as gc
 
+    _patch_llm(monkeypatch, gc)
     calls = {"decision": 0, "regen": 0, "patch": 0}
 
     monkeypatch.setattr(gc, "MemoryClient", lambda **kw: _FakeMem())

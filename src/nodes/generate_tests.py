@@ -1455,6 +1455,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "certified_target_count": target_count,
         "pending_execution": False,
         "ready": True,
+        "oracle_status": "ok" if ('solver_ok' in locals() and solver_ok) else "failed",
         "checker_exe": str(checker_exe) if checker_exe else None,
         "validator_exe": str(validator_exe) if validator_exe else None,
         "oracle_route": oracle_plan.route.value if 'oracle_plan' in locals() else None,

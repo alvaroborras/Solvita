@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from copy import deepcopy
 from pathlib import Path
 import time
@@ -104,6 +105,13 @@ def run_pipeline_benchmark_case(
             code=solution_code,
             official_tests=official_tests,
         )
+
+    if os.environ.get("SOLVITA_DUMP_SOLUTION") and workflow_log_path is not None:
+        try:
+            sol_path = workflow_log_path.with_suffix(".solution.cpp")
+            sol_path.write_text(solution_code or "// no code", encoding="utf-8")
+        except Exception:
+            pass
 
     return BenchmarkResult(
         problem_id=problem_id,
