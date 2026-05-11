@@ -1,0 +1,1 @@
+{"version":3,"file":"Summary.d.ts","sourceRoot":"","sources":["../../src/components/Summary.tsx"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,UAAU,EAAE,MAAM,aAAa,CAAC;AAE9C,UAAU,YAAY;IACpB,KAAK,EAAE,UAAU,CAAC;IAClB,YAAY,EAAE,MAAM,GAAG,IAAI,CAAC;CAC7B;AAID,wBAAgB,OAAO,CAAC,EAAE,KAAK,EAAE,YAAY,EAAE,EAAE,YAAY,2CA8B5D"}
