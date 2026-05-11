@@ -24,6 +24,7 @@ Iteration budget: iteration increments per codegen repair round; max_iterations 
 from pathlib import Path
 
 from langgraph.graph import StateGraph, END
+import src.events as events
 from src.graph.state import SolvitaState, create_initial_state
 from src.utils.problem_utils import extract_problem_code
 from src.nodes import (
@@ -445,5 +446,46 @@ def run_workflow(raw_problem: Dict[str, Any], config: Dict[str, Any] = None) -> 
     logger.info(f"Completion Tokens: {token_usage['completion_tokens']}")
     logger.info(f"Token Usage Source: {token_usage['token_usage_source']}")
     logger.info("=" * 60)
+
+    return final_state
+
+
+def stream_workflow(
+    raw_problem: dict,
+    config: dict | None = None,
+) -> dict:
+    """Execute the Solvita workflow and emit NDJSON events via ``src.events``.
+
+    Delegates to ``run_workflow`` so the CLI and direct execution share the same code path.
+    Phase events are emitted from each node, so the CLI receives real-time progress.
+    """
+    if config is None:
+        config = {"max_iterations": 5, "max_hack_rounds": 3}
+
+    events.emit(
+        "solve_start",
+        problem_id=str(
+            (raw_problem or {}).get("problem_id")
+            or extract_problem_code(raw_problem or {})
+            or "unknown"
+        ),
+        max_iterations=config.get("max_iterations", 5),
+    )
+
+    final_state = run_workflow(raw_problem, config)
+
+    token_usage = get_token_usage_snapshot(final_state.get("config") or config)
+    tests_data = final_state.get("tests") or {}
+    events.emit(
+        "final",
+        status=final_state.get("status", "unknown"),
+        iterations=final_state.get("iteration", 0),
+        llm_calls=final_state.get("llm_calls", 0),
+        passed=tests_data.get("passed_tests", 0),
+        total=tests_data.get("total_tests", 0),
+        pass_rate=tests_data.get("pass_rate", 0.0),
+        prompt_tokens=token_usage["prompt_tokens"],
+        completion_tokens=token_usage["completion_tokens"],
+    )
 
     return final_state

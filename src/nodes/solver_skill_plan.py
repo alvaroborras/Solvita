@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from loguru import logger
 
+import src.events as events
 from skill_graph import GraphStore
 from skill_graph.rl_rollout import (
     build_softmax_rollout_from_llm_skills,
@@ -280,4 +281,9 @@ def solver_skill_plan_node(state: "SolvitaState") -> Dict[str, Any]:
     Populate ``plan`` with skill-graph rollout, optional LLM skill + DAG selection, and the
     preformatted ``solver_graph_augmentation_block`` for ``generate_code_node``.
     """
-    return _run_skill_plan(state)
+    events.emit("phase_start", phase="solver_skill_plan", label="Planning Strategy")
+    result = _run_skill_plan(state)
+    algo = (result.get("plan") or {}).get("algorithm_choice", "")
+    events.emit("phase_done", phase="solver_skill_plan", label="Planning Strategy",
+                data={"algorithm": algo})
+    return result

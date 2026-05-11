@@ -23,6 +23,7 @@ from src.oracle.types import OracleRoute
 from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
 from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_template
+import src.events as events
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState, TestData
@@ -772,6 +773,7 @@ def _evaluate_oracle_memory_gate_if_ready(
 
 
 def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
+    events.emit("phase_start", phase="testgen_phase", label="Generating Tests")
     logger.info("[Node] Generating test cases")
 
     config = state["config"]
@@ -1505,6 +1507,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     )
     tests["oracle_memory_decision"] = oracle_memory_decision
 
+    events.emit("phase_done", phase="testgen_phase", label="Generating Tests",
+                data={"test_count": len(generated_tests)})
     return {
         "tests": tests,
         "messages": all_new_messages,

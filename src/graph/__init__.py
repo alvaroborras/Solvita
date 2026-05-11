@@ -11,6 +11,9 @@ def __getattr__(name: str):
     elif name == "run_workflow":
         from src.graph.workflow import run_workflow
         return run_workflow
+    elif name == "stream_workflow":
+        from src.graph.workflow import stream_workflow
+        return stream_workflow
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -19,4 +22,5 @@ __all__ = [
     "create_initial_state",
     "create_solvita_workflow",
     "run_workflow",
+    "stream_workflow",
 ]

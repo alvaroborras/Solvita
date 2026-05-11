@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any, List, TYPE_CHECKING
 from loguru import logger
+import src.events as events
 from src.llm import UnifiedLLMClient
 from src.utils.problem_utils import extract_problem_code
 from src.hacker.runtime import execute_hack_candidate
@@ -125,12 +126,15 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     5. Returns updated state dictionary conforming to T3.2 state contract.
     """
     logger.info("[Node] Adversarial Hack (CodeHacker Phase II)")
-    
+    events.emit("phase_start", phase="hacker_phase", label="Adversarial Hack Testing")
+
     exe_path = state.get("solution", {}).get("executable_path")
     hack_round = state.get("hack_round", 0) + 1
-    
+
     if not exe_path or not Path(exe_path).exists():
         logger.error("No executable found for hack test")
+        events.emit("phase_done", phase="hacker_phase", label="Adversarial Hack Testing",
+                    data={"hack_passed": False, "hack_round": hack_round})
         return {
             "hack_round": hack_round,
             "hack_passed": False,
@@ -141,6 +145,8 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     candidate = generate_hack_candidate(state)
     candidate_msgs = candidate.get("new_messages", [])
     if candidate["generator_route_used"] == "failed" or not candidate["generated_input"]:
+        events.emit("phase_done", phase="hacker_phase", label="Adversarial Hack Testing",
+                    data={"hack_passed": True, "hack_round": candidate["hack_round"]})
         return {
             "hack_round": candidate["hack_round"],
             "hack_passed": True,
@@ -229,6 +235,8 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
 
     if failures:
         logger.warning(f"Hack successful! Found {len(failures)} failures.")
+        events.emit("phase_done", phase="hacker_phase", label="Adversarial Hack Testing",
+                    data={"hack_passed": False, "hack_round": hack_round})
         return {
             "hack_round": hack_round,
             "hack_passed": False,
@@ -250,6 +258,8 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
         }
     
     logger.info(f"Hack round {hack_round} target passed.")
+    events.emit("phase_done", phase="hacker_phase", label="Adversarial Hack Testing",
+                data={"hack_passed": True, "hack_round": hack_round})
     return {
         "hack_round": hack_round,
         "hack_passed": True,

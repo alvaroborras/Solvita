@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, TYPE_CHECKING
 from loguru import logger
+import src.events as events
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
@@ -37,8 +38,20 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
 
     all_passed = compilation_success and total_tests > 0 and pass_rate >= 1.0
 
+    passed = state.get('tests', {}).get('passed_tests', 0)
+    total = state.get('tests', {}).get('total_tests', 0)
+    _codegen_event_data = {
+        "iteration": current_iteration,
+        "compile_success": compilation_success,
+        "passed": passed,
+        "total": total,
+        "pass_rate": pass_rate,
+    }
+
     if all_passed:
         logger.info("  → SUCCESS: All tests passed!")
+        events.emit("phase_done", phase="codegen_phase", label="Generating & Testing Code",
+                    data=_codegen_event_data)
         return {
             "status": "success",
             "execution_log": ["✓ All tests passed! Solution complete."],
@@ -47,6 +60,8 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
     # Check 2: Have we reached max iterations?
     if current_iteration >= max_iterations:
         logger.info(f"  → MAX_ITERATIONS: Reached {max_iterations}")
+        events.emit("phase_done", phase="codegen_phase", label="Generating & Testing Code",
+                    data=_codegen_event_data)
         return {
             "status": "max_iterations",
             "execution_log": [
@@ -55,11 +70,11 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
         }
 
     # Check 3: Continue iteration
-    passed = state.get('tests', {}).get('passed_tests', 0)
-    total = state.get('tests', {}).get('total_tests', 0)
     next_iteration = current_iteration + 1
 
     logger.info(f"  → CONTINUE: {passed}/{total} passed, starting iteration {next_iteration}")
+    events.emit("phase_done", phase="codegen_phase", label="Generating & Testing Code",
+                data=_codegen_event_data)
 
     return {
         "iteration": next_iteration,

@@ -25,6 +25,7 @@ from src.utils.problem_utils import extract_problem_code
 from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
 from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_placeholders, render_template
 from src.solver_network.adapter import build_solver_network_block
+import src.events as events
 
 
 def _format_abstract_tags_level2_block(tags: List[str]) -> str:
@@ -1402,6 +1403,7 @@ def generate_code_node(state: "SolvitaState") -> Dict[str, Any]:
     All changes use the patch-based approach for traceability.
     """
     logger.info(f"[Node] Generating C++ code (version {state['solution'].get('version', 0) + 1})")
+    events.emit("phase_start", phase="codegen_phase", label="Generating & Testing Code")
 
     if state.get("skip_generate_code", False):
         logger.info("[GenCode] Skipping generation: feedback not ready or unchanged")

@@ -20,6 +20,7 @@ from src.utils.prompt_templates import (
     render_placeholders,
 )
 from src.utils.prompt_utils import compact_json_for_prompt, truncate_for_prompt
+import src.events as events
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
@@ -213,6 +214,7 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
     Produce canonical problem data, whitelist-filtered tags, confidence, and trace.
     Does not set algorithm choice or implementation steps; those come from ``solver_skill_plan_node`` when enabled.
     """
+    events.emit("phase_start", phase="abstract_phase", label="Abstracting Problem")
     logger.info("[Node] Abstract problem (canonical + tags)")
 
     cfg = state["config"]
@@ -359,6 +361,8 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
         if tags_level2:
             canonical_problem["tags_level2"] = tags_level2
 
+    events.emit("phase_done", phase="abstract_phase", label="Abstracting Problem",
+                data={"tags": tags_level1, "confidence": abstract_confidence})
     return {
         "problem": {
             "canonical": canonical_problem,
