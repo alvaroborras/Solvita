@@ -101,3 +101,12 @@ docs/plans/2026-03-29-hacker-training-redesign-implementation-plan.zh-CN.md
 docs/plans/2026-03-29-redesign-mainline-integration-plan.zh-CN.md
 extract_bad_prompts.py
 find_prompt.py
+
+# CLI build dependencies
+cli/node_modules/
+
+# Runtime logs from --stream-events mode
+solvita_run.log
+
+# Claude Code workspace
+.claude/
