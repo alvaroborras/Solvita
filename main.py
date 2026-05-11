@@ -22,7 +22,8 @@ def parse_args():
         help="Problem description text (alternative to --input, used by CLI interactive mode)",
     )
     parser.add_argument("--output", type=str, default="solution.cpp", help="Output solution file")
-    parser.add_argument("--model", type=str, default="gpt-5", help="LLM model to use")
+    parser.add_argument("--model", type=str, default=None,
+                        help="LLM model to use (overrides config/models.yaml; if omitted, yaml/env decides)")
     parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
     parser.add_argument("--max-iterations", type=int, default=5, help="Max refinement iterations")
     parser.add_argument("--config", type=str, default="config", help="Config directory path")
@@ -154,11 +155,12 @@ def main():
     # Prepare configuration
     # ----------------------------------------------------------------
     config = {
-        "model": args.model,
         "temperature": args.temperature,
         "max_iterations": args.max_iterations,
         "config_path": args.config,
     }
+    if args.model is not None:
+        config["model"] = args.model
     logger.info(f"Configuration: {config}")
 
     # ----------------------------------------------------------------
