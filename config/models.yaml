@@ -3,32 +3,32 @@
 
 llm:
   # Provider: openai_compatible | anthropic | dashscope
-  provider: "dashscope"
+  provider: "openai_compatible"
   # Keep base_url non-empty for unified config validation; dashscope SDK uses api_key directly.
-  base_url: "https://dashscope.aliyuncs.com/api/v1"
+  base_url: "https://<gateway-host>/v1"
   api_key: ""
 
   # Default model for all nodes (can be overridden by roles below)
   # Note: `qwen3.*-plus` models are multimodal in DashScope; `Generation.call` in our client is the
   # text-generation path. Use a text-first model id here to avoid `InvalidParameter: url error`.
-  model: "qwen-plus"
+  model: "gpt-5.5"
   temperature: 0.1
   max_tokens: 16384
 
   # Optional per-role overrides to match previous behavior
   roles:
     code:
-      model: "qwen-plus"
+      model: "gpt-5.5"
     generator:
-      model: "qwen-plus"
+      model: "gpt-5.5"
     validator:
-      model: "qwen-plus"
+      model: "gpt-5.5"
     checker:
-      model: "qwen-plus"
+      model: "gpt-5.5"
     output:
-      model: "qwen-plus"
+      model: "gpt-5.5"
     hacker:
-      model: "qwen-plus"
+      model: "gpt-5.5"
 
 # Embedding backend for semantic similarity in skill_graph/question_similarity.py.
 # Priority: environment variables > this YAML > hardcoded defaults.
