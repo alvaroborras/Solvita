@@ -51,78 +51,98 @@ function passDots(passed: number, total: number, max = 12): React.ReactNode {
   );
 }
 
-// ─── Defender (left) row ────────────────────────────────────────────────────
+// ─── Defender (left) row — single line per iteration ──────────────────────
+//   ◆  i01  compile ✓  ●●●  3/3  100% ▉▉▉▉▎····
+// Status glyph + iter number + compile result + pass dots + ratio + bar.
+// Patched marker is shown by the `◇` retry glyph (handled by statusGlyph).
 
 function DefenderRow({ iter }: { iter: DefenderIter }) {
   const iterLabel = iter.iteration < 0 ? '··' : String(iter.iteration + 1).padStart(2, '0');
-  const compileLabel =
-    iter.compileSuccess === undefined
-      ? '—'
-      : iter.compileSuccess
-        ? 'ok'
-        : 'fail';
+  const showCompile = iter.compileSuccess !== undefined;
+  const showTests = (iter.total ?? 0) > 0;
+  const passed = iter.passed ?? 0;
+  const total = iter.total ?? 0;
+  const passRate = iter.passRate ?? 0;
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box>
-        {statusGlyph(iter.status, PALETTE.defender)}
-        <Text color={PALETTE.dim}>{'  '}</Text>
-        <Text color={PALETTE.defender} bold>
-          {`i${iterLabel}`}
-        </Text>
-        <Text color={PALETTE.dim}>{iter.patched ? '   ← patching' : ''}</Text>
-      </Box>
-      {iter.status === 'done' && (
+    <Box>
+      {statusGlyph(iter.status, iter.patched ? PALETTE.strike : PALETTE.defender)}
+      <Text color={PALETTE.dim}>{'  '}</Text>
+      <Text color={PALETTE.defender} bold>
+        {`i${iterLabel}`}
+      </Text>
+      {iter.status === 'running' ? (
         <>
-          <Box>
-            <Text color={PALETTE.dim}>{'      compile  '}</Text>
-            <Text
-              color={iter.compileSuccess ? PALETTE.defender : PALETTE.attacker}
-            >
-              {compileLabel}
-            </Text>
-          </Box>
-          <Box>
-            <Text color={PALETTE.dim}>{'      tests    '}</Text>
-            {passDots(iter.passed ?? 0, iter.total ?? 0)}
-          </Box>
+          <Text color={PALETTE.dim}>{'  ░▒▓█ '}</Text>
+          <Text color={PALETTE.meta}>{'generate'}</Text>
         </>
-      )}
-      {iter.status === 'running' && (
-        <Box>
-          <Text color={PALETTE.dim}>{'      '}</Text>
-          <Text color={PALETTE.dim}>generate · ░▒▓█</Text>
-        </Box>
+      ) : (
+        <>
+          {showCompile && (
+            <>
+              <Text color={PALETTE.dim}>{'  '}</Text>
+              <Text color={iter.compileSuccess ? PALETTE.defender : PALETTE.attacker}>
+                {iter.compileSuccess ? '✓' : '✗'}
+              </Text>
+            </>
+          )}
+          {showTests && (
+            <>
+              <Text color={PALETTE.dim}>{'  '}</Text>
+              {renderTestDots(passed, total, 6)}
+              <Text color={PALETTE.dim}>{' '}</Text>
+              <Text color={PALETTE.text}>{`${passed}/${total}`}</Text>
+              <Text color={PALETTE.dim}>{'  '}</Text>
+              <Text color={passRate >= 1 ? PALETTE.defender : PALETTE.attacker}>
+                {`${(passRate * 100).toFixed(0)}%`}
+              </Text>
+            </>
+          )}
+        </>
       )}
     </Box>
   );
 }
 
-// ─── Attacker (right) row ───────────────────────────────────────────────────
+function renderTestDots(passed: number, total: number, max = 6): React.ReactNode {
+  if (total <= 0) return <Text color={PALETTE.dim}>—</Text>;
+  const shown = Math.min(total, max);
+  const passedShown = Math.round((passed / total) * shown);
+  return (
+    <Box>
+      <Text color={PALETTE.defender}>{GLYPH.testPass.repeat(passedShown)}</Text>
+      <Text color={PALETTE.attacker}>{GLYPH.testFail.repeat(Math.max(0, shown - passedShown))}</Text>
+    </Box>
+  );
+}
+
+// ─── Attacker (right) row — single line per round ─────────────────────────
+//   ◆  R1  STRIKE        (or)
+//   ◆  R1  clean
+//   ▶  R2  probing
 
 function AttackerRow({ round }: { round: AttackerRound }) {
   const roundLabel = `R${String(round.round).padStart(1, '0')}`;
+  const tone = round.landed ? PALETTE.strike : PALETTE.attacker;
+
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box>
-        {statusGlyph(round.status, round.landed ? PALETTE.strike : PALETTE.attacker)}
-        <Text color={PALETTE.dim}>{'  '}</Text>
-        <Text color={round.landed ? PALETTE.strike : PALETTE.attacker} bold>
-          {roundLabel}
-        </Text>
-        {round.status === 'running' && (
-          <Text color={PALETTE.dim}>{'   probing …'}</Text>
-        )}
-      </Box>
-      {round.status === 'done' && (
-        <Box>
-          <Text color={PALETTE.dim}>{'      '}</Text>
-          {round.landed ? (
-            <Text color={PALETTE.strike}>{'⚡ landed strike'}</Text>
-          ) : (
-            <Text color={PALETTE.dim}>{'all clear'}</Text>
-          )}
-        </Box>
+    <Box>
+      {statusGlyph(round.status, tone)}
+      <Text color={PALETTE.dim}>{'  '}</Text>
+      <Text color={tone} bold>
+        {roundLabel}
+      </Text>
+      {round.status === 'running' && (
+        <Text color={PALETTE.meta}>{'   probing'}</Text>
+      )}
+      {round.status === 'done' && round.landed === true && (
+        <>
+          <Text color={PALETTE.dim}>{'   ⚡ '}</Text>
+          <Text color={PALETTE.strike} bold>{'STRIKE'}</Text>
+        </>
+      )}
+      {round.status === 'done' && round.landed === false && (
+        <Text color={PALETTE.meta}>{'   clean'}</Text>
       )}
     </Box>
   );
@@ -130,73 +150,80 @@ function AttackerRow({ round }: { round: AttackerRound }) {
 
 // ─── Strike scar (horizontal cross-column line) ─────────────────────────────
 
+// ─── Strike scar — single horizontal scar that NEVER wraps ────────────────
+//   ⚡  STRIKE  R1 → i01  ·  WA ──────────────────────────────────────────
+//
+// Width math: the leading ⚡ glyph and the trailing ⚡ are wide chars
+// (2 cells each on most terminals). We compute filler conservatively so
+// total cell width ≤ width − 4 (4-cell safety margin).
+
 function StrikeRow({
   strike,
   width,
-  leftWidth,
-  rightWidth,
 }: {
   strike: Strike;
   width: number;
   leftWidth: number;
   rightWidth: number;
 }) {
-  // Render: "  ⚡──── STRIKE round R{n}, vs i{NN}  type=WA ─────"
-  // followed by an indented payload block when the backend emitted detail.
-  const verdict = strike.failureType?.toUpperCase() || 'BREAK';
-  const tag = `  ⚡──── STRIKE round R${strike.round}  vs i${String(
+  const verdict = (strike.failureType ?? 'BREAK').toUpperCase();
+  // Tag = "  ⚡  STRIKE  R{n} → i{NN}  ·  {VERDICT}  "
+  // Visible cells: 2 leading + 2 (⚡) + 2 + 6 + 2 + 2 + len(R{n}) + 4 +
+  //                len(i{NN}) + 4 + 1 + len(verdict) + 2 = roughly 30 + len
+  const tagText = `  ⚡  STRIKE  R${strike.round} → i${String(
     (strike.defenderIter ?? 0) + 1,
-  ).padStart(2, '0')}  ·  ${verdict} ────`;
-  const filler = '─'.repeat(Math.max(0, width - tag.length - 2));
-
-  // Truncate any field to fit one terminal line
-  const fitLine = (s: string) =>
-    s.length > width - 12 ? s.slice(0, width - 13) + '…' : s;
-
-  const inHead = (strike.failingInputHead ?? '').replace(/\s+/g, ' ').trim();
-  const expHead = (strike.expectedHead ?? '').replace(/\s+/g, ' ').trim();
-  const actHead = (strike.actualHead ?? '').replace(/\s+/g, ' ').trim();
+  ).padStart(2, '0')}  ·  ${verdict}  `;
+  // Account for the wide ⚡ (visible cell count = string length + 1)
+  const tagCells = tagText.length + 1;
+  const filler = '─'.repeat(Math.max(0, width - tagCells - 2));
 
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={PALETTE.strike}>{tag}</Text>
-        <Text color={PALETTE.dim}>{filler}</Text>
+        <Text color={PALETTE.strike} bold>
+          {tagText}
+        </Text>
+        <Text color={PALETTE.strike}>{filler}</Text>
       </Box>
-      {inHead && (
+      {strike.failingInputHead && (
         <Box marginLeft={4}>
           <Text color={PALETTE.meta}>{'input    '}</Text>
-          <Text color={PALETTE.text}>{fitLine(inHead)}</Text>
+          <Text color={PALETTE.text}>{fitOneLine(strike.failingInputHead, width - 14)}</Text>
         </Box>
       )}
-      {expHead && (
+      {strike.expectedHead && (
         <Box marginLeft={4}>
           <Text color={PALETTE.meta}>{'expected '}</Text>
-          <Text color={PALETTE.defender}>{fitLine(expHead)}</Text>
+          <Text color={PALETTE.defender}>{fitOneLine(strike.expectedHead, width - 14)}</Text>
         </Box>
       )}
-      {actHead && (
+      {strike.actualHead && (
         <Box marginLeft={4}>
           <Text color={PALETTE.meta}>{'got      '}</Text>
-          <Text color={PALETTE.attacker}>{fitLine(actHead)}</Text>
+          <Text color={PALETTE.attacker}>{fitOneLine(strike.actualHead, width - 14)}</Text>
         </Box>
       )}
     </Box>
   );
 }
 
+function fitOneLine(s: string, max: number): string {
+  const collapsed = s.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= max || max <= 1) return collapsed.slice(0, Math.max(0, max));
+  return collapsed.slice(0, max - 1) + '…';
+}
+
 // ─── Duel container ─────────────────────────────────────────────────────────
 
 export function Duel({ defender, attacker, strikes, width }: DuelProps) {
-  // Title row: DEFENDER · codegen        ATTACKER · hacker
+  // Two columns each gets (width - 4) / 2; floor it. Each column has paddingX=1
+  // (consumes 2 cells per column). Dot grid budget = colWidth - 4 (3-cell
+  // indent + 1-cell right safety) and "· " is 2 cells per dot.
   const colWidth = Math.floor((width - 4) / 2);
-  const dot = `${GLYPH.gridDot} `;
-  const gridRow = dot.repeat(Math.floor(colWidth / 2));
+  const dotsPerCol = Math.max(0, Math.floor((colWidth - 4) / 2));
+  const gridRow = `${GLYPH.gridDot} `.repeat(dotsPerCol);
   const gap = '    ';
 
-  // Determine if there are any strikes to render between specific iters
-  // (we render them inline at the bottom of the duel block for now — a future
-  // improvement would interleave them at the precise iter boundary)
   const hasStrike = strikes.length > 0;
 
   return (

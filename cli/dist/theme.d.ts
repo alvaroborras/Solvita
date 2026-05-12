@@ -50,6 +50,13 @@ export declare const LAYOUT: {
     readonly letterspaceCap: "  ";
     readonly sparkColumns: 8;
 };
+/**
+ * Clamp a raw terminal-column count to a usable horizontal budget.
+ * - Subtract 2 to leave room for the right-edge cursor / scrollbar
+ * - Floor at 40 so very narrow terminals still produce a visible line
+ *   (we will downgrade layout to single-column at < 100 anyway)
+ */
+export declare function safeWidth(rawCols: number | undefined | null): number;
 export type ThemeName = 'dark' | 'light';
 export declare function detectTheme(): ThemeName;
 export declare function getPalette(theme?: ThemeName): Palette;

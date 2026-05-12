@@ -30,7 +30,7 @@ import { Duel } from './components/Duel.js';
 import { Verdict } from './components/Verdict.js';
 import { InputMode } from './components/InputMode.js';
 import { useSolver } from './hooks/useSolver.js';
-import { PALETTE } from './theme.js';
+import { PALETTE, safeWidth } from './theme.js';
 // ─── Project root resolution ──────────────────────────────────────────────────
 export function getProjectRoot() {
     const __filename = fileURLToPath(import.meta.url);
@@ -46,8 +46,13 @@ function SolveView({ options }) {
     const { exit } = useApp();
     const { stdout } = useStdout();
     const state = useSolver(options);
-    // Honor terminal width; fall back to 100 if unknown
-    const width = Math.max(80, Math.min(stdout?.columns ?? 100, 140));
+    // Use the terminal width minus a 2-cell right-edge guard so rules never
+    // wrap; cap at 140 to keep readable line lengths on ultra-wide screens.
+    // When piped (no TTY), `stdout.columns` is undefined; honour $COLUMNS
+    // as a deliberate override before falling back to safeWidth's default.
+    const envCols = Number.parseInt(process.env.COLUMNS ?? '', 10);
+    const rawCols = stdout?.columns ?? (Number.isFinite(envCols) ? envCols : undefined);
+    const width = Math.min(safeWidth(rawCols), 140);
     useEffect(() => {
         if (!state.running) {
             const t = setTimeout(() => exit(), 2500);

@@ -42,6 +42,10 @@ export function Verdict({ event, solutionPath, startedAt, width }: VerdictProps)
   ].join('   ·   ');
 
   const rule = GLYPH.ruleHeavy.repeat(width);
+  // `tiny` font keeps the verdict word readable on terminals as narrow as
+  // 80 columns; `chrome` rendered as ╔═╗-style boxes that were hard to
+  // read at a glance and pushed past 80 cols on long words.
+  const verdictFont = 'tiny';
 
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -49,7 +53,7 @@ export function Verdict({ event, solutionPath, startedAt, width }: VerdictProps)
 
       {/* big-text verdict */}
       <Box justifyContent="center" marginY={0}>
-        <BigText text={wordingMain} font="chrome" colors={[color]} />
+        <BigText text={wordingMain} font={verdictFont} colors={[color]} />
       </Box>
 
       {/* dossier line — centered */}

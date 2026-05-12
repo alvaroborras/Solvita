@@ -71,6 +71,16 @@ export const LAYOUT = {
     letterspaceCap: '  ',
     sparkColumns: 8,
 };
+/**
+ * Clamp a raw terminal-column count to a usable horizontal budget.
+ * - Subtract 2 to leave room for the right-edge cursor / scrollbar
+ * - Floor at 40 so very narrow terminals still produce a visible line
+ *   (we will downgrade layout to single-column at < 100 anyway)
+ */
+export function safeWidth(rawCols) {
+    const w = typeof rawCols === 'number' && rawCols > 0 ? rawCols : 100;
+    return Math.max(40, w - 2);
+}
 export function detectTheme() {
     const explicit = (process.env.SOLVITA_THEME ?? '').toLowerCase().trim();
     if (explicit === 'light')

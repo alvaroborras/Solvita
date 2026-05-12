@@ -29,7 +29,11 @@ export function Verdict({ event, solutionPath, startedAt, width }) {
         elapsed,
     ].join('   ·   ');
     const rule = GLYPH.ruleHeavy.repeat(width);
-    return (_jsxs(Box, { flexDirection: "column", marginTop: 1, children: [_jsx(Text, { color: PALETTE.rule, children: rule }), _jsx(Box, { justifyContent: "center", marginY: 0, children: _jsx(BigText, { text: wordingMain, font: "chrome", colors: [color] }) }), _jsx(Box, { justifyContent: "center", children: _jsx(Text, { color: PALETTE.meta, children: dossier }) }), solutionPath && (_jsx(Box, { justifyContent: "center", marginTop: 1, children: _jsx(Text, { color: PALETTE.dim, children: solutionPath }) }))] }));
+    // `tiny` font keeps the verdict word readable on terminals as narrow as
+    // 80 columns; `chrome` rendered as ╔═╗-style boxes that were hard to
+    // read at a glance and pushed past 80 cols on long words.
+    const verdictFont = 'tiny';
+    return (_jsxs(Box, { flexDirection: "column", marginTop: 1, children: [_jsx(Text, { color: PALETTE.rule, children: rule }), _jsx(Box, { justifyContent: "center", marginY: 0, children: _jsx(BigText, { text: wordingMain, font: verdictFont, colors: [color] }) }), _jsx(Box, { justifyContent: "center", children: _jsx(Text, { color: PALETTE.meta, children: dossier }) }), solutionPath && (_jsx(Box, { justifyContent: "center", marginTop: 1, children: _jsx(Text, { color: PALETTE.dim, children: solutionPath }) }))] }));
 }
 function formatTokens(n) {
     if (n >= 1000)

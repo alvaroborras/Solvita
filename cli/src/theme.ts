@@ -107,6 +107,17 @@ export const LAYOUT = {
   sparkColumns: 8,
 } as const;
 
+/**
+ * Clamp a raw terminal-column count to a usable horizontal budget.
+ * - Subtract 2 to leave room for the right-edge cursor / scrollbar
+ * - Floor at 40 so very narrow terminals still produce a visible line
+ *   (we will downgrade layout to single-column at < 100 anyway)
+ */
+export function safeWidth(rawCols: number | undefined | null): number {
+  const w = typeof rawCols === 'number' && rawCols > 0 ? rawCols : 100;
+  return Math.max(40, w - 2);
+}
+
 // ─── Theme detection ───────────────────────────────────────────────────────
 // 1. Honor explicit SOLVITA_THEME=light|dark|auto override.
 // 2. Otherwise read $COLORFGBG which urxvt/konsole/gnome-terminal/iTerm2/
