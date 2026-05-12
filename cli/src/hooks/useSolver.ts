@@ -35,6 +35,7 @@ type Action =
   | { type: 'SOLVE_START'; problemId: string; maxIterations: number }
   | { type: 'PHASE_START'; phase: string; label: string }
   | { type: 'PHASE_DONE'; phase: string; label: string; data: PhaseData }
+  | { type: 'TOKEN_SAMPLE'; total: number; prompt: number; completion: number }
   | { type: 'FINAL'; event: FinalEvent }
   | { type: 'SOLUTION_SAVED'; path: string }
   | { type: 'ERROR'; message: string }
@@ -195,6 +196,11 @@ function reducer(state: SolverState, action: Action): SolverState {
           const strike: Strike = {
             round,
             defenderIter: lastDef?.iteration ?? 0,
+            failureType: d.failure_type,
+            failingInputHead: d.failing_input_head,
+            expectedHead: d.expected_head,
+            actualHead: d.actual_head,
+            details: d.details,
           };
           strikes = [...strikes, strike];
         }
@@ -221,6 +227,14 @@ function reducer(state: SolverState, action: Action): SolverState {
           ...state.tokenSamples,
           (action.event.prompt_tokens ?? 0) + (action.event.completion_tokens ?? 0),
         ],
+      };
+
+    case 'TOKEN_SAMPLE':
+      // Cap retained samples to avoid unbounded growth on long runs;
+      // sparkline only renders the trailing window anyway.
+      return {
+        ...state,
+        tokenSamples: [...state.tokenSamples, action.total].slice(-256),
       };
 
     case 'SOLUTION_SAVED':
@@ -372,6 +386,14 @@ function handleEvent(event: SolvitaEvent, dispatch: Dispatch<Action>): void {
       break;
     case 'solution_saved':
       dispatch({ type: 'SOLUTION_SAVED', path: event.path });
+      break;
+    case 'token_sample':
+      dispatch({
+        type: 'TOKEN_SAMPLE',
+        total: event.total,
+        prompt: event.prompt_tokens,
+        completion: event.completion_tokens,
+      });
       break;
     case 'error':
       dispatch({ type: 'ERROR', message: event.message });

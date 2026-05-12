@@ -42,13 +42,17 @@ function AttackerRow({ round }) {
 }
 // ─── Strike scar (horizontal cross-column line) ─────────────────────────────
 function StrikeRow({ strike, width, leftWidth, rightWidth, }) {
-    // Render: "  ⚡──── STRIKE ────  " spanning the column gap.
-    // The line starts from end of defender column, crosses gap, lands in attacker
-    // column. We render it as a single Text spanning full width so it visually
-    // crosses the boundary.
-    const tag = `  ⚡──── STRIKE round R${strike.round}, vs i${String((strike.defenderIter ?? 0) + 1).padStart(2, '0')} ────`;
+    // Render: "  ⚡──── STRIKE round R{n}, vs i{NN}  type=WA ─────"
+    // followed by an indented payload block when the backend emitted detail.
+    const verdict = strike.failureType?.toUpperCase() || 'BREAK';
+    const tag = `  ⚡──── STRIKE round R${strike.round}  vs i${String((strike.defenderIter ?? 0) + 1).padStart(2, '0')}  ·  ${verdict} ────`;
     const filler = '─'.repeat(Math.max(0, width - tag.length - 2));
-    return (_jsxs(Box, { children: [_jsx(Text, { color: PALETTE.strike, children: tag }), _jsx(Text, { color: PALETTE.dim, children: filler })] }));
+    // Truncate any field to fit one terminal line
+    const fitLine = (s) => s.length > width - 12 ? s.slice(0, width - 13) + '…' : s;
+    const inHead = (strike.failingInputHead ?? '').replace(/\s+/g, ' ').trim();
+    const expHead = (strike.expectedHead ?? '').replace(/\s+/g, ' ').trim();
+    const actHead = (strike.actualHead ?? '').replace(/\s+/g, ' ').trim();
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsxs(Box, { children: [_jsx(Text, { color: PALETTE.strike, children: tag }), _jsx(Text, { color: PALETTE.dim, children: filler })] }), inHead && (_jsxs(Box, { marginLeft: 4, children: [_jsx(Text, { color: PALETTE.meta, children: 'input    ' }), _jsx(Text, { color: PALETTE.text, children: fitLine(inHead) })] })), expHead && (_jsxs(Box, { marginLeft: 4, children: [_jsx(Text, { color: PALETTE.meta, children: 'expected ' }), _jsx(Text, { color: PALETTE.defender, children: fitLine(expHead) })] })), actHead && (_jsxs(Box, { marginLeft: 4, children: [_jsx(Text, { color: PALETTE.meta, children: 'got      ' }), _jsx(Text, { color: PALETTE.attacker, children: fitLine(actHead) })] }))] }));
 }
 // ─── Duel container ─────────────────────────────────────────────────────────
 export function Duel({ defender, attacker, strikes, width }) {

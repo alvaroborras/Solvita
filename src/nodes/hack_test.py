@@ -235,8 +235,22 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
 
     if failures:
         logger.warning(f"Hack successful! Found {len(failures)} failures.")
-        events.emit("phase_done", phase="hacker_phase", label="Adversarial Hack Testing",
-                    data={"hack_passed": False, "hack_round": hack_round})
+        _f0 = failures[0] if isinstance(failures[0], dict) else {}
+        events.emit(
+            "phase_done",
+            phase="hacker_phase",
+            label="Adversarial Hack Testing",
+            data={
+                "hack_passed": False,
+                "hack_round": hack_round,
+                "failure_type": _f0.get("type", "BREAK"),
+                "failing_input_head": events._truncate(_f0.get("input"), 160),
+                "expected_head": events._truncate(_f0.get("expected"), 80),
+                "actual_head": events._truncate(_f0.get("output"), 80),
+                "details": events._truncate(_f0.get("details"), 120),
+            },
+        )
+        events.emit_token_sample(state.get("config"))
         return {
             "hack_round": hack_round,
             "hack_passed": False,
@@ -260,6 +274,7 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     logger.info(f"Hack round {hack_round} target passed.")
     events.emit("phase_done", phase="hacker_phase", label="Adversarial Hack Testing",
                 data={"hack_passed": True, "hack_round": hack_round})
+    events.emit_token_sample(state.get("config"))
     return {
         "hack_round": hack_round,
         "hack_passed": True,

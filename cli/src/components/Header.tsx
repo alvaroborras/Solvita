@@ -7,6 +7,8 @@ interface HeaderProps {
   modelLabel?: string;
   startedAt: number;
   tokens: number;
+  /** Cumulative-token timeline; rendered as braille sparkline */
+  tokenSamples?: number[];
   cost: number | null;
   width: number;
   platformWarning?: boolean;
@@ -46,6 +48,7 @@ export function Header({
   modelLabel,
   startedAt,
   tokens,
+  tokenSamples,
   cost,
   width,
   platformWarning,
@@ -58,10 +61,11 @@ export function Header({
   }, []);
 
   const elapsed = formatElapsed(Date.now() - startedAt);
-  const spark = buildSparkline([tokens], LAYOUT.sparkColumns);
+  const samples = tokenSamples && tokenSamples.length > 0 ? tokenSamples : [tokens];
+  const spark = buildSparkline(samples, LAYOUT.sparkColumns);
   const costStr = cost != null ? `$ ${cost.toFixed(3)}` : '';
   const titleSpaced = spaceCaps('SOLVITA');
-  const subtitleSpaced = spaceCaps('ADVERSARIAL  TELEMETRY');
+  const subtitleSpaced = spaceCaps('TELEMETRY');
 
   return (
     <Box flexDirection="column" marginBottom={1}>

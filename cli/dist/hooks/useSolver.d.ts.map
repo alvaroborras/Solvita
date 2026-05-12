@@ -1,1 +1,1 @@
-{"version":3,"file":"useSolver.d.ts","sourceRoot":"","sources":["../../src/hooks/useSolver.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAEV,WAAW,EAKX,YAAY,EAQb,MAAM,aAAa,CAAC;AAyQrB,wBAAgB,SAAS,CAAC,OAAO,EAAE,YAAY,eAiE9C"}
+{"version":3,"file":"useSolver.d.ts","sourceRoot":"","sources":["../../src/hooks/useSolver.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAEV,WAAW,EAKX,YAAY,EAQb,MAAM,aAAa,CAAC;AAuRrB,wBAAgB,SAAS,CAAC,OAAO,EAAE,YAAY,eAiE9C"}

@@ -1509,6 +1509,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
 
     events.emit("phase_done", phase="testgen_phase", label="Generating Tests",
                 data={"test_count": len(generated_tests)})
+    events.emit_token_sample(state.get("config"))
     return {
         "tests": tests,
         "messages": all_new_messages,

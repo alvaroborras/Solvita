@@ -141,18 +141,46 @@ function StrikeRow({
   leftWidth: number;
   rightWidth: number;
 }) {
-  // Render: "  ⚡──── STRIKE ────  " spanning the column gap.
-  // The line starts from end of defender column, crosses gap, lands in attacker
-  // column. We render it as a single Text spanning full width so it visually
-  // crosses the boundary.
-  const tag = `  ⚡──── STRIKE round R${strike.round}, vs i${String(
+  // Render: "  ⚡──── STRIKE round R{n}, vs i{NN}  type=WA ─────"
+  // followed by an indented payload block when the backend emitted detail.
+  const verdict = strike.failureType?.toUpperCase() || 'BREAK';
+  const tag = `  ⚡──── STRIKE round R${strike.round}  vs i${String(
     (strike.defenderIter ?? 0) + 1,
-  ).padStart(2, '0')} ────`;
+  ).padStart(2, '0')}  ·  ${verdict} ────`;
   const filler = '─'.repeat(Math.max(0, width - tag.length - 2));
+
+  // Truncate any field to fit one terminal line
+  const fitLine = (s: string) =>
+    s.length > width - 12 ? s.slice(0, width - 13) + '…' : s;
+
+  const inHead = (strike.failingInputHead ?? '').replace(/\s+/g, ' ').trim();
+  const expHead = (strike.expectedHead ?? '').replace(/\s+/g, ' ').trim();
+  const actHead = (strike.actualHead ?? '').replace(/\s+/g, ' ').trim();
+
   return (
-    <Box>
-      <Text color={PALETTE.strike}>{tag}</Text>
-      <Text color={PALETTE.dim}>{filler}</Text>
+    <Box flexDirection="column">
+      <Box>
+        <Text color={PALETTE.strike}>{tag}</Text>
+        <Text color={PALETTE.dim}>{filler}</Text>
+      </Box>
+      {inHead && (
+        <Box marginLeft={4}>
+          <Text color={PALETTE.meta}>{'input    '}</Text>
+          <Text color={PALETTE.text}>{fitLine(inHead)}</Text>
+        </Box>
+      )}
+      {expHead && (
+        <Box marginLeft={4}>
+          <Text color={PALETTE.meta}>{'expected '}</Text>
+          <Text color={PALETTE.defender}>{fitLine(expHead)}</Text>
+        </Box>
+      )}
+      {actHead && (
+        <Box marginLeft={4}>
+          <Text color={PALETTE.meta}>{'got      '}</Text>
+          <Text color={PALETTE.attacker}>{fitLine(actHead)}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

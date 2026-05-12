@@ -71,9 +71,11 @@ function SolveView({ options }: { options: SolveOptions }) {
   }, [state.running, exit]);
 
   const isWindows = os.platform() === 'win32';
+  const latestSample = state.tokenSamples[state.tokenSamples.length - 1] ?? 0;
   const tokens =
-    (state.finalEvent?.prompt_tokens ?? 0) +
-    (state.finalEvent?.completion_tokens ?? 0);
+    ((state.finalEvent?.prompt_tokens ?? 0) +
+      (state.finalEvent?.completion_tokens ?? 0)) ||
+    latestSample;
 
   return (
     <Box flexDirection="column">
@@ -86,6 +88,7 @@ function SolveView({ options }: { options: SolveOptions }) {
         modelLabel="gpt-5.5"
         startedAt={state.startedAt}
         tokens={tokens}
+        tokenSamples={state.tokenSamples}
         cost={null}
         width={width}
         platformWarning={isWindows}

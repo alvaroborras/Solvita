@@ -55,11 +55,13 @@ function SolveView({ options }) {
         }
     }, [state.running, exit]);
     const isWindows = os.platform() === 'win32';
-    const tokens = (state.finalEvent?.prompt_tokens ?? 0) +
-        (state.finalEvent?.completion_tokens ?? 0);
+    const latestSample = state.tokenSamples[state.tokenSamples.length - 1] ?? 0;
+    const tokens = ((state.finalEvent?.prompt_tokens ?? 0) +
+        (state.finalEvent?.completion_tokens ?? 0)) ||
+        latestSample;
     return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Header, { problemId: state.problemId && state.problemId !== 'unknown'
                     ? state.problemId
-                    : path.basename(options.inputFile, '.json'), modelLabel: "gpt-5.5", startedAt: state.startedAt, tokens: tokens, cost: null, width: width, platformWarning: isWindows }), _jsx(Arena, { arena: state.arena, width: width }), _jsx(Duel, { defender: state.defender, attacker: state.attacker, strikes: state.strikes, width: width }), state.errorMessage && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.verdictError, children: `  ⚠  ${state.errorMessage}` }) })), !state.running && state.finalEvent && (_jsx(Verdict, { event: state.finalEvent, solutionPath: state.solutionPath, startedAt: state.startedAt, width: width })), !state.running && !state.finalEvent && !state.errorMessage && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.attacker, children: '  Process exited without a final event.' }) }))] }));
+                    : path.basename(options.inputFile, '.json'), modelLabel: "gpt-5.5", startedAt: state.startedAt, tokens: tokens, tokenSamples: state.tokenSamples, cost: null, width: width, platformWarning: isWindows }), _jsx(Arena, { arena: state.arena, width: width }), _jsx(Duel, { defender: state.defender, attacker: state.attacker, strikes: state.strikes, width: width }), state.errorMessage && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.verdictError, children: `  ⚠  ${state.errorMessage}` }) })), !state.running && state.finalEvent && (_jsx(Verdict, { event: state.finalEvent, solutionPath: state.solutionPath, startedAt: state.startedAt, width: width })), !state.running && !state.finalEvent && !state.errorMessage && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.attacker, children: '  Process exited without a final event.' }) }))] }));
 }
 // ─── Root app ─────────────────────────────────────────────────────────────────
 export function App({ initialOptions, projectRoot: rootOverride }) {

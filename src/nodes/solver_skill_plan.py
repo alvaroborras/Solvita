@@ -286,4 +286,5 @@ def solver_skill_plan_node(state: "SolvitaState") -> Dict[str, Any]:
     algo = (result.get("plan") or {}).get("algorithm_choice", "")
     events.emit("phase_done", phase="solver_skill_plan", label="Planning Strategy",
                 data={"algorithm": algo})
+    events.emit_token_sample(state.get("config"))
     return result

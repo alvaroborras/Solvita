@@ -29,7 +29,7 @@ function buildSparkline(samples, cols) {
     })
         .join('');
 }
-export function Header({ problemId, modelLabel, startedAt, tokens, cost, width, platformWarning, }) {
+export function Header({ problemId, modelLabel, startedAt, tokens, tokenSamples, cost, width, platformWarning, }) {
     // Tick the clock every second so t+MM:SS stays live
     const [, setTick] = useState(0);
     useEffect(() => {
@@ -37,10 +37,11 @@ export function Header({ problemId, modelLabel, startedAt, tokens, cost, width, 
         return () => clearInterval(id);
     }, []);
     const elapsed = formatElapsed(Date.now() - startedAt);
-    const spark = buildSparkline([tokens], LAYOUT.sparkColumns);
+    const samples = tokenSamples && tokenSamples.length > 0 ? tokenSamples : [tokens];
+    const spark = buildSparkline(samples, LAYOUT.sparkColumns);
     const costStr = cost != null ? `$ ${cost.toFixed(3)}` : '';
     const titleSpaced = spaceCaps('SOLVITA');
-    const subtitleSpaced = spaceCaps('ADVERSARIAL  TELEMETRY');
+    const subtitleSpaced = spaceCaps('TELEMETRY');
     return (_jsxs(Box, { flexDirection: "column", marginBottom: 1, children: [_jsxs(Box, { justifyContent: "space-between", children: [_jsxs(Box, { children: [_jsx(Text, { color: PALETTE.text, bold: true, children: titleSpaced }), _jsx(Text, { color: PALETTE.dim, children: '   ·   ' }), _jsx(Text, { color: PALETTE.meta, children: subtitleSpaced })] }), _jsxs(Box, { children: [_jsx(Text, { color: PALETTE.dim, children: 'tokens ' }), _jsx(Text, { color: PALETTE.defender, children: spark }), _jsxs(Text, { color: PALETTE.text, children: ['  ', formatTokens(tokens)] })] })] }), _jsx(Text, { color: PALETTE.rule, children: GLYPH.ruleLight.repeat(width) }), _jsxs(Box, { justifyContent: "space-between", children: [_jsxs(Box, { children: [_jsx(Text, { color: PALETTE.dim, children: 'problem  ' }), _jsx(Text, { color: PALETTE.text, children: problemId ?? '—' })] }), _jsxs(Box, { children: [modelLabel && _jsx(Text, { color: PALETTE.meta, children: modelLabel }), _jsx(Text, { color: PALETTE.dim, children: '   ' }), _jsx(Text, { color: PALETTE.meta, children: elapsed }), costStr && (_jsxs(_Fragment, { children: [_jsx(Text, { color: PALETTE.dim, children: '   ·   ' }), _jsx(Text, { color: PALETTE.meta, children: costStr })] }))] })] }), platformWarning && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.attacker, children: '⚠  Windows: C++ rlimit sandbox unavailable; falling back to subprocess mode.' }) }))] }));
 }
 //# sourceMappingURL=Header.js.map

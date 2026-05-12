@@ -1,28 +1,29 @@
 /**
  * Solvita TUI design tokens.
  *
- * Aesthetic: "Adversarial Telemetry" — a refined-industrial dark control room
+ * Aesthetic: "Adversarial Telemetry" — a refined-industrial control room
  * watching two agents (codegen vs hacker) duel over a problem.
  *
  * Two hue families only: cool teal (defender) + warm amber (attacker).
- * Parchment off-white text avoids pure-white sterility.
- * No purple gradients. No rounded box-drawing. No green-good/red-bad cliché.
+ * No purple gradients. No green-good/red-bad cliché.
+ *
+ * Adapts to light or dark terminals via getPalette() — see bottom of file.
  */
-export declare const PALETTE: {
-    readonly bg: "#0a0a0a";
-    readonly grid: "#2a2a2a";
-    readonly rule: "#3a3a3a";
-    readonly text: "#e8e1d3";
-    readonly meta: "#6b6b6b";
-    readonly dim: "#4a4a4a";
-    readonly defender: "#7dd3c0";
-    readonly attacker: "#f59e0b";
-    readonly strike: "#fbbf24";
-    readonly referee: "#e8e1d3";
-    readonly verdictWin: "#7dd3c0";
-    readonly verdictLose: "#f59e0b";
-    readonly verdictError: "#dc2626";
-};
+export interface Palette {
+    bg: string;
+    grid: string;
+    rule: string;
+    text: string;
+    meta: string;
+    dim: string;
+    defender: string;
+    attacker: string;
+    strike: string;
+    referee: string;
+    verdictWin: string;
+    verdictLose: string;
+    verdictError: string;
+}
 export declare const GLYPH: {
     readonly done: "◆";
     readonly retry: "◇";
@@ -49,10 +50,9 @@ export declare const LAYOUT: {
     readonly letterspaceCap: "  ";
     readonly sparkColumns: 8;
 };
-/**
- * Render an UPPERCASE label with controlled letter spacing.
- *   spaceCaps('STRIKE') → 'S T R I K E'
- * Trailing space is stripped.
- */
+export type ThemeName = 'dark' | 'light';
+export declare function detectTheme(): ThemeName;
+export declare function getPalette(theme?: ThemeName): Palette;
+export declare const PALETTE: Palette;
 export declare function spaceCaps(s: string): string;
 //# sourceMappingURL=theme.d.ts.map

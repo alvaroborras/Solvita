@@ -363,6 +363,7 @@ def abstract_problem_node(state: "SolvitaState") -> Dict[str, Any]:
 
     events.emit("phase_done", phase="abstract_phase", label="Abstracting Problem",
                 data={"tags": tags_level1, "confidence": abstract_confidence})
+    events.emit_token_sample(state.get("config"))
     return {
         "problem": {
             "canonical": canonical_problem,

@@ -52,6 +52,7 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
         logger.info("  → SUCCESS: All tests passed!")
         events.emit("phase_done", phase="codegen_phase", label="Generating & Testing Code",
                     data=_codegen_event_data)
+        events.emit_token_sample(state.get("config"))
         return {
             "status": "success",
             "execution_log": ["✓ All tests passed! Solution complete."],
@@ -62,6 +63,7 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
         logger.info(f"  → MAX_ITERATIONS: Reached {max_iterations}")
         events.emit("phase_done", phase="codegen_phase", label="Generating & Testing Code",
                     data=_codegen_event_data)
+        events.emit_token_sample(state.get("config"))
         return {
             "status": "max_iterations",
             "execution_log": [
@@ -75,6 +77,7 @@ def unified_check_node(state: "SolvitaState") -> Dict[str, Any]:
     logger.info(f"  → CONTINUE: {passed}/{total} passed, starting iteration {next_iteration}")
     events.emit("phase_done", phase="codegen_phase", label="Generating & Testing Code",
                 data=_codegen_event_data)
+    events.emit_token_sample(state.get("config"))
 
     return {
         "iteration": next_iteration,

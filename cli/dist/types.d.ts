@@ -28,6 +28,11 @@ export interface PhaseCodegenData {
 export interface PhaseHackerData {
     hack_passed: boolean;
     hack_round: number;
+    failure_type?: string;
+    failing_input_head?: string;
+    expected_head?: string;
+    actual_head?: string;
+    details?: string;
 }
 export type PhaseData = PhaseAbstractData | PhaseTestgenData | PhaseSolverData | PhaseCodegenData | PhaseHackerData | Record<string, unknown>;
 export interface PhaseDoneEvent {
@@ -55,7 +60,13 @@ export interface ErrorEvent {
     type: 'error';
     message: string;
 }
-export type SolvitaEvent = SolveStartEvent | PhaseStartEvent | PhaseDoneEvent | FinalEvent | SolutionSavedEvent | ErrorEvent;
+export interface TokenSampleEvent {
+    type: 'token_sample';
+    prompt_tokens: number;
+    completion_tokens: number;
+    total: number;
+}
+export type SolvitaEvent = SolveStartEvent | PhaseStartEvent | PhaseDoneEvent | FinalEvent | SolutionSavedEvent | ErrorEvent | TokenSampleEvent;
 export type PhaseStatus = 'pending' | 'running' | 'done' | 'error';
 export interface PhaseState {
     key: string;
@@ -89,6 +100,11 @@ export interface AttackerRound {
 export interface Strike {
     round: number;
     defenderIter: number;
+    failureType?: string;
+    failingInputHead?: string;
+    expectedHead?: string;
+    actualHead?: string;
+    details?: string;
 }
 export interface SolverState {
     phases: PhaseState[];

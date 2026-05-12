@@ -37,6 +37,12 @@ export interface PhaseCodegenData {
 export interface PhaseHackerData {
   hack_passed: boolean;
   hack_round: number;
+  // Present only when hack_passed=false (bug found)
+  failure_type?: string;
+  failing_input_head?: string;
+  expected_head?: string;
+  actual_head?: string;
+  details?: string;
 }
 
 export type PhaseData =
@@ -76,13 +82,21 @@ export interface ErrorEvent {
   message: string;
 }
 
+export interface TokenSampleEvent {
+  type: 'token_sample';
+  prompt_tokens: number;
+  completion_tokens: number;
+  total: number;
+}
+
 export type SolvitaEvent =
   | SolveStartEvent
   | PhaseStartEvent
   | PhaseDoneEvent
   | FinalEvent
   | SolutionSavedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | TokenSampleEvent;
 
 // ─── CLI internal state ──────────────────────────────────────────────────────
 
@@ -133,7 +147,11 @@ export interface AttackerRound {
 export interface Strike {
   round: number;              // attacker round that produced the strike
   defenderIter: number;       // most-recent codegen iter at time of strike
-  // (input/verdict/expected would go here once backend extends payload)
+  failureType?: string;       // e.g. "WA", "TLE", "RE", "OUTPUT_MISMATCH"
+  failingInputHead?: string;  // truncated to ~160 chars by backend
+  expectedHead?: string;
+  actualHead?: string;
+  details?: string;
 }
 
 export interface SolverState {
