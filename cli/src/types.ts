@@ -155,7 +155,7 @@ export interface Strike {
 }
 
 export interface SolverState {
-  // Legacy flat list (kept for backward compatibility with existing PhaseRow)
+  // Legacy flat list (preserved on the state shape but no longer rendered)
   phases: PhaseState[];
 
   // Adversarial-telemetry routed buckets

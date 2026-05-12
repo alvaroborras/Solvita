@@ -12,8 +12,8 @@ cd solvita
 
 2. Create a virtual environment
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 3. Install dependencies
@@ -25,9 +25,19 @@ pip install -r requirements-dev.txt
 4. Set up configuration files
 ```bash
 cp config/models.yaml.example config/models.yaml
-cp config/neo4j.yaml.example config/neo4j.yaml
-cp config/vector_db.yaml.example config/vector_db.yaml
+# Edit config/models.yaml to set provider/base_url/model.
+# NEVER write the api_key into the YAML — export SOLVITA_API_KEY instead.
 ```
+
+5. Install the project git hooks
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The pre-commit hook blocks any commit that would leak an LLM API key
+(matching `sk-...`, `gsk_...`, etc.) into a tracked YAML / .env / shell /
+markdown file. If a match is a false positive (e.g. a sample key in
+docs), bypass with `git commit --no-verify`.
 
 ## Code Style
 

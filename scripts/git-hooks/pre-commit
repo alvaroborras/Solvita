@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Solvita pre-commit guard — blocks commits that would leak an LLM API key
+# into config/models.yaml or any tracked .yaml / .env file.
+#
+# Activate by symlinking from .git/hooks/pre-commit:
+#   ln -sf ../../scripts/git-hooks/pre-commit .git/hooks/pre-commit
+# (or run scripts/install-git-hooks.sh once.)
+
+set -e
+
+# Patterns that indicate a real key (typed prefix + length).
+# Extend if you start using a non-OpenAI-style provider whose keys differ.
+KEY_PATTERN='(api_key|API_KEY|SOLVITA_API_KEY)\s*[:=]\s*"?(sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{20,}|claude-[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{20,})"?'
+
+# Only check files staged for THIS commit; ignore those just deleted.
+files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ya?ml|env|sh|md)$' || true)
+
+if [ -z "$files" ]; then
+  exit 0
+fi
+
+violations=()
+for f in $files; do
+  # Skip files that were removed mid-commit
+  [ -f "$f" ] || continue
+
+  # Use staged content (not workdir) so a fix in workdir without `git add`
+  # is not silently accepted.
+  if git show :"$f" 2>/dev/null | grep -qE "$KEY_PATTERN"; then
+    violations+=("$f")
+  fi
+done
+
+if [ ${#violations[@]} -ne 0 ]; then
+  echo "✗ Blocked commit: an LLM API key appears in:" >&2
+  for f in "${violations[@]}"; do
+    echo "   - $f" >&2
+  done
+  echo "" >&2
+  echo "Set the key via SOLVITA_API_KEY in your shell instead:" >&2
+  echo "   export SOLVITA_API_KEY='sk-...'" >&2
+  echo "" >&2
+  echo "If this is intentional (e.g. a sample/test key), bypass with --no-verify." >&2
+  exit 1
+fi
+
+exit 0

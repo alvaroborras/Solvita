@@ -7,11 +7,13 @@
  *   3. Paste problem description (multiline; submit with Ctrl+D or Ctrl+Enter)
  *
  * On selection, calls onSubmit(inputFile, description?) so the parent can
- * launch the solver.
+ * launch the solver. All colors flow through PALETTE so light/dark themes
+ * stay readable.
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { useFilePicker } from '../hooks/useFilePicker.js';
+import { PALETTE } from '../theme.js';
 
 type SubMode = 'pick' | 'path' | 'paste';
 
@@ -28,7 +30,6 @@ export function InputMode({ projectRoot, onSubmit }: InputModeProps) {
     useFilePicker(projectRoot);
 
   useInput((input, key) => {
-    // Tab cycles between sub-modes
     if (key.tab) {
       setSubMode((m) => (m === 'pick' ? 'path' : m === 'path' ? 'paste' : 'pick'));
       return;
@@ -55,7 +56,6 @@ export function InputMode({ projectRoot, onSubmit }: InputModeProps) {
     }
 
     if (subMode === 'paste') {
-      // Ctrl+D or Ctrl+Enter to submit
       if ((key.ctrl && input === 'd') || (key.ctrl && key.return)) {
         if (pasteText.trim()) onSubmit('', pasteText.trim());
         return;
@@ -79,31 +79,32 @@ export function InputMode({ projectRoot, onSubmit }: InputModeProps) {
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
-      {/* Tab bar */}
+      {/* Tab bar — active tab uses defender accent so it's the only color
+          competing with body text; others are neutral meta gray */}
       <Box marginBottom={1}>
         {tabs.map((t) => (
           <Text
             key={t}
             bold={subMode === t}
-            color={subMode === t ? 'cyan' : 'gray'}
+            color={subMode === t ? PALETTE.defender : PALETTE.meta}
             underline={subMode === t}
           >
             {tabLabels[t]}
           </Text>
         ))}
-        <Text color="gray">  (Tab to switch)</Text>
+        <Text color={PALETTE.meta}>{'  (Tab to switch)'}</Text>
       </Box>
 
       {/* Pick mode */}
       {subMode === 'pick' && (
         <Box flexDirection="column">
           {entries.length === 0 ? (
-            <Text color="yellow">  No JSON files found in data/problem/</Text>
+            <Text color={PALETTE.attacker}>{'  No JSON files found in data/problem/'}</Text>
           ) : (
             entries.map((entry, i) => (
               <Text
                 key={entry.fullPath}
-                color={i === selectedIndex ? 'white' : 'gray'}
+                color={i === selectedIndex ? PALETTE.text : PALETTE.meta}
                 bold={i === selectedIndex}
               >
                 {i === selectedIndex ? '  ▶ ' : '    '}
@@ -111,7 +112,7 @@ export function InputMode({ projectRoot, onSubmit }: InputModeProps) {
               </Text>
             ))
           )}
-          <Text color="gray" dimColor>
+          <Text color={PALETTE.meta}>
             {'\n  ↑↓ navigate  Enter to solve'}
           </Text>
         </Box>
@@ -120,12 +121,12 @@ export function InputMode({ projectRoot, onSubmit }: InputModeProps) {
       {/* Path mode */}
       {subMode === 'path' && (
         <Box flexDirection="column">
-          <Text color="gray">  Path to problem JSON:</Text>
-          <Box borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
-            <Text color="white">{pathText || ' '}</Text>
-            <Text color="cyan">{'█'}</Text>
+          <Text color={PALETTE.meta}>{'  Path to problem JSON:'}</Text>
+          <Box borderStyle="round" borderColor={PALETTE.defender} paddingX={1} marginTop={1}>
+            <Text color={PALETTE.text}>{pathText || ' '}</Text>
+            <Text color={PALETTE.defender}>{'█'}</Text>
           </Box>
-          <Text color="gray" dimColor>
+          <Text color={PALETTE.meta}>
             {'  Enter to solve'}
           </Text>
         </Box>
@@ -134,22 +135,22 @@ export function InputMode({ projectRoot, onSubmit }: InputModeProps) {
       {/* Paste mode */}
       {subMode === 'paste' && (
         <Box flexDirection="column">
-          <Text color="gray">
+          <Text color={PALETTE.meta}>
             {'  Paste problem description below. Press Ctrl+D to submit.'}
           </Text>
           <Box
             borderStyle="round"
-            borderColor="cyan"
+            borderColor={PALETTE.defender}
             paddingX={1}
             marginTop={1}
             flexDirection="column"
           >
-            <Text color="white" wrap="wrap">
+            <Text color={PALETTE.text} wrap="wrap">
               {pasteText || ' '}
             </Text>
-            <Text color="cyan">{'█'}</Text>
+            <Text color={PALETTE.defender}>{'█'}</Text>
           </Box>
-          <Text color="gray" dimColor>
+          <Text color={PALETTE.meta}>
             {'  Ctrl+D to solve'}
           </Text>
         </Box>

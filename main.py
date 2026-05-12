@@ -173,11 +173,18 @@ def main():
         else:
             final_state = run_workflow(problem_input, config)
     except Exception as e:
-        logger.error(f"Workflow execution failed: {e}")
-        if args.stream_events:
-            events.emit("error", message=str(e))
         import traceback
-        traceback.print_exc()
+        tb = traceback.format_exc()
+        logger.error(f"Workflow execution failed: {e}")
+        logger.error(tb)
+        if args.stream_events:
+            # In stream mode, stderr is typically inherited by the parent
+            # CLI process and would corrupt the TUI display. Send the
+            # traceback through the NDJSON channel and write it to the log
+            # file via loguru (already redirected); skip stderr.
+            events.emit("error", message=str(e), traceback=tb)
+        else:
+            traceback.print_exc()
         return
     finally:
         if _tmp_file:
