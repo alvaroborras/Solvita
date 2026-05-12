@@ -1,12 +1,23 @@
 /**
- * Root Ink application component.
+ * Root Ink application — Adversarial Telemetry layout.
  *
- * Renders one of two modes:
+ * Three vertical sections:
+ *   ┌────────────────────────────────┐
+ *   │ Header (title · meta · spark)  │
+ *   ├────────────────────────────────┤
+ *   │ ARENA  (abstract / testgen / plan)
+ *   ├────────────────────────────────┤
+ *   │ DUEL   (defender ↔ attacker)   │
+ *   ├────────────────────────────────┤
+ *   │ VERDICT (big-text on close)    │
+ *   └────────────────────────────────┘
+ *
+ * Renders one of two top-level modes:
  *  - "input"  — interactive problem selection / paste (InputMode)
- *  - "solve"  — real-time solve progress (PhaseRow list + Summary)
+ *  - "solve"  — real-time solve progress (Header + Arena + Duel + Verdict)
  */
 import React, { useState, useCallback, useEffect } from 'react';
-import { Box, Text, useApp } from 'ink';
+import { Box, Text, useApp, useStdout } from 'ink';
 import os from 'os';
 import path from 'path';
 import { writeFileSync } from 'fs';
@@ -14,17 +25,17 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 
 import { Header } from './components/Header.js';
-import { PhaseRow } from './components/PhaseRow.js';
+import { Arena } from './components/Arena.js';
+import { Duel } from './components/Duel.js';
+import { Verdict } from './components/Verdict.js';
 import { InputMode } from './components/InputMode.js';
-import { Summary } from './components/Summary.js';
 import { useSolver } from './hooks/useSolver.js';
+import { PALETTE } from './theme.js';
 import type { SolveOptions } from './types.js';
 
 // ─── Project root resolution ──────────────────────────────────────────────────
 
 export function getProjectRoot(): string {
-  // This file compiles to dist/App.js
-  //  dist/App.js  →  dist/  →  cli/  →  solvita-final/
   const __filename = fileURLToPath(import.meta.url);
   const distDir = path.dirname(__filename);
   const cliDir = path.dirname(distDir);
@@ -38,12 +49,7 @@ export function detectPythonBin(): string {
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface AppProps {
-  /**
-   * When non-null, skip interactive input and go straight to solving.
-   * Set by `solvita solve <file>` subcommand.
-   */
   initialOptions: SolveOptions | null;
-  /** Explicit project root override (passed from index.tsx which resolves it). */
   projectRoot?: string;
 }
 
@@ -51,55 +57,69 @@ interface AppProps {
 
 function SolveView({ options }: { options: SolveOptions }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const state = useSolver(options);
+
+  // Honor terminal width; fall back to 100 if unknown
+  const width = Math.max(80, Math.min(stdout?.columns ?? 100, 140));
 
   useEffect(() => {
     if (!state.running) {
-      const t = setTimeout(() => exit(), 150);
+      const t = setTimeout(() => exit(), 2500);
       return () => clearTimeout(t);
     }
   }, [state.running, exit]);
 
-  const problemLabel = path.basename(options.inputFile, '.json');
   const isWindows = os.platform() === 'win32';
+  const tokens =
+    (state.finalEvent?.prompt_tokens ?? 0) +
+    (state.finalEvent?.completion_tokens ?? 0);
 
   return (
     <Box flexDirection="column">
-      <Header subtitle={problemLabel} platformWarning={isWindows} />
+      <Header
+        problemId={
+          state.problemId && state.problemId !== 'unknown'
+            ? state.problemId
+            : path.basename(options.inputFile, '.json')
+        }
+        modelLabel="gpt-5.5"
+        startedAt={state.startedAt}
+        tokens={tokens}
+        cost={null}
+        width={width}
+        platformWarning={isWindows}
+      />
 
-      <Box flexDirection="column">
-        {state.phases.map((phase) => (
-          <PhaseRow
-            key={phase.key}
-            label={phase.label}
-            status={phase.status}
-            detail={phase.detail}
-          />
-        ))}
-      </Box>
+      <Arena arena={state.arena} width={width} />
 
-      {state.phases.length === 0 && state.running && (
-        <Box paddingX={2}>
-          <Text color="gray" dimColor>
-            {'  Initialising workflow…'}
-          </Text>
-        </Box>
-      )}
+      <Duel
+        defender={state.defender}
+        attacker={state.attacker}
+        strikes={state.strikes}
+        width={width}
+      />
 
       {state.errorMessage && (
-        <Box marginTop={1} paddingX={2}>
-          <Text color="red">{'  ✖ Error: '}</Text>
-          <Text color="red">{state.errorMessage}</Text>
+        <Box marginTop={1}>
+          <Text color={PALETTE.verdictError}>{`  ⚠  ${state.errorMessage}`}</Text>
         </Box>
       )}
 
       {!state.running && state.finalEvent && (
-        <Summary event={state.finalEvent} solutionPath={state.solutionPath} />
+        <Verdict
+          event={state.finalEvent}
+          solutionPath={state.solutionPath}
+          startedAt={state.startedAt}
+          width={width}
+        />
       )}
 
       {!state.running && !state.finalEvent && !state.errorMessage && (
-        <Box marginTop={1} paddingX={2}>
-          <Text color="yellow">{'  Process exited without a final event.'}</Text>
+        <Box marginTop={1}>
+          <Text color={PALETTE.attacker}>
+            {'  Process exited without a final event.'}
+          </Text>
         </Box>
       )}
     </Box>
@@ -115,7 +135,6 @@ export function App({ initialOptions, projectRoot: rootOverride }: AppProps) {
   const handleInputSubmit = useCallback(
     (inputFile: string, description?: string) => {
       let resolvedFile = inputFile;
-
       if (!inputFile && description) {
         const tmp = path.join(tmpdir(), `solvita_input_${Date.now()}.json`);
         writeFileSync(
@@ -130,9 +149,7 @@ export function App({ initialOptions, projectRoot: rootOverride }: AppProps) {
         );
         resolvedFile = tmp;
       }
-
       if (!resolvedFile) return;
-
       setSolveOptions({
         projectRoot: root,
         inputFile: resolvedFile,
@@ -150,7 +167,13 @@ export function App({ initialOptions, projectRoot: rootOverride }: AppProps) {
 
   return (
     <Box flexDirection="column">
-      <Header />
+      <Header
+        problemId={null}
+        startedAt={Date.now()}
+        tokens={0}
+        cost={null}
+        width={100}
+      />
       <InputMode projectRoot={root} onSubmit={handleInputSubmit} />
     </Box>
   );

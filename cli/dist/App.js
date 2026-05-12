@@ -1,27 +1,38 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 /**
- * Root Ink application component.
+ * Root Ink application — Adversarial Telemetry layout.
  *
- * Renders one of two modes:
+ * Three vertical sections:
+ *   ┌────────────────────────────────┐
+ *   │ Header (title · meta · spark)  │
+ *   ├────────────────────────────────┤
+ *   │ ARENA  (abstract / testgen / plan)
+ *   ├────────────────────────────────┤
+ *   │ DUEL   (defender ↔ attacker)   │
+ *   ├────────────────────────────────┤
+ *   │ VERDICT (big-text on close)    │
+ *   └────────────────────────────────┘
+ *
+ * Renders one of two top-level modes:
  *  - "input"  — interactive problem selection / paste (InputMode)
- *  - "solve"  — real-time solve progress (PhaseRow list + Summary)
+ *  - "solve"  — real-time solve progress (Header + Arena + Duel + Verdict)
  */
 import { useState, useCallback, useEffect } from 'react';
-import { Box, Text, useApp } from 'ink';
+import { Box, Text, useApp, useStdout } from 'ink';
 import os from 'os';
 import path from 'path';
 import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { Header } from './components/Header.js';
-import { PhaseRow } from './components/PhaseRow.js';
+import { Arena } from './components/Arena.js';
+import { Duel } from './components/Duel.js';
+import { Verdict } from './components/Verdict.js';
 import { InputMode } from './components/InputMode.js';
-import { Summary } from './components/Summary.js';
 import { useSolver } from './hooks/useSolver.js';
+import { PALETTE } from './theme.js';
 // ─── Project root resolution ──────────────────────────────────────────────────
 export function getProjectRoot() {
-    // This file compiles to dist/App.js
-    //  dist/App.js  →  dist/  →  cli/  →  solvita-final/
     const __filename = fileURLToPath(import.meta.url);
     const distDir = path.dirname(__filename);
     const cliDir = path.dirname(distDir);
@@ -33,16 +44,22 @@ export function detectPythonBin() {
 // ─── Solve view (shows progress) ─────────────────────────────────────────────
 function SolveView({ options }) {
     const { exit } = useApp();
+    const { stdout } = useStdout();
     const state = useSolver(options);
+    // Honor terminal width; fall back to 100 if unknown
+    const width = Math.max(80, Math.min(stdout?.columns ?? 100, 140));
     useEffect(() => {
         if (!state.running) {
-            const t = setTimeout(() => exit(), 150);
+            const t = setTimeout(() => exit(), 2500);
             return () => clearTimeout(t);
         }
     }, [state.running, exit]);
-    const problemLabel = path.basename(options.inputFile, '.json');
     const isWindows = os.platform() === 'win32';
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Header, { subtitle: problemLabel, platformWarning: isWindows }), _jsx(Box, { flexDirection: "column", children: state.phases.map((phase) => (_jsx(PhaseRow, { label: phase.label, status: phase.status, detail: phase.detail }, phase.key))) }), state.phases.length === 0 && state.running && (_jsx(Box, { paddingX: 2, children: _jsx(Text, { color: "gray", dimColor: true, children: '  Initialising workflow…' }) })), state.errorMessage && (_jsxs(Box, { marginTop: 1, paddingX: 2, children: [_jsx(Text, { color: "red", children: '  ✖ Error: ' }), _jsx(Text, { color: "red", children: state.errorMessage })] })), !state.running && state.finalEvent && (_jsx(Summary, { event: state.finalEvent, solutionPath: state.solutionPath })), !state.running && !state.finalEvent && !state.errorMessage && (_jsx(Box, { marginTop: 1, paddingX: 2, children: _jsx(Text, { color: "yellow", children: '  Process exited without a final event.' }) }))] }));
+    const tokens = (state.finalEvent?.prompt_tokens ?? 0) +
+        (state.finalEvent?.completion_tokens ?? 0);
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Header, { problemId: state.problemId && state.problemId !== 'unknown'
+                    ? state.problemId
+                    : path.basename(options.inputFile, '.json'), modelLabel: "gpt-5.5", startedAt: state.startedAt, tokens: tokens, cost: null, width: width, platformWarning: isWindows }), _jsx(Arena, { arena: state.arena, width: width }), _jsx(Duel, { defender: state.defender, attacker: state.attacker, strikes: state.strikes, width: width }), state.errorMessage && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.verdictError, children: `  ⚠  ${state.errorMessage}` }) })), !state.running && state.finalEvent && (_jsx(Verdict, { event: state.finalEvent, solutionPath: state.solutionPath, startedAt: state.startedAt, width: width })), !state.running && !state.finalEvent && !state.errorMessage && (_jsx(Box, { marginTop: 1, children: _jsx(Text, { color: PALETTE.attacker, children: '  Process exited without a final event.' }) }))] }));
 }
 // ─── Root app ─────────────────────────────────────────────────────────────────
 export function App({ initialOptions, projectRoot: rootOverride }) {
@@ -73,6 +90,6 @@ export function App({ initialOptions, projectRoot: rootOverride }) {
     if (solveOptions) {
         return _jsx(SolveView, { options: solveOptions });
     }
-    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Header, {}), _jsx(InputMode, { projectRoot: root, onSubmit: handleInputSubmit })] }));
+    return (_jsxs(Box, { flexDirection: "column", children: [_jsx(Header, { problemId: null, startedAt: Date.now(), tokens: 0, cost: null, width: 100 }), _jsx(InputMode, { projectRoot: root, onSubmit: handleInputSubmit })] }));
 }
 //# sourceMappingURL=App.js.map

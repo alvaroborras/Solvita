@@ -63,12 +63,47 @@ export interface PhaseState {
     status: PhaseStatus;
     detail: string;
 }
+export interface ArenaItem {
+    key: 'abstract_phase' | 'testgen_phase' | 'solver_skill_plan';
+    label: string;
+    status: PhaseStatus;
+    tags?: string[];
+    confidence?: number;
+    testCount?: number;
+    algorithm?: string;
+}
+export interface DefenderIter {
+    iteration: number;
+    status: PhaseStatus;
+    compileSuccess?: boolean;
+    passed?: number;
+    total?: number;
+    passRate?: number;
+    patched?: boolean;
+}
+export interface AttackerRound {
+    round: number;
+    status: PhaseStatus;
+    landed?: boolean;
+}
+export interface Strike {
+    round: number;
+    defenderIter: number;
+}
 export interface SolverState {
     phases: PhaseState[];
+    arena: ArenaItem[];
+    defender: DefenderIter[];
+    attacker: AttackerRound[];
+    strikes: Strike[];
     finalEvent: FinalEvent | null;
     solutionPath: string | null;
     errorMessage: string | null;
     running: boolean;
+    problemId: string | null;
+    maxIterations: number | null;
+    startedAt: number;
+    tokenSamples: number[];
 }
 export interface SolveOptions {
     /** Absolute path to project root (where main.py lives) */

@@ -1,7 +1,12 @@
 interface HeaderProps {
-    subtitle?: string;
+    problemId: string | null;
+    modelLabel?: string;
+    startedAt: number;
+    tokens: number;
+    cost: number | null;
+    width: number;
     platformWarning?: boolean;
 }
-export declare function Header({ subtitle, platformWarning }: HeaderProps): import("react/jsx-runtime").JSX.Element;
+export declare function Header({ problemId, modelLabel, startedAt, tokens, cost, width, platformWarning, }: HeaderProps): import("react/jsx-runtime").JSX.Element;
 export {};
 //# sourceMappingURL=Header.d.ts.map

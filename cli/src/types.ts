@@ -95,12 +95,70 @@ export interface PhaseState {
   detail: string;
 }
 
+// ─── Adversarial-telemetry split state ──────────────────────────────────────
+// Phases are routed by key into one of three buckets:
+//   arena    — abstract / testgen / solver_skill_plan (pre-fight setup)
+//   defender — codegen iterations (one entry per iteration)
+//   attacker — hacker rounds (one entry per round)
+// Strikes are emitted when a hacker round resolves with hack_passed=false:
+// they're permanent scars rendered horizontally across the gap.
+
+export interface ArenaItem {
+  key: 'abstract_phase' | 'testgen_phase' | 'solver_skill_plan';
+  label: string;
+  status: PhaseStatus;
+  // Free-form fields surfaced from PhaseDoneEvent.data
+  tags?: string[];
+  confidence?: number;
+  testCount?: number;
+  algorithm?: string;
+}
+
+export interface DefenderIter {
+  iteration: number;          // 0-based as emitted by unified_check
+  status: PhaseStatus;        // running while codegen_phase is open, done after unified_check
+  compileSuccess?: boolean;
+  passed?: number;
+  total?: number;
+  passRate?: number;          // 0..1
+  patched?: boolean;          // true on iter > 0 (means this row replaced an earlier)
+}
+
+export interface AttackerRound {
+  round: number;              // 1-based hack_round
+  status: PhaseStatus;
+  landed?: boolean;           // true when hack_passed=false (bug found)
+}
+
+export interface Strike {
+  round: number;              // attacker round that produced the strike
+  defenderIter: number;       // most-recent codegen iter at time of strike
+  // (input/verdict/expected would go here once backend extends payload)
+}
+
 export interface SolverState {
+  // Legacy flat list (kept for backward compatibility with existing PhaseRow)
   phases: PhaseState[];
+
+  // Adversarial-telemetry routed buckets
+  arena: ArenaItem[];
+  defender: DefenderIter[];
+  attacker: AttackerRound[];
+  strikes: Strike[];
+
+  // Termination
   finalEvent: FinalEvent | null;
   solutionPath: string | null;
   errorMessage: string | null;
   running: boolean;
+
+  // Run-level meta (populated as events arrive)
+  problemId: string | null;
+  maxIterations: number | null;
+  startedAt: number;          // epoch ms; for `t+ MM:SS` clock in header
+
+  // Token timeline (sampled at every phase_done; used for header sparkline)
+  tokenSamples: number[];     // running approximate cumulative tokens
 }
 
 // ─── CLI options passed from commander ───────────────────────────────────────

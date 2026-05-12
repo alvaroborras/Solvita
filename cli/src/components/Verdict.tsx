@@ -1,0 +1,73 @@
+import React from 'react';
+import { Box, Text } from 'ink';
+// @ts-ignore — ink-big-text has no types shipped
+import BigText from 'ink-big-text';
+import { PALETTE, GLYPH } from '../theme.js';
+import type { FinalEvent } from '../types.js';
+
+interface VerdictProps {
+  event: FinalEvent;
+  solutionPath: string | null;
+  startedAt: number;
+  width: number;
+}
+
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const mm = String(Math.floor(s / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+function estimateCost(prompt: number, completion: number): number {
+  // very rough: gpt-5.5 indicative pricing — adjust to your provider
+  // input  $5  / 1M tok
+  // output $15 / 1M tok
+  return (prompt * 5 + completion * 15) / 1_000_000;
+}
+
+export function Verdict({ event, solutionPath, startedAt, width }: VerdictProps) {
+  const won = event.status === 'success' || event.pass_rate === 1.0;
+  const wordingMain = won ? 'ACCEPTED' : event.status === 'max_iterations' ? 'MAX ITER' : 'FAILED';
+  const color = won ? PALETTE.verdictWin : PALETTE.verdictLose;
+  const cost = estimateCost(event.prompt_tokens, event.completion_tokens);
+  const elapsed = formatDuration(Date.now() - startedAt);
+
+  const dossier = [
+    `${event.iterations} iter`,
+    `${event.llm_calls} LLM`,
+    `${formatTokens(event.prompt_tokens)} + ${formatTokens(event.completion_tokens)} tok`,
+    `$${cost.toFixed(3)}`,
+    elapsed,
+  ].join('   ·   ');
+
+  const rule = GLYPH.ruleHeavy.repeat(width);
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={PALETTE.rule}>{rule}</Text>
+
+      {/* big-text verdict */}
+      <Box justifyContent="center" marginY={0}>
+        <BigText text={wordingMain} font="chrome" colors={[color]} />
+      </Box>
+
+      {/* dossier line — centered */}
+      <Box justifyContent="center">
+        <Text color={PALETTE.meta}>{dossier}</Text>
+      </Box>
+
+      {/* solution path */}
+      {solutionPath && (
+        <Box justifyContent="center" marginTop={1}>
+          <Text color={PALETTE.dim}>{solutionPath}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(0)} K`;
+  return String(n);
+}
