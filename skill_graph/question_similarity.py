@@ -147,17 +147,17 @@ def resolve_embedding_config() -> EmbeddingConfig:
         os.environ.get("SOLVITA_EMBEDDING_AZURE_BASE_URL")
         or os.environ.get("SOLVITA_BASE_URL")
         or azure.get("base_url")
-        or "https://<azure-endpoint>"
+        or ""
     ).strip()
     azure_tenant_id = str(
         os.environ.get("SOLVITA_EMBEDDING_AZURE_TENANT_ID")
         or azure.get("tenant_id")
-        or "<azure-tenant>"
+        or ""
     ).strip()
     azure_scope = str(
         os.environ.get("SOLVITA_EMBEDDING_AZURE_SCOPE")
         or azure.get("scope")
-        or "api://<azure-scope>/.default"
+        or "<your-azure-scope-uri>"
     ).strip()
     azure_api_version = str(
         os.environ.get("SOLVITA_EMBEDDING_AZURE_API_VERSION")

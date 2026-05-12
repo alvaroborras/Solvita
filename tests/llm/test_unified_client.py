@@ -46,7 +46,7 @@ def test_api_key_mode_overrides_azure_aad(monkeypatch):
             "api_key": "secret",
             "azure_tenant_id": "tenant",
             "azure_scope": "scope",
-            "model": "gpt-5.4",
+            "model": "gpt-4o-mini",
         }
     )
 
@@ -60,7 +60,7 @@ def test_env_model_override_skips_yaml_role_model(monkeypatch):
 
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://app.ppapi.ai/v1")
     monkeypatch.setenv("SOLVITA_API_KEY", "secret")
-    monkeypatch.setenv("SOLVITA_MODEL", "gpt-5.4")
+    monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.setattr("openai.OpenAI", DummyOpenAI)
     monkeypatch.setattr(
         UnifiedLLMClient,
@@ -68,8 +68,8 @@ def test_env_model_override_skips_yaml_role_model(monkeypatch):
         classmethod(
             lambda cls, config: {
                 "llm": {
-                    "model": "gpt-5.4-20260305",
-                    "roles": {"generator": {"model": "gpt-5.4-20260305"}},
+                    "model": "gpt-4o-mini-2024-07-18",
+                    "roles": {"generator": {"model": "gpt-4o-mini-2024-07-18"}},
                 }
             }
         ),
@@ -78,7 +78,7 @@ def test_env_model_override_skips_yaml_role_model(monkeypatch):
     role_cfg = UnifiedLLMClient.build_role_config({}, "generator")
     client = UnifiedLLMClient(role_cfg)
 
-    assert client.current_model == "gpt-5.4"
+    assert client.current_model == "gpt-4o-mini"
     assert client._use_azure is False
 
 
@@ -92,12 +92,12 @@ def test_provider_env_aliases_both_supported(monkeypatch):
     monkeypatch.setenv("SOLVITA_API_KEY", "secret")
     monkeypatch.setenv("SOLVITA_PROVIDER", "openai_compatible")
 
-    client = UnifiedLLMClient({"model": "gpt-5.4"})
+    client = UnifiedLLMClient({"model": "gpt-4o-mini"})
     assert client.provider == "openai"
 
     monkeypatch.delenv("SOLVITA_PROVIDER")
     monkeypatch.setenv("SOLVITA_LLM_PROVIDER", "openai_compatible")
-    client = UnifiedLLMClient({"model": "gpt-5.4"})
+    client = UnifiedLLMClient({"model": "gpt-4o-mini"})
     assert client.provider == "openai"
 
 
@@ -105,5 +105,5 @@ def test_unknown_provider_fails_fast(monkeypatch):
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://app.ppapi.ai/v1")
     monkeypatch.setenv("SOLVITA_API_KEY", "secret")
     with pytest.raises(UnifiedLLMClient.ConfigurationError):
-        UnifiedLLMClient({"model": "gpt-5.4", "provider": "unknown-provider"})
+        UnifiedLLMClient({"model": "gpt-4o-mini", "provider": "unknown-provider"})
 

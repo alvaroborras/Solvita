@@ -44,4 +44,4 @@ emit '{"type": "phase_done", "phase": "hacker_phase", "label": "Adversarial Hack
 emit '{"type": "token_sample", "prompt_tokens": 198432, "completion_tokens": 24108, "total": 222540}' 0.4
 
 emit '{"type": "final", "status": "success", "iterations": 3, "llm_calls": 87, "passed": 4, "total": 4, "pass_rate": 1.0, "prompt_tokens": 198432, "completion_tokens": 24108}' 0.2
-emit '{"type": "solution_saved", "path": "/Data/tanh/solvita/solution.cpp"}' 0.1
+emit '{"type": "solution_saved", "path": "./solution.cpp"}' 0.1

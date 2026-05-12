@@ -10,10 +10,12 @@ function formatDuration(ms) {
     return `${mm}:${ss}`;
 }
 function estimateCost(prompt, completion) {
-    // very rough: gpt-5.5 indicative pricing — adjust to your provider
-    // input  $5  / 1M tok
-    // output $15 / 1M tok
-    return (prompt * 5 + completion * 15) / 1_000_000;
+    // Illustrative pricing only — calibrated to a mid-tier OpenAI-compatible
+    // chat model. Override SOLVITA_PRICE_INPUT / SOLVITA_PRICE_OUTPUT
+    // (USD per 1M tokens) for your actual provider.
+    const inputRate = Number.parseFloat(process.env.SOLVITA_PRICE_INPUT ?? '') || 0.15;
+    const outputRate = Number.parseFloat(process.env.SOLVITA_PRICE_OUTPUT ?? '') || 0.60;
+    return (prompt * inputRate + completion * outputRate) / 1_000_000;
 }
 export function Verdict({ event, solutionPath, startedAt, width }) {
     const won = event.status === 'success' || event.pass_rate === 1.0;

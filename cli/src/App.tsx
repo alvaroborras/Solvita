@@ -90,7 +90,7 @@ function SolveView({ options }: { options: SolveOptions }) {
             ? state.problemId
             : path.basename(options.inputFile, '.json')
         }
-        modelLabel="gpt-5.5"
+        modelLabel={process.env.SOLVITA_MODEL || undefined}
         startedAt={state.startedAt}
         tokens={tokens}
         tokenSamples={state.tokenSamples}

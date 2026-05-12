@@ -11,19 +11,21 @@ def _reload_qs():
     return importlib.import_module(mod_name)
 
 
-def test_embedding_model_from_models_yaml(monkeypatch):
+def test_embedding_model_from_models_yaml(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("SOLVITA_EMBEDDING_MODEL", raising=False)
     monkeypatch.delenv("SOLVITA_EMBEDDING_PROVIDER", raising=False)
-    monkeypatch.setenv("SOLVITA_CONFIG_PATH", "<workspace>/forcel/solvita/config")
+    monkeypatch.setenv("SOLVITA_CONFIG_PATH", str(tmp_path))
     qs = _reload_qs()
     assert qs.resolve_embedding_model() == "text-embedding-3-small"
     cfg = qs.resolve_embedding_config()
     assert cfg.provider == "azure_openai"
-    assert cfg.azure_base_url.startswith("https://")
+    # When the configured base_url is empty (open-source default), the
+    # resolved value is the literal empty string rather than a URL.
+    assert isinstance(cfg.azure_base_url, str)
 
 
-def test_embedding_model_env_overrides_yaml(monkeypatch):
-    monkeypatch.setenv("SOLVITA_CONFIG_PATH", "<workspace>/forcel/solvita/config")
+def test_embedding_model_env_overrides_yaml(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("SOLVITA_CONFIG_PATH", str(tmp_path))
     monkeypatch.setenv("SOLVITA_EMBEDDING_MODEL", "text-embedding-3-large")
     monkeypatch.setenv("SOLVITA_EMBEDDING_PROVIDER", "sentence_transformers")
     qs = _reload_qs()
@@ -87,7 +89,7 @@ embedding:
   model: text-embedding-3-small
   http_max_retries: 1
   azure:
-    base_url: https://<azure-endpoint>
+    base_url: https://example.openai.azure.com
 """,
         encoding="utf-8",
     )

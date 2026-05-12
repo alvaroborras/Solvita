@@ -33,14 +33,14 @@ ls cli/dist/index.js           # 编译产物应存在
 
 ## 2. 配置 LLM 提供商
 
-`config/models.yaml` 已默认配为 OpenAI 兼容端点 + `gpt-5.5`：
+`config/models.yaml` 默认配为 OpenAI 兼容端点 + `gpt-4o-mini`：
 
 ```yaml
 llm:
   provider: "openai_compatible"
-  base_url: "https://<gateway-host>/v1"
+  base_url: "https://api.openai.com/v1"
   api_key: ""          # 留空，运行时从环境变量读
-  model: "gpt-5.5"
+  model: "gpt-4o-mini"
 ```
 
 要换 provider/model：直接改 `base_url` 和 `model` 字段。**永远不要把 api_key 写进 yaml 或 .env 提交进 git**。
@@ -51,7 +51,7 @@ llm:
 
 ```bash
 export SOLVITA_API_KEY='sk-...'                    # 必填
-export SOLVITA_BASE_URL='https://<gateway-host>/v1'  # 选填，yaml 已兜底
+export SOLVITA_BASE_URL='https://api.openai.com/v1'  # 选填，yaml 已兜底
 ```
 
 key 只活在当前 shell 会话里，关掉窗口就没了。
@@ -180,7 +180,7 @@ Solvita ▸ examples/problem_input_example.json
 | `503 No available channel for model X` | provider 不支持那个 model id，改 `config/models.yaml` 的 `model:` |
 | stdout 混入非 JSON 行 | 检查后端有没有意外 `print(...)` 不带 `flush=True` 污染 stream 模式 |
 | TUI 不刷新 | 没在真终端跑（headless / pipe）。Ink 需要 TTY |
-| 跑得慢 | 正常。单题 100+ LLM 调用，`gpt-5.5 xhigh` reasoning 通常 5–10 分钟 |
+| 跑得慢 | 正常。单题 100+ LLM 调用，含 reasoning 的模型通常 5–10 分钟 |
 
 查后端日志：
 
@@ -216,7 +216,7 @@ main              ← 早期骨架，仅供参考
 
 ```
 634ae19  chore: add run_solvita.sh wrapper, ignore build artifacts
-632df8b  config: switch default LLM to nowcoding gpt-5.5
+632df8b  config: provide generic OpenAI-compatible defaults
 ed2a560  fix: stop --model default overriding yaml-resolved model
 0e19a6a  feat: port NDJSON event-streaming bridge from solvita-cli backend
 aab2898  merge: add solvita-cli frontend onto latest backend (supplement_upload)

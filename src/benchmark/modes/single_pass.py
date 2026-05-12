@@ -55,7 +55,7 @@ def _resolve_single_pass_model(config: Dict[str, Any]) -> str:
     generator_model = (roles.get("generator", {}) or {}).get("model")
     if generator_model:
         return generator_model
-    return llm_block.get("model", "gpt-5.4-20260305")
+    return llm_block.get("model", "gpt-4o-mini")
 
 
 def build_single_pass_config(config: Dict[str, Any] | None) -> Dict[str, Any]:

@@ -27,9 +27,9 @@
 import os
 
 # ⚠️ 必须在导入 datasets 之前设置环境变量！
-# 在脚本开头设置 HF 缓存目录到大盘，避免磁盘空间不足
-# 这样无论从哪个终端运行，都会使用大盘作为缓存目录
-hf_cache_base = "<workspace>/hf_cache"
+# Override HF cache root to a local-disk location to avoid filling up the
+# default ~/.cache. Set SOLVITA_HF_CACHE_BASE to point at a large mount.
+hf_cache_base = os.environ.get("SOLVITA_HF_CACHE_BASE", os.path.expanduser("~/.cache/huggingface"))
 os.environ["HF_HOME"] = hf_cache_base
 os.environ["HF_DATASETS_CACHE"] = os.path.join(hf_cache_base, "datasets")
 os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
@@ -49,8 +49,8 @@ from collections import defaultdict
 from datasets import load_dataset, DatasetDict, Dataset
 import pyarrow.parquet as pq
 
-# 路径配置
-SOLVITA_DATA_DIR = Path("<workspace>/duture/solvita/data")
+# 路径配置 — override via SOLVITA_DATA_DIR if your training data lives elsewhere
+SOLVITA_DATA_DIR = Path(os.environ.get("SOLVITA_DATA_DIR", "./data"))
 SOLVITA_DATA_PROBLEM_DIR = SOLVITA_DATA_DIR / "problem"  # 已存在的 solvita-data
 OUTPUT_DIR = SOLVITA_DATA_DIR / "solvita_train"
 OUTPUT_DIR.mkdir(exist_ok=True, parents=True)

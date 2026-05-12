@@ -1,11 +1,6 @@
 {
   "module": "hacker",
   "exported_at_utc": "2026-04-14T15:15:21.665699+00:00",
-  "source_paths": {
-    "db": "<workspace>/.worktrees/hacker-training-redesign/.training_runs/hacker/hacker_p12_20260329T161013Z/memory/hack/memory.db",
-    "policy": "<workspace>/.worktrees/hacker-training-redesign/.training_runs/hacker/hacker_p12_20260329T161013Z/memory/hack/policy.json",
-    "checkpoint": "<workspace>/.worktrees/hacker-training-redesign/.training_runs/hacker/hacker_p12_20260329T161013Z/checkpoints/hacker_checkpoint.json"
-  },
   "artifacts": {
     "memory_db_gz": {
       "path": "artifacts/trainable_memory/latest/hacker/memory.db.gz",

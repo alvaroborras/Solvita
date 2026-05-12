@@ -78,7 +78,7 @@ def estimate_single_pass_tokens(
         prompt = build_single_pass_prompt(payload.get("raw_problem", {}))
         prompt_tokens = estimate_message_tokens(
             [{"role": "user", "content": prompt}],
-            model="gpt-5.4",
+            model="gpt-4o-mini",
         )
         notes.append("prompt estimated from reconstructed single-pass prompt")
     elif prompt_tokens is None:
@@ -89,7 +89,7 @@ def estimate_single_pass_tokens(
         stem = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in row["problem_id"]).strip("._") or "unknown"
         raw_path = artifact_dir / f"{stem}.raw.txt"
         if raw_path.exists():
-            completion_tokens = estimate_text_tokens(raw_path.read_text(encoding="utf-8"), model="gpt-5.4")
+            completion_tokens = estimate_text_tokens(raw_path.read_text(encoding="utf-8"), model="gpt-4o-mini")
             notes.append("completion estimated from saved single-pass raw response")
         elif (row.get("error") or "") == "Empty model response":
             completion_tokens = 0

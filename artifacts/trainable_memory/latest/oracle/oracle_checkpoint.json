@@ -1,6 +1,6 @@
 {
   "signature": {
-    "dataset": "<workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl",
+    "dataset": "<dataset-path>",
     "skip": 0,
     "limit": null,
     "tags": null

@@ -189,7 +189,7 @@ embedding:
   provider: "azure_openai"
   model: "text-embedding-3-small"
   azure:
-    base_url: "https://<azure-endpoint>"
+    base_url: "https://<your-azure-openai-endpoint>"
     tenant_id: "..."
     scope: "..."
     api_version: "2025-04-01-preview"

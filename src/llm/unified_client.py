@@ -346,7 +346,7 @@ class UnifiedLLMClient:
 
         if self._use_azure and not resolved["base_url"]:
             raise self.ConfigurationError(
-                "Azure OpenAI requires base_url (e.g. https://<azure-endpoint>)"
+                "Azure OpenAI requires base_url (e.g. https://<your-resource>.openai.azure.com)"
             )
 
         # Responses API + reasoning effort (optional, OpenAI-style)

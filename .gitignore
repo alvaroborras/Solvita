@@ -110,3 +110,11 @@ solvita_run.log
 
 # Claude Code workspace
 .claude/
+
+# Internal benchmark dumps (regenerable; contains private paths)
+benchmark_results/
+.benchmark_runs/
+
+# IDE settings
+.cursor/
+.vscode/

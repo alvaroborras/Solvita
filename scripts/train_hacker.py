@@ -9,7 +9,7 @@ scripts/train_hacker.py — 离线训练 Hacker Memory (Native Driver)
 
 用法：
     python scripts/train_hacker.py \\
-        --dataset <workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl \\
+        --dataset ./data/solvita_train/solvita_train_tanh.jsonl \\
         --limit 200 \\
         --data-dir data/memory
 """
@@ -429,7 +429,7 @@ def main():
     from tqdm import tqdm
 
     parser = argparse.ArgumentParser(description="Hacker 对抗攻击离线训练 (Native Node Wrappers)")
-    parser.add_argument("--dataset", default="<workspace>/duture/solvita/data/solvita_train/solvita_train_tanh.jsonl")
+    parser.add_argument("--dataset", default="./data/solvita_train/solvita_train_tanh.jsonl")
     parser.add_argument("--limit", type=int, default=None, help="最多处理 N 道题")
     parser.add_argument("--data-dir", default="data/memory", help="SQLite 存储目录")
     parser.add_argument("--tags", nargs="*", help="只训练包含这些 tag 的题目")

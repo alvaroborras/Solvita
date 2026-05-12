@@ -10,7 +10,7 @@ def _make_client(monkeypatch, **extras):
     """Construct a UnifiedLLMClient with stubbed self.client (no real network)."""
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
-    monkeypatch.setenv("SOLVITA_MODEL", "gpt-5.4")
+    monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.delenv("SOLVITA_USE_RESPONSES_API", raising=False)
     monkeypatch.delenv("SOLVITA_REASONING_EFFORT", raising=False)
     from src.llm.unified_client import UnifiedLLMClient
@@ -48,7 +48,7 @@ def test_responses_api_routes_when_use_responses_api_true(monkeypatch):
     ])
     out = client.chat([{"role": "user", "content": "hi"}])
     assert out == "hello"
-    assert captured["model"] == "gpt-5.4"
+    assert captured["model"] == "gpt-4o-mini"
     assert isinstance(captured["input"], list)
     assert captured["input"][0]["role"] == "user"
 
@@ -132,7 +132,7 @@ def test_chat_completions_path_unchanged_when_no_responses_flag(monkeypatch):
     """Default path (no use_responses_api, no reasoning_effort) still uses chat.completions."""
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
-    monkeypatch.setenv("SOLVITA_MODEL", "gpt-5.4")
+    monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.delenv("SOLVITA_USE_RESPONSES_API", raising=False)
     monkeypatch.delenv("SOLVITA_REASONING_EFFORT", raising=False)
 
@@ -170,7 +170,7 @@ def test_env_var_enables_responses_api(monkeypatch):
     """SOLVITA_USE_RESPONSES_API=1 enables responses API even without config flag."""
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
-    monkeypatch.setenv("SOLVITA_MODEL", "gpt-5.4")
+    monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("SOLVITA_USE_RESPONSES_API", "1")
 
     from src.llm.unified_client import UnifiedLLMClient
@@ -181,7 +181,7 @@ def test_env_var_enables_responses_api(monkeypatch):
 def test_env_var_sets_reasoning_effort(monkeypatch):
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
-    monkeypatch.setenv("SOLVITA_MODEL", "gpt-5.4")
+    monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("SOLVITA_REASONING_EFFORT", "xhigh")
 
     from src.llm.unified_client import UnifiedLLMClient
