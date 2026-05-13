@@ -212,6 +212,10 @@ def load_rng_state(state_dir: Path, rng: random.Random) -> None:
     blob = data.get("rng_state")
     if not blob:
         return
+    # SECURITY: pickle.loads is unsafe on untrusted input. rng.json is only ever
+    # produced by save_rng_state() above and read back from a checkpoint dir
+    # owned by the same user. Never load checkpoints from untrusted sources
+    # (PRs, shared buckets, downloaded artifacts) without regenerating them.
     rng.setstate(pickle.loads(base64.b64decode(blob)))
 
 

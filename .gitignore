@@ -4,117 +4,43 @@
 .env
 *.env
 
-# Runtime data
-data/memory/
-data/generated/
-
-# Large skill-graph exports (regenerate with scripts/export_solver_network_latest.py)
-artifacts/solver_network/
-
-# Python cache
+# Python
 __pycache__/
 *.pyc
 *.pyo
 .venv/
+*.egg-info/
 
-# Cursor
-.cursor/
+# Test / coverage artifacts
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+*.log
 
-# OS
+# OS / IDE
 .DS_Store
-
-# Temporary compilation outputs
-tmp/
-
-# Local reports / guides (untracked)
-MERGE_TEST_REPORT.md
-TRAIN_SCRIPT_V2_GUIDE.md
-docs/repair_plan_1575B.md
-solvita_train_tanh_schema.md
-
+.cursor/
+.vscode/
 .agent
 .worktrees/
-.benchmark_runs/logs/
-.benchmark_runs/replaced_*/
-.benchmark_runs/solvita_pipeline_*/
-.benchmark_runs/reports/
-tjy
-train_oracle.log
-train_oracle.log.old
-
-data/
-scripts/extract_1149e.py
-scripts/rigorous_verify_1037e.py
-scripts/find_1037e_fail.py
-
-investigate_1037_e.log
-
-genesis/
-C++17 暴力算法模板库构建.md
-docs/research_topic_oracle_tle.md
-implementation_plan.md.resolved
-train.log
-docs/oracle_resilience_review.md
-docs/oracle_resilience_acceptance_plan.md
-docs/oracle_resilience_review_round2.md
-tests/conftest.py
-tests/llm/test_unified_client_fatal.py
-tests/nodes/test_update_oracle_memory_regression.py
-tests/scripts/test_train_oracle_checkpoint.py
-tests/scripts/test_train_oracle_multiprocess_failfast.py
-tests/scripts/test_train_oracle_resilience.py
-out.txt
-pytest_output.txt
-test_quota.py
-docs/oracle_training_improvement_report.md
-CLAUDE.md
-.vscode/settings.json
-docs/testgen_hacker_presentation_reviewed.md
-.gitignore
-docs/plans/2026-03-22-hacker-generator-checklist-patch.md
-
-# Local planning / analysis scratch files
-docs/plans/2026-03-26-oracle-redesign-progress-and-next-steps.zh-CN.md
-docs/plans/2026-03-26-oracle-train-100-audit.zh-CN.md
-docs/plans/2026-03-26-oracle-training-redesign-implementation.zh-CN.md
-docs/plans/2026-03-26-oracle-training-redesign.md
-docs/plans/2026-03-26-oracle-training-redesign.zh-CN.md
-docs/plans/2026-03-27-selector-dataset-export-handoff.zh-CN.md
-docs/plans/2026-03-27-selector-dataset-export-implementation-plan.md
-docs/plans/2026-03-27-selector-prior-baseline-training-implementation-plan.zh-CN.md
-docs/plans/2026-03-27-selector-prior-training-label-semantics-review.zh-CN.md
-docs/plans/2026-03-28-oracle-memory-db-mvp-implementation-plan.zh-CN.md
-docs/plans/2026-03-28-oracle-memory-db-training-and-serving-design.zh-CN.md
-docs/plans/2026-03-28-oracle-memory-policy-implementation-plan.zh-CN.md
-docs/plans/2026-03-28-oracle-memory-recipe-confidence-proposal.zh-CN.md
-docs/plans/2026-03-28-selector-prior-baseline-diagnosis.zh-CN.md
-docs/plans/2026-03-28-selector-prior-feature-availability-audit.zh-CN.md
-docs/plans/2026-03-28-selector-prior-post-decision-implementation-plan.zh-CN.md
-docs/plans/2026-03-28-selector-prior-progress-issues-and-decision-directions.zh-CN.md
-docs/plans/2026-03-28-selector-prior-second-cohort-holdout-experiment-plan.zh-CN.md
-docs/plans/2026-03-28-selector-prior-stage-decision.zh-CN.md
-docs/plans/2026-03-28-selector-prior-v2-implementation-plan.zh-CN.md
-docs/plans/2026-03-28-selector-prior-v2-proposal.zh-CN.md
-docs/plans/2026-03-29-hacker-training-analysis-explainer.zh-CN.md
-docs/plans/2026-03-29-hacker-training-analysis-rigorous.zh-CN.md
-docs/plans/2026-03-29-hacker-training-redesign-implementation-plan.zh-CN.md
-docs/plans/2026-03-29-redesign-mainline-integration-plan.zh-CN.md
-extract_bad_prompts.py
-find_prompt.py
+.claude/
 
 # CLI build dependencies
 cli/node_modules/
 
-# Runtime logs from --stream-events mode
+# Runtime data (regenerable)
+data/memory/
+data/generated/
+tmp/
 solvita_run.log
 
-# Claude Code workspace
-.claude/
+# Large skill-graph exports (regenerate with scripts/export_solver_network_latest.py)
+artifacts/solver_network/
 
-# Internal benchmark dumps (regenerable; contains private paths)
+# Trainable-memory checkpoints (regenerate via training scripts; distribute via release/LFS)
+artifacts/trainable_memory/
+
+# Internal benchmark dumps (regenerable; may contain local paths)
 benchmark_results/
 .benchmark_runs/
-
-# IDE settings
-.cursor/
-.vscode/
