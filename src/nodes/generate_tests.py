@@ -223,16 +223,6 @@ def _build_solver_advice(problem_desc: str) -> str:
         )
     return " ".join(lines)
 
-
-def _count_cyclic_divisible_segments_bruteforce(n: int, m: int, k: int, a: List[int]) -> int:
-    from src.utils.test_seed_cases import _count_cyclic_divisible_segments_bruteforce as _impl
-
-    return _impl(n, m, k, a)
-
-
-_build_local_certified_tests = build_local_certified_tests
-
-
 def _normalize_generated_input(text: str) -> str:
     return text.strip() + "\n"
 
@@ -740,6 +730,7 @@ def _evaluate_oracle_memory_gate_if_ready(
 
 
 def generate_tests_node(state: "SolvitaState") -> Dict[str, Any]:
+    events.emit_node_enter("generate_tests", "testgen")
     events.emit("phase_start", phase="testgen_phase", label="Generating Tests")
     logger.info("[Node] Generating test cases")
 
@@ -768,7 +759,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     
     public_tests = state["problem"].get("public_tests", [])
     constraints = state["problem"].get("constraints", {})
-    local_certified_tests = _build_local_certified_tests(problem_desc)
+    local_certified_tests = build_local_certified_tests(problem_desc)
     solver_public_tests = list(public_tests) + list(local_certified_tests)
 
     def role_client(role: str) -> UnifiedLLMClient:

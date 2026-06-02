@@ -9,11 +9,13 @@ from src.nodes.generate_tests import (
     build_solver_prompt,
     summarize_public_solver_failure,
     finalize_solver_certification,
-    _build_local_certified_tests,
-    _count_cyclic_divisible_segments_bruteforce,
     _apply_oracle_acceptance_gate,
     _build_oracle_memory_decision,
     _evaluate_oracle_memory_gate_if_ready,
+)
+from src.utils.test_seed_cases import (
+    build_local_certified_tests,
+    _count_cyclic_divisible_segments_bruteforce,
 )
 
 from src.oracle.types import AcceptedArtifactKind
@@ -154,7 +156,7 @@ def test_build_local_certified_tests_includes_wrap_counterexamples():
         "Two segments are considered different if the set of indices are different."
     )
 
-    tests = _build_local_certified_tests(desc)
+    tests = build_local_certified_tests(desc)
 
     assert len(tests) >= 3
     assert tests[0]["input"] == "1 3 2\n1\n"
@@ -293,5 +295,6 @@ def test_generate_tests_node_respects_configured_no_ac_target_cap(monkeypatch, t
             "expected_output": "1\n",
             "type": "public",
             "description": "Public test case",
+            "trust_tier": "trusted",
         }
     ]
