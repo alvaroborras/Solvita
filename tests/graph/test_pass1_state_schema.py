@@ -12,7 +12,9 @@ from src.graph.state import (
     SolvitaState,
     TestData as StateTestData,
     VerificationData,
+    _merge_runtime_config,
     create_initial_state,
+    merge_dict,
 )
 
 
@@ -24,7 +26,7 @@ def test_pass1_state_schema_declares_new_contracts():
     verification_annotation = SolvitaState.__annotations__["verification"]
     failure_bank_annotation = SolvitaState.__annotations__["failure_bank_context"]
 
-    assert get_args(solve_policy_annotation)[0] is SolvePolicyData
+    assert get_args(solve_policy_annotation) == (SolvePolicyData, merge_dict)
     assert set(SolvePolicyData.__annotations__) == {
         "risk_score",
         "run_testgen_initially",
@@ -37,7 +39,7 @@ def test_pass1_state_schema_declares_new_contracts():
         "next_action",
     }
 
-    assert get_args(verification_annotation)[0] is VerificationData
+    assert get_args(verification_annotation) == (VerificationData, merge_dict)
     assert set(VerificationData.__annotations__) == {
         "decision",
         "confidence",
@@ -48,7 +50,7 @@ def test_pass1_state_schema_declares_new_contracts():
         "open_failure_case_ids",
     }
 
-    assert get_args(failure_bank_annotation)[0] is FailureBankContextData
+    assert get_args(failure_bank_annotation) == (FailureBankContextData, merge_dict)
     assert set(FailureBankContextData.__annotations__) == {
         "matched_patterns",
         "retrieved_counterexamples",
@@ -113,6 +115,15 @@ def test_initial_state_contains_pass1_fields():
     assert "trainable_memory" in state["config"]
 
 
+def test_runtime_config_allows_failure_bank_empty_data_dir_override():
+    cfg = _merge_runtime_config({"failure_bank": {"data_dir": ""}})
+
+    failure_bank_cfg = cfg["failure_bank"]
+    assert failure_bank_cfg["enabled"] is True
+    assert failure_bank_cfg["lookup_limit"] == 3
+    assert failure_bank_cfg["data_dir"] == ""
+
+
 def test_runtime_config_applies_failure_bank_defaults():
     state = create_initial_state(
         raw_problem={"description": "Example", "public_tests": []},
@@ -126,6 +137,18 @@ def test_runtime_config_applies_failure_bank_defaults():
     assert failure_bank_cfg["data_dir"] == str((REPO_ROOT / "artifacts" / "failure_bank").resolve())
     assert "solver_network" in state["config"]
     assert "trainable_memory" in state["config"]
+
+
+def test_initial_state_merges_failure_bank_empty_data_dir_override():
+    state = create_initial_state(
+        raw_problem={"description": "Example", "public_tests": []},
+        config={"failure_bank": {"data_dir": ""}},
+    )
+
+    failure_bank_cfg = state["config"]["failure_bank"]
+    assert failure_bank_cfg["enabled"] is True
+    assert failure_bank_cfg["lookup_limit"] == 3
+    assert failure_bank_cfg["data_dir"] == ""
 
 
 def test_runtime_config_merges_failure_bank_lookup_limit_override():
