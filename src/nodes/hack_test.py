@@ -2,6 +2,7 @@ import json
 from typing import Dict, Any, List, TYPE_CHECKING
 from loguru import logger
 import src.events as events
+from src.failure_bank import FailureBankService
 from src.llm import UnifiedLLMClient
 from src.utils.problem_utils import extract_problem_code
 from src.hacker.runtime import execute_hack_candidate
@@ -43,6 +44,15 @@ def extract_generation_failure_metadata(routing_log: List[str]) -> Dict[str, str
                 "failure_reason": str(data.get("failure_reason", "")),
             }
     return {"failure_kind": "", "failure_reason": ""}
+
+
+def _failure_bank_service_from_state(state: "SolvitaState") -> FailureBankService | None:
+    config = (state.get("config") or {}).get("failure_bank", {}) or {}
+    if config.get("enabled", True) is False:
+        return None
+    service = FailureBankService(config.get("data_dir", ""))
+    service.initialize()
+    return service
 
 
 def generate_hack_candidate(state: "SolvitaState") -> Dict[str, Any]:
@@ -185,6 +195,32 @@ def hack_test_node(state: "SolvitaState") -> Dict[str, Any]:
     # Only broken hack inputs become regression tests for the next repair round.
     new_tests = []
     if failures:
+        service = _failure_bank_service_from_state(state)
+        if service is not None:
+            problem = state.get("problem", {}) or {}
+            canonical = problem.get("canonical", {}) if isinstance(problem.get("canonical"), dict) else {}
+            for failure in failures:
+                failure_type = str(failure.get("type", "WA") or "WA")
+                service.record_failure_case(
+                    {
+                        "canonical_objective": str(canonical.get("objective", "") or problem.get("description", "") or ""),
+                        "tags_level1": list(problem.get("tags_selected", []) or []),
+                        "tags_level2": list(problem.get("tags_level2_selected", []) or []),
+                        "constraint_bucket": str(problem.get("constraints", {}) or ""),
+                        "phase_found": "hacker",
+                        "failure_type": failure_type,
+                        "failure_subtype": failure_type.lower().replace(" ", "_"),
+                        "input_text": str(failure.get("input", "") or candidate["generated_input"]),
+                        "expected_output": str(failure.get("expected", "") or ""),
+                        "actual_output": str(failure.get("output", "") or ""),
+                        "checker_context": str(failure.get("details", "") or ""),
+                        "trusted_level": "high",
+                        "source_run_id": "",
+                        "source_solution_hash": "",
+                        "explanation": "Hacker-discovered counterexample.",
+                        "minimized": True,
+                    }
+                )
         new_tests.append({
             "input": candidate["generated_input"],
             "expected_output": "",

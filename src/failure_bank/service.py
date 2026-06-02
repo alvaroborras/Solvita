@@ -166,6 +166,72 @@ class FailureBankService:
         finally:
             self._finish(conn)
 
+    def record_repair_outcome(
+        self,
+        *,
+        linked_case_ids: List[str],
+        repair_strategy: str,
+        repair_summary: str,
+        before_solution_hash: str,
+        after_solution_hash: str,
+        validated: bool,
+    ) -> str:
+        normalized_case_ids = sorted(str(case_id) for case_id in (linked_case_ids or []) if str(case_id))
+        raw_key = json.dumps(
+            [
+                normalized_case_ids,
+                str(repair_strategy or ""),
+                str(repair_summary or ""),
+                str(before_solution_hash or ""),
+                str(after_solution_hash or ""),
+                bool(validated),
+            ],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        repair_id = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:20]
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO repair_outcomes (
+                    repair_id, linked_case_ids_json, repair_strategy, repair_summary,
+                    before_solution_hash, after_solution_hash, validated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repair_id,
+                    json.dumps(normalized_case_ids),
+                    str(repair_strategy or ""),
+                    str(repair_summary or ""),
+                    str(before_solution_hash or ""),
+                    str(after_solution_hash or ""),
+                    int(bool(validated)),
+                ),
+            )
+        finally:
+            self._finish(conn)
+        return repair_id
+
+    def list_repair_outcomes(self) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT * FROM repair_outcomes ORDER BY rowid ASC").fetchall()
+            return [
+                {
+                    "repair_id": str(row["repair_id"]),
+                    "linked_case_ids": json.loads(row["linked_case_ids_json"] or "[]"),
+                    "repair_strategy": str(row["repair_strategy"] or ""),
+                    "repair_summary": str(row["repair_summary"] or ""),
+                    "before_solution_hash": str(row["before_solution_hash"] or ""),
+                    "after_solution_hash": str(row["after_solution_hash"] or ""),
+                    "validated": bool(row["validated"]),
+                }
+                for row in rows
+            ]
+        finally:
+            self._finish(conn)
+
     def lookup_context(
         self,
         canonical_objective: str,

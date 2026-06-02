@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict
 
 import src.events as events
+from src.failure_bank import FailureBankService
 from src.nodes.routing import _hacker_enabled
 
 
@@ -34,6 +36,15 @@ def _risk_score(state: Dict[str, Any]) -> float:
         score += 0.5
 
     return score
+
+
+def _failure_bank_service_from_state(state: Dict[str, Any]) -> FailureBankService | None:
+    config = (state.get("config") or {}).get("failure_bank", {}) or {}
+    if config.get("enabled", True) is False:
+        return None
+    service = FailureBankService(config.get("data_dir", ""))
+    service.initialize()
+    return service
 
 
 def pre_solve_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -95,4 +106,27 @@ def post_verify_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if policy.get("allow_hacker", False) and _hacker_enabled(state)
         else "accept_end"
     )
-    return {"solve_policy": policy}
+    open_case_ids = list(verification.get("open_failure_case_ids", []) or [])
+    if not open_case_ids:
+        return {"solve_policy": policy}
+
+    service = _failure_bank_service_from_state(state)
+    if service is not None:
+        solution_code = str(((state.get("solution") or {}).get("code") or ""))
+        service.record_repair_outcome(
+            linked_case_ids=open_case_ids,
+            repair_strategy="verifier_repair",
+            repair_summary=str(
+                verification.get("feedback_summary", "")
+                or "Verifier-discovered failure closed by accepted solution."
+            ),
+            before_solution_hash="",
+            after_solution_hash=hashlib.sha1(solution_code.encode("utf-8")).hexdigest()
+            if solution_code
+            else "",
+            validated=True,
+        )
+
+    verification_patch = dict(verification)
+    verification_patch["open_failure_case_ids"] = []
+    return {"solve_policy": policy, "verification": verification_patch}

@@ -181,3 +181,32 @@ def test_failure_bank_service_ranks_exact_objective_before_tag_only_matches(tmp_
         "exact_match",
         "tag_only_newer",
     ]
+
+
+def test_failure_bank_records_repair_outcomes(tmp_path: Path):
+    service = FailureBankService(tmp_path)
+    service.initialize()
+
+    repair_id = service.record_repair_outcome(
+        linked_case_ids=["case-1"],
+        repair_strategy="verifier_repair",
+        repair_summary="Switched from quadratic scan to prefix sums.",
+        before_solution_hash="before",
+        after_solution_hash="after",
+        validated=True,
+    )
+
+    outcomes = service.list_repair_outcomes()
+
+    assert repair_id
+    assert outcomes == [
+        {
+            "repair_id": repair_id,
+            "linked_case_ids": ["case-1"],
+            "repair_strategy": "verifier_repair",
+            "repair_summary": "Switched from quadratic scan to prefix sums.",
+            "before_solution_hash": "before",
+            "after_solution_hash": "after",
+            "validated": True,
+        }
+    ]

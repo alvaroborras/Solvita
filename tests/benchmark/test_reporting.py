@@ -31,6 +31,11 @@ def test_summarize_results_computes_head_to_head():
     assert summary["modes"]["solvita_pipeline"]["row_count"] == 1
     assert summary["modes"]["solvita_pipeline"]["problem_count"] == 1
     assert summary["modes"]["single_pass"]["avg_completion_tokens"] == 20.0
+    assert summary["modes"]["solvita_pipeline"]["false_accept_rate"] == 0.0
+    assert summary["modes"]["solvita_pipeline"]["verifier_accept_rate"] == 0.0
+    assert summary["modes"]["solvita_pipeline"]["verifier_repair_rate"] == 0.0
+    assert summary["modes"]["solvita_pipeline"]["verifier_escalation_rate"] == 0.0
+    assert summary["modes"]["solvita_pipeline"]["full_testgen_completion_rate"] == 0.0
 
 
 def test_summarize_results_computes_pass_at_k():
@@ -127,6 +132,11 @@ def test_render_markdown_report_contains_key_sections():
                     "avg_llm_infer_s": 1.0,
                     "avg_prompt_tokens": 120.0,
                     "avg_completion_tokens": 60.0,
+                    "false_accept_rate": 0.0,
+                    "verifier_accept_rate": 1.0,
+                    "verifier_repair_rate": 0.0,
+                    "verifier_escalation_rate": 0.0,
+                    "full_testgen_completion_rate": 1.0,
                 }
             },
             "head_to_head": {
@@ -142,3 +152,6 @@ def test_render_markdown_report_contains_key_sections():
     assert "## Head-to-Head" in report
     assert "avg_prompt_tokens" in report
     assert "avg_completion_tokens" in report
+    assert "false_accept_rate" in report
+    assert "verifier_accept_rate" in report
+    assert "full_testgen_completion_rate" in report

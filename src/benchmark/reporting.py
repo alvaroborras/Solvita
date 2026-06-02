@@ -52,6 +52,21 @@ def summarize_results(rows: Iterable[Any], repeats: int = 1) -> Dict[str, Any]:
             "avg_completion_tokens": (
                 sum(float(item.get("completion_tokens", 0.0) or 0.0) for item in items) / total if total else 0.0
             ),
+            "false_accept_rate": (
+                sum(1 for item in items if item.get("false_accept")) / total if total else 0.0
+            ),
+            "verifier_accept_rate": (
+                sum(1 for item in items if item.get("verifier_decision") == "accept") / total if total else 0.0
+            ),
+            "verifier_repair_rate": (
+                sum(1 for item in items if item.get("verifier_decision") == "repair") / total if total else 0.0
+            ),
+            "verifier_escalation_rate": (
+                sum(1 for item in items if item.get("verifier_decision") == "escalate_testgen") / total if total else 0.0
+            ),
+            "full_testgen_completion_rate": (
+                sum(1 for item in items if item.get("full_testgen_completed")) / total if total else 0.0
+            ),
         }
 
     wins_pipeline = 0
@@ -155,6 +170,11 @@ def render_markdown_report(summary: Dict[str, Any]) -> str:
                 f"- avg_llm_infer_s: {stats['avg_llm_infer_s']:.2f}",
                 f"- avg_prompt_tokens: {stats['avg_prompt_tokens']:.2f}",
                 f"- avg_completion_tokens: {stats['avg_completion_tokens']:.2f}",
+                f"- false_accept_rate: {stats.get('false_accept_rate', 0.0):.2%}",
+                f"- verifier_accept_rate: {stats.get('verifier_accept_rate', 0.0):.2%}",
+                f"- verifier_repair_rate: {stats.get('verifier_repair_rate', 0.0):.2%}",
+                f"- verifier_escalation_rate: {stats.get('verifier_escalation_rate', 0.0):.2%}",
+                f"- full_testgen_completion_rate: {stats.get('full_testgen_completion_rate', 0.0):.2%}",
                 "",
             ]
         )

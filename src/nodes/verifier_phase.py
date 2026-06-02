@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
 import src.events as events
+from src.failure_bank import FailureBankService
 from src.utils.cpp_execution import ExecutionLimits, run_program
 
 if TYPE_CHECKING:
@@ -72,6 +74,15 @@ def _risk_pattern_flags(state: "SolvitaState") -> List[str]:
     return deduped
 
 
+def _failure_bank_service_from_state(state: "SolvitaState") -> FailureBankService | None:
+    config = (state.get("config") or {}).get("failure_bank", {}) or {}
+    if config.get("enabled", True) is False:
+        return None
+    service = FailureBankService(config.get("data_dir", ""))
+    service.initialize()
+    return service
+
+
 def verifier_phase_node(
     state: "SolvitaState",
     *,
@@ -97,6 +108,35 @@ def verifier_phase_node(
         )
 
     if trusted_failures:
+        problem = state.get("problem") or {}
+        canonical = (problem.get("canonical") or {}) if isinstance(problem.get("canonical"), dict) else {}
+        code_hash = hashlib.sha1(code.encode("utf-8")).hexdigest() if code else ""
+        case_ids: List[str] = []
+        service = _failure_bank_service_from_state(state)
+        if service is not None:
+            for failure in trusted_failures:
+                case_ids.append(
+                    service.record_failure_case(
+                        {
+                            "canonical_objective": str(canonical.get("objective", "") or problem.get("description", "") or ""),
+                            "tags_level1": list(problem.get("tags_selected", []) or []),
+                            "tags_level2": list(problem.get("tags_level2_selected", []) or []),
+                            "constraint_bucket": str(problem.get("constraints", {}) or ""),
+                            "phase_found": "verifier",
+                            "failure_type": str(failure.get("failure_type", "WA") or "WA"),
+                            "failure_subtype": "trusted_suite_failed",
+                            "input_text": str(failure.get("input_text", "") or ""),
+                            "expected_output": str(failure.get("expected_output", "") or ""),
+                            "actual_output": str(failure.get("actual_output", "") or ""),
+                            "checker_context": str(failure.get("stderr", "") or ""),
+                            "trusted_level": "high",
+                            "source_run_id": "",
+                            "source_solution_hash": code_hash,
+                            "explanation": "Verifier trusted suite mismatch.",
+                            "minimized": True,
+                        }
+                    )
+                )
         verification = {
             "decision": "repair",
             "confidence": 1.0,
@@ -104,7 +144,7 @@ def verifier_phase_node(
             "new_tests": [],
             "feedback_summary": "Trusted verification suite exposed a mismatch.",
             "trusted_failures": trusted_failures,
-            "open_failure_case_ids": [],
+            "open_failure_case_ids": case_ids,
         }
         events.emit(
             "phase_done",

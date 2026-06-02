@@ -1,8 +1,10 @@
 import sys
+from hashlib import sha1
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.failure_bank import FailureBankService
 from src.graph.state import create_initial_state
 from src.nodes.solve_controller import (
     post_verify_controller_node,
@@ -95,3 +97,35 @@ def test_post_verify_controller_respects_explicit_hacker_disable():
     update = post_verify_controller_node(state)
 
     assert update["solve_policy"]["next_action"] == "accept_end"
+
+
+def test_post_verify_controller_records_repair_outcome_on_accept(tmp_path: Path):
+    state = create_initial_state(
+        raw_problem={"description": "Example", "public_tests": []},
+        config={"failure_bank": {"data_dir": str(tmp_path)}},
+    )
+    state["verification"] = {
+        "decision": "accept",
+        "confidence": 0.9,
+        "risk_flags": [],
+        "new_tests": [],
+        "feedback_summary": "Trusted mismatch fixed after verifier-driven repair.",
+        "trusted_failures": [],
+        "open_failure_case_ids": ["case-1"],
+    }
+    state["solve_policy"]["allow_hacker"] = False
+    state["solution"]["code"] = "int main(){return 0;}"
+
+    update = post_verify_controller_node(state)
+
+    service = FailureBankService(tmp_path)
+    service.initialize()
+    outcomes = service.list_repair_outcomes()
+
+    assert update["solve_policy"]["next_action"] == "accept_end"
+    assert update["verification"]["open_failure_case_ids"] == []
+    assert outcomes[0]["linked_case_ids"] == ["case-1"]
+    assert outcomes[0]["repair_strategy"] == "verifier_repair"
+    assert outcomes[0]["repair_summary"] == "Trusted mismatch fixed after verifier-driven repair."
+    assert outcomes[0]["after_solution_hash"] == sha1(state["solution"]["code"].encode("utf-8")).hexdigest()
+    assert outcomes[0]["validated"] is True

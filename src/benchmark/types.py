@@ -64,6 +64,10 @@ class BenchmarkResult:
     generator_failure_kind: Optional[str] = None
     generator_failure_reason: Optional[str] = None
     workflow_log_path: Optional[str] = None
+    verifier_decision: Optional[str] = None
+    verifier_confidence: Optional[float] = None
+    false_accept: Optional[bool] = None
+    full_testgen_completed: Optional[bool] = None
 
     def __post_init__(self) -> None:
         compute_pass_rate(self.passed_tests, self.total_tests)

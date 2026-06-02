@@ -85,6 +85,8 @@ def run_pipeline_benchmark_case(
         "completion_tokens": int(final_state.get("completion_tokens", 0) or 0),
         "token_usage_source": final_state.get("token_usage_source"),
     }
+    verification = final_state.get("verification") or {}
+    tests_data = final_state.get("tests") or {}
     solution_code = ((final_state.get("solution") or {}).get("code") or "")
     status_str = str(final_state.get("status", "unknown"))
     if status_str != "success":
@@ -113,6 +115,11 @@ def run_pipeline_benchmark_case(
         except Exception:
             pass
 
+    false_accept = bool(
+        verification.get("decision") == "accept"
+        and float(score.get("pass_rate", 0.0) or 0.0) < 1.0
+    )
+
     return BenchmarkResult(
         problem_id=problem_id,
         mode="solvita_pipeline",
@@ -131,4 +138,12 @@ def run_pipeline_benchmark_case(
         generator_failure_kind=final_state.get("generator_failure_kind"),
         generator_failure_reason=final_state.get("generator_failure_reason"),
         workflow_log_path=str(workflow_log_path) if workflow_log_path is not None else None,
+        verifier_decision=verification.get("decision"),
+        verifier_confidence=(
+            float(verification.get("confidence", 0.0) or 0.0)
+            if verification.get("confidence") is not None
+            else None
+        ),
+        false_accept=false_accept,
+        full_testgen_completed=bool(tests_data.get("full_testgen_completed", False)),
     )
