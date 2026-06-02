@@ -1362,6 +1362,23 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     pass
 
     generated_tests = []
+    preserved_failure_bank_tests = []
+    seen_failure_bank_keys = set()
+    for prior_test in (state.get("tests") or {}).get("generated_tests", []):
+        if prior_test.get("type") != "failure_bank":
+            continue
+        key = (
+            prior_test.get("input", ""),
+            prior_test.get("expected_output", ""),
+            prior_test.get("description", ""),
+        )
+        if key in seen_failure_bank_keys:
+            continue
+        seen_failure_bank_keys.add(key)
+        preserved_test = dict(prior_test)
+        preserved_test.setdefault("trust_tier", "trusted")
+        preserved_failure_bank_tests.append(preserved_test)
+
     for pt in public_tests:
         generated_tests.append(
             {
@@ -1383,6 +1400,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 "trust_tier": "trusted",
             }
         )
+
+    generated_tests.extend(preserved_failure_bank_tests)
 
     if generated_inputs and generated_outputs:
         for inp, out in zip(generated_inputs, generated_outputs):

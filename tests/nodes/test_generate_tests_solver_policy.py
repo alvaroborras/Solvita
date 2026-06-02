@@ -362,3 +362,64 @@ def test_generate_tests_node_uses_raw_description_for_local_certified_detection(
 
     assert any(test["type"] == "edge" for test in out["tests"]["generated_tests"])
     assert any(test["trust_tier"] == "trusted" for test in out["tests"]["generated_tests"])
+
+
+def test_generate_tests_node_preserves_existing_failure_bank_cases(monkeypatch, tmp_path):
+    from src.graph.state import create_initial_state
+    from src.nodes import generate_tests as gt
+
+    class FakeLLM:
+        @staticmethod
+        def build_role_config(config, role):
+            return {}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stderr = "generator failed"
+
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        if prompt_builder is gt.build_generator_prompt:
+            return '{"generator_cpp": "int main() { return 0; }"}', [], []
+        if prompt_builder is gt.build_validator_prompt:
+            return '{"validator_cpp": "int main() { return 0; }"}', [], []
+        raise AssertionError(f"unexpected prompt builder: {prompt_builder}")
+
+    def fake_compile_cpp(_src, _exe, include_testlib=False, diagnostic=False):
+        return True, ""
+
+    def fake_subprocess_run(*args, **kwargs):
+        stdout = kwargs.get("stdout")
+        if stdout is not None:
+            stdout.write("")
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(gt, "UnifiedLLMClient", FakeLLM)
+    monkeypatch.setattr(gt, "_generate_with_compact_retry", fake_retry)
+    monkeypatch.setattr(gt, "compile_cpp", fake_compile_cpp)
+    monkeypatch.setattr(gt.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gt, "_resolve_data_root", lambda config: tmp_path)
+
+    state = create_initial_state(
+        {"description": "demo", "public_tests": [{"input": "1\n", "output": "1\n"}]},
+        {
+            "generate_tests_target_count": 200,
+            "generate_tests_target_count_without_ac": 7,
+        },
+    )
+    failure_bank_case = {
+        "input": "2\n1 2\n",
+        "expected_output": "3\n",
+        "type": "failure_bank",
+        "description": "Failure-bank counterexample (WA)",
+        "trust_tier": "trusted",
+    }
+    state["tests"]["generated_tests"] = [failure_bank_case]
+
+    out = gt.generate_tests_node(state)
+
+    assert failure_bank_case in out["tests"]["generated_tests"]
+    assert out["tests"]["trust_tiers"]["trusted"] >= 2
