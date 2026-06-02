@@ -82,3 +82,102 @@ def test_failure_bank_service_lookup_context_accepts_positional_arguments(tmp_pa
     context = service.lookup_context("Count paths", ["graphs"], ["dag_longest_path"], 1)
 
     assert context["retrieved_counterexamples"][0]["failure_subtype"] == "dag_off_by_one"
+
+
+def test_failure_bank_service_persists_distinct_observations_that_previously_collided(tmp_path: Path):
+    service = FailureBankService(tmp_path)
+    service.initialize()
+
+    payload = {
+        "canonical_objective": "Count paths",
+        "tags_level1": ["graphs"],
+        "tags_level2": [],
+        "constraint_bucket": "n<=1e5",
+        "phase_found": "verifier",
+        "failure_type": "WA",
+        "input_text": "4 3\n1 2\n2 3\n3 4\n",
+        "actual_output": "7\n",
+        "checker_context": "",
+        "trusted_level": "high",
+        "minimized": True,
+    }
+    service.record_failure_case(
+        {
+            **payload,
+            "expected_output": "4\n",
+            "failure_subtype": "missed_terminal_node",
+            "source_run_id": "run-a",
+            "source_solution_hash": "hash-a",
+            "explanation": "Missed the terminal path.",
+        }
+    )
+    service.record_failure_case(
+        {
+            **payload,
+            "expected_output": "5\n",
+            "failure_subtype": "double_counted_branch",
+            "source_run_id": "run-b",
+            "source_solution_hash": "hash-b",
+            "explanation": "Double-counted a branch.",
+        }
+    )
+
+    context = service.lookup_context("Count paths", ["graphs"], [], 10)
+
+    assert len(context["retrieved_counterexamples"]) == 2
+    assert {item["failure_subtype"] for item in context["retrieved_counterexamples"]} == {
+        "missed_terminal_node",
+        "double_counted_branch",
+    }
+
+
+def test_failure_bank_service_ranks_exact_objective_before_tag_only_matches(tmp_path: Path):
+    service = FailureBankService(tmp_path)
+    service.initialize()
+    service.record_failure_case(
+        {
+            "canonical_objective": "Exact path objective",
+            "tags_level1": ["graphs"],
+            "tags_level2": [],
+            "constraint_bucket": "n<=1e5",
+            "phase_found": "verifier",
+            "failure_type": "WA",
+            "failure_subtype": "exact_match",
+            "input_text": "3 2\n1 2\n2 3\n",
+            "expected_output": "2\n",
+            "actual_output": "1\n",
+            "checker_context": "",
+            "trusted_level": "high",
+            "source_run_id": "run-exact",
+            "source_solution_hash": "hash-exact",
+            "explanation": "Exact objective case.",
+            "minimized": True,
+        }
+    )
+    service.record_failure_case(
+        {
+            "canonical_objective": "Different graph objective",
+            "tags_level1": ["graphs"],
+            "tags_level2": [],
+            "constraint_bucket": "n<=1e5",
+            "phase_found": "hacker",
+            "failure_type": "TLE",
+            "failure_subtype": "tag_only_newer",
+            "input_text": "5 4\n1 2\n2 3\n3 4\n4 5\n",
+            "expected_output": "4\n",
+            "actual_output": "timeout",
+            "checker_context": "",
+            "trusted_level": "high",
+            "source_run_id": "run-tag",
+            "source_solution_hash": "hash-tag",
+            "explanation": "Newer generic tag-only case.",
+            "minimized": True,
+        }
+    )
+
+    context = service.lookup_context("Exact path objective", ["graphs"], [], 2)
+
+    assert [item["failure_subtype"] for item in context["retrieved_counterexamples"]] == [
+        "exact_match",
+        "tag_only_newer",
+    ]

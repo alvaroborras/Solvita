@@ -4,17 +4,38 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class FailureBankService:
     def __init__(self, data_dir: str | Path) -> None:
-        self.root = Path(data_dir)
-        self.db_path = self.root / "failure_bank.db"
+        raw_data_dir = str(data_dir or "").strip()
+        self.root = Path(raw_data_dir) if raw_data_dir else None
+        self.db_path = (self.root / "failure_bank.db") if self.root is not None else None
+        self._ephemeral = self.root is None
+        self._memory_conn: Optional[sqlite3.Connection] = None
+
+    def _connect(self) -> sqlite3.Connection:
+        if self._ephemeral:
+            if self._memory_conn is None:
+                self._memory_conn = sqlite3.connect(":memory:")
+                self._memory_conn.row_factory = sqlite3.Row
+            return self._memory_conn
+        assert self.db_path is not None
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _finish(self, conn: sqlite3.Connection) -> None:
+        conn.commit()
+        if not self._ephemeral:
+            conn.close()
 
     def initialize(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        if self.root is not None:
+            self.root.mkdir(parents=True, exist_ok=True)
+        conn = self._connect()
+        try:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS failure_cases (
@@ -64,14 +85,32 @@ class FailureBankService:
                 )
                 """
             )
+        finally:
+            self._finish(conn)
 
     def record_failure_case(self, payload: Dict[str, Any]) -> str:
         canonical_objective = str(payload.get("canonical_objective", "") or "")
         input_text = str(payload.get("input_text", "") or "")
+        expected_output = str(payload.get("expected_output", "") or "")
         actual_output = str(payload.get("actual_output", "") or "")
-        raw_key = f"{canonical_objective}\n{input_text}\n{actual_output}"
+        raw_key = json.dumps(
+            [
+                canonical_objective,
+                input_text,
+                expected_output,
+                actual_output,
+                str(payload.get("failure_type", "") or ""),
+                str(payload.get("failure_subtype", "") or ""),
+                str(payload.get("phase_found", "") or ""),
+                str(payload.get("source_run_id", "") or ""),
+                str(payload.get("source_solution_hash", "") or ""),
+            ],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
         case_id = str(payload.get("case_id") or hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:20])
-        with sqlite3.connect(self.db_path) as conn:
+        conn = self._connect()
+        try:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO failure_cases (
@@ -90,7 +129,7 @@ class FailureBankService:
                     str(payload.get("failure_type", "") or ""),
                     str(payload.get("failure_subtype", "") or ""),
                     input_text,
-                    str(payload.get("expected_output", "") or ""),
+                    expected_output,
                     actual_output,
                     str(payload.get("checker_context", "") or ""),
                     str(payload.get("trusted_level", "high") or "high"),
@@ -100,10 +139,13 @@ class FailureBankService:
                     int(bool(payload.get("minimized", False))),
                 ),
             )
+        finally:
+            self._finish(conn)
         return case_id
 
     def record_risk_pattern(self, payload: Dict[str, Any]) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        conn = self._connect()
+        try:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO risk_patterns (
@@ -121,6 +163,8 @@ class FailureBankService:
                     json.dumps(payload.get("evidence_case_ids", [])),
                 ),
             )
+        finally:
+            self._finish(conn)
 
     def lookup_context(
         self,
@@ -131,10 +175,11 @@ class FailureBankService:
     ) -> Dict[str, Any]:
         tags = {str(tag) for tag in (tags_level1 or []) + (tags_level2 or []) if str(tag)}
         matched_patterns: List[Dict[str, Any]] = []
-        counterexamples: List[Dict[str, Any]] = []
+        exact_counterexamples: List[Dict[str, Any]] = []
+        tag_only_counterexamples: List[Dict[str, Any]] = []
 
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        conn = self._connect()
+        try:
 
             for row in conn.execute("SELECT * FROM risk_patterns ORDER BY pattern_id"):
                 applicable_tags = json.loads(row["applicable_tags_json"] or "[]")
@@ -161,22 +206,24 @@ class FailureBankService:
                 tag_match = bool(tags and row_tags.intersection(tags))
                 if not objective_match and not tag_match:
                     continue
-                counterexamples.append(
-                    {
-                        "case_id": row["case_id"],
-                        "failure_subtype": row["failure_subtype"],
-                        "input_text": row["input_text"],
-                        "expected_output": row["expected_output"],
-                        "actual_output": row["actual_output"],
-                        "failure_type": row["failure_type"],
-                        "explanation": row["explanation"],
-                    }
-                )
-                if len(counterexamples) >= lookup_limit:
-                    break
+                item = {
+                    "case_id": row["case_id"],
+                    "failure_subtype": row["failure_subtype"],
+                    "input_text": row["input_text"],
+                    "expected_output": row["expected_output"],
+                    "actual_output": row["actual_output"],
+                    "failure_type": row["failure_type"],
+                    "explanation": row["explanation"],
+                }
+                if objective_match:
+                    exact_counterexamples.append(item)
+                else:
+                    tag_only_counterexamples.append(item)
+        finally:
+            self._finish(conn)
 
         limited_patterns = matched_patterns[:lookup_limit]
-        limited_counterexamples = counterexamples[:lookup_limit]
+        limited_counterexamples = (exact_counterexamples + tag_only_counterexamples)[:lookup_limit]
         return {
             "matched_patterns": limited_patterns,
             "retrieved_counterexamples": limited_counterexamples,

@@ -115,3 +115,24 @@ def test_failure_bank_lookup_node_falls_back_to_problem_description_and_level2_t
 
     assert update["failure_bank_context"]["matched_patterns"][0]["pattern_id"] == "pattern.graph.level2"
     assert update["failure_bank_context"]["retrieved_counterexamples"][0]["failure_subtype"] == "direction_bug"
+
+
+def test_failure_bank_lookup_node_blank_data_dir_is_safe_and_non_polluting(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    state = create_initial_state(
+        raw_problem={"description": "Count paths", "public_tests": []},
+        config={"failure_bank": {"data_dir": "", "lookup_limit": 2}},
+    )
+    state["problem"]["canonical"] = {"objective": "Count paths"}
+    state["problem"]["tags_selected"] = ["graphs"]
+
+    update = failure_bank_lookup_node(state)
+
+    assert update["failure_bank_context"] == {
+        "matched_patterns": [],
+        "retrieved_counterexamples": [],
+        "anti_patterns": [],
+        "repair_summaries": [],
+        "source_case_ids": [],
+    }
+    assert not (tmp_path / "failure_bank.db").exists()
