@@ -178,6 +178,10 @@ def _run_problem_modes(
                 "generator_failure_kind": result.generator_failure_kind,
                 "generator_failure_reason": result.generator_failure_reason,
                 "workflow_log_path": result.workflow_log_path,
+                "verifier_decision": result.verifier_decision,
+                "verifier_confidence": result.verifier_confidence,
+                "false_accept": result.false_accept,
+                "full_testgen_completed": result.full_testgen_completed,
             }
         except Exception as exc:
             row = {
@@ -200,6 +204,10 @@ def _run_problem_modes(
                 "generator_failure_kind": None,
                 "generator_failure_reason": None,
                 "workflow_log_path": None,
+                "verifier_decision": None,
+                "verifier_confidence": None,
+                "false_accept": None,
+                "full_testgen_completed": None,
             }
         rows.append(row)
 

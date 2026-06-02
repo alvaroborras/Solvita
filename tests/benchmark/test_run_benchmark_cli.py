@@ -48,6 +48,10 @@ def test_run_single_manifest_repeat_resume_tracks_repeat_index(monkeypatch, tmp_
                 "generator_failure_kind": None,
                 "generator_failure_reason": None,
                 "workflow_log_path": None,
+                "verifier_decision": "accept",
+                "verifier_confidence": 0.9,
+                "false_accept": False,
+                "full_testgen_completed": True,
             }
             for mode in modes
         ]
@@ -78,6 +82,10 @@ def test_run_single_manifest_repeat_resume_tracks_repeat_index(monkeypatch, tmp_
                 "generator_failure_kind": None,
                 "generator_failure_reason": None,
                 "workflow_log_path": None,
+                "verifier_decision": "accept",
+                "verifier_confidence": 0.9,
+                "false_accept": False,
+                "full_testgen_completed": True,
             }
         ) + "\n",
         encoding="utf-8",
