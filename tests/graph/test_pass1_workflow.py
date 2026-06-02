@@ -89,3 +89,9 @@ def test_pass1_workflow_compiles_with_new_topology(monkeypatch):
         "condition": "post_codegen_routing",
         "label": "to_verifier",
     } in graph.edges
+    assert {
+        "source": "phase_transition_1",
+        "target": "solver_skill_plan_ensemble",
+        "condition": "plan_or_codegen_routing",
+        "label": "ensemble",
+    } in graph.edges

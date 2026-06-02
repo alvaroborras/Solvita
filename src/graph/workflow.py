@@ -427,6 +427,7 @@ def create_solvita_workflow():
         "phase_transition_1",
         plan_or_codegen_routing,
         {
+            "ensemble": "solver_skill_plan_ensemble",
             "skill_plan": "solver_skill_plan",
             "direct_codegen": "codegen_phase",
         },

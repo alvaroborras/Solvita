@@ -31,6 +31,7 @@
         { "source": "bootstrap_tests", "target": "testgen_phase", "condition": "bootstrap_routing", "label": "run_full_testgen" },
         { "source": "bootstrap_tests", "target": "phase_transition_1", "condition": "bootstrap_routing", "label": "skip_full_testgen" },
         { "source": "testgen_phase", "target": "phase_transition_1" },
+        { "source": "phase_transition_1", "target": "solver_skill_plan_ensemble", "condition": "plan_or_codegen_routing", "label": "ensemble" },
         { "source": "phase_transition_1", "target": "solver_skill_plan", "condition": "plan_or_codegen_routing", "label": "skill_plan" },
         { "source": "phase_transition_1", "target": "codegen_phase", "condition": "plan_or_codegen_routing", "label": "direct_codegen" },
         { "source": "solver_skill_plan", "target": "codegen_phase" },

@@ -43,6 +43,12 @@ def bootstrap_routing(state: Dict[str, Any]) -> str:
 
 
 def plan_or_codegen_routing(state: Dict[str, Any]) -> str:
+    config = state.get("config", {}) or {}
+    solver_network_cfg = config.get("solver_network", {}) or {}
+    ensemble_cfg = solver_network_cfg.get("ensemble_skill_plans", {}) or {}
+    if bool(solver_network_cfg.get("enabled")) and bool(ensemble_cfg.get("enabled")):
+        return "ensemble"
+
     policy = state.get("solve_policy", {}) or {}
     if bool(policy.get("run_skill_plan", False)):
         return "skill_plan"

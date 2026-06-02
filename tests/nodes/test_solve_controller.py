@@ -66,3 +66,32 @@ def test_post_verify_controller_requests_repair_and_bumps_iteration():
     assert update["solve_policy"]["next_action"] == "repair"
     assert update["iteration"] == 2
     assert update["status"] == "pending"
+
+
+def test_post_verify_controller_respects_explicit_hacker_disable():
+    state = create_initial_state(
+        raw_problem={"description": "Count cyclic segments", "public_tests": []},
+        config={
+            "workflow": {"hacker_enabled": False},
+            "solver_network": {"enabled": True},
+        },
+    )
+    state["problem"]["canonical"] = {"objective": "Count cyclic segments"}
+    state["problem"]["abstract_confidence"] = 0.60
+    state["problem"]["tags_selected"] = ["dp", "math"]
+    state["problem"]["tags_level2_selected"] = ["cyclic_convolution"]
+    state["failure_bank_context"]["matched_patterns"] = [{"pattern_id": "pattern.cyclic.counting"}]
+    state["solve_policy"] = pre_solve_controller_node(state)["solve_policy"]
+    state["verification"] = {
+        "decision": "accept",
+        "confidence": 0.9,
+        "risk_flags": [],
+        "new_tests": [],
+        "feedback_summary": "",
+        "trusted_failures": [],
+        "open_failure_case_ids": [],
+    }
+
+    update = post_verify_controller_node(state)
+
+    assert update["solve_policy"]["next_action"] == "accept_end"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import src.events as events
+from src.nodes.routing import _hacker_enabled
 
 
 HIGH_RISK_LEVEL1 = {"dp", "graphs", "math", "strings"}
@@ -42,6 +43,7 @@ def pre_solve_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
     config = state.get("config", {}) or {}
     benchmark_mode = bool(config.get("benchmark_output_dir"))
     solver_network_cfg = config.get("solver_network", {}) or {}
+    hacker_enabled = _hacker_enabled(state)
 
     solve_policy = {
         "risk_score": score,
@@ -49,7 +51,7 @@ def pre_solve_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "run_skill_plan": bool(solver_network_cfg.get("enabled")) and score >= 1.5,
         "initial_codegen_budget": 1 if score < 2.5 else 2,
         "verifier_mode": "strict" if score >= 2.5 else "standard",
-        "allow_hacker": (not benchmark_mode) and score >= 3.0,
+        "allow_hacker": hacker_enabled and (not benchmark_mode) and score >= 3.0,
         "escalate_after_failures": 1,
         "generated_test_target_scale": 50 if score >= 2.5 else 0,
         "next_action": "",
@@ -88,5 +90,9 @@ def post_verify_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "current_phase": "TESTGEN",
         }
 
-    policy["next_action"] = "accept_hack" if policy.get("allow_hacker", False) else "accept_end"
+    policy["next_action"] = (
+        "accept_hack"
+        if policy.get("allow_hacker", False) and _hacker_enabled(state)
+        else "accept_end"
+    )
     return {"solve_policy": policy}
