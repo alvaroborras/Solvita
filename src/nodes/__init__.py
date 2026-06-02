@@ -14,9 +14,18 @@ def __getattr__(name: str):
     elif name == "bootstrap_tests_node":
         from .bootstrap_tests import bootstrap_tests_node
         return bootstrap_tests_node
+    elif name == "verifier_phase_node":
+        from .verifier_phase import verifier_phase_node
+        return verifier_phase_node
     elif name == "generate_tests_node":
         from .generate_tests import generate_tests_node
         return generate_tests_node
+    elif name == "pre_solve_controller_node":
+        from .solve_controller import pre_solve_controller_node
+        return pre_solve_controller_node
+    elif name == "post_verify_controller_node":
+        from .solve_controller import post_verify_controller_node
+        return post_verify_controller_node
     elif name == "solver_skill_plan_node":
         from .solver_skill_plan import solver_skill_plan_node
         return solver_skill_plan_node
@@ -59,6 +68,15 @@ def __getattr__(name: str):
     elif name == "post_codegen_routing":
         from .routing import post_codegen_routing
         return post_codegen_routing
+    elif name == "bootstrap_routing":
+        from .routing import bootstrap_routing
+        return bootstrap_routing
+    elif name == "plan_or_codegen_routing":
+        from .routing import plan_or_codegen_routing
+        return plan_or_codegen_routing
+    elif name == "post_verify_routing":
+        from .routing import post_verify_routing
+        return post_verify_routing
     elif name == "compilation_routing":
         from .routing import compilation_routing
         return compilation_routing
@@ -96,7 +114,10 @@ __all__ = [
     "abstract_problem_node",
     "failure_bank_lookup_node",
     "bootstrap_tests_node",
+    "verifier_phase_node",
     "generate_tests_node",
+    "pre_solve_controller_node",
+    "post_verify_controller_node",
     "solver_skill_plan_node",
     "solver_skill_plan_ensemble_node",
     "generate_code_node",
@@ -111,6 +132,9 @@ __all__ = [
     "settle_hacker_memory",
     "status_routing",
     "post_codegen_routing",
+    "bootstrap_routing",
+    "plan_or_codegen_routing",
+    "post_verify_routing",
     "compilation_routing",
     "hack_test_node",
     "hack_routing",

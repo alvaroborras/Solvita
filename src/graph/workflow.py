@@ -22,13 +22,72 @@ Iteration budget: iteration increments per codegen repair round; max_iterations 
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from langgraph.graph import StateGraph, END
+try:
+    from langgraph.graph import StateGraph, END
+except ModuleNotFoundError:
+    END = "END"
+
+    class _CompiledFallbackGraph:
+        def __init__(self, nodes, edges, entry_point):
+            self.nodes = nodes
+            self.edges = edges
+            self.entry_point = entry_point
+
+        def get_graph(self):
+            return SimpleNamespace(nodes=self.nodes, edges=self.edges, entry_point=self.entry_point)
+
+        def invoke(self, *_args, **_kwargs):
+            raise ModuleNotFoundError("langgraph is required to execute workflows in this environment")
+
+        def stream(self, *_args, **_kwargs):
+            raise ModuleNotFoundError("langgraph is required to execute workflows in this environment")
+
+    class StateGraph:
+        def __init__(self, *_args, **_kwargs):
+            self._nodes = {}
+            self._edges = []
+            self._entry_point = None
+
+        def add_node(self, name, node):
+            self._nodes[name] = node
+
+        def set_entry_point(self, name):
+            self._entry_point = name
+
+        def add_edge(self, source, target):
+            self._edges.append(
+                {"source": source, "target": target, "condition": None, "label": None}
+            )
+
+        def add_conditional_edges(self, source, condition, mapping):
+            condition_name = getattr(condition, "__name__", str(condition))
+            for label, target in mapping.items():
+                self._edges.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "condition": condition_name,
+                        "label": label,
+                    }
+                )
+
+        def compile(self):
+            return _CompiledFallbackGraph(
+                dict(self._nodes),
+                list(self._edges),
+                self._entry_point,
+            )
+
 import src.events as events
 from src.graph.state import SolvitaState, create_initial_state
 from src.utils.problem_utils import extract_problem_code
 from src.nodes import (
     abstract_problem_node,
+    failure_bank_lookup_node,
+    pre_solve_controller_node,
+    bootstrap_tests_node,
     generate_tests_node,
     solver_skill_plan_node,
     solver_skill_plan_ensemble_node,
@@ -48,6 +107,11 @@ from src.nodes import (
     join_wait_node,
     status_routing,
     post_codegen_routing,
+    bootstrap_routing,
+    plan_or_codegen_routing,
+    verifier_phase_node,
+    post_verify_controller_node,
+    post_verify_routing,
     compilation_routing,
     hack_routing,
     hack_outcome_routing,
@@ -328,12 +392,17 @@ def create_solvita_workflow():
     hacker_sg = create_hacker_subgraph()
 
     workflow.add_node("abstract_phase", abstract_sg)
+    workflow.add_node("failure_bank_lookup", failure_bank_lookup_node)
+    workflow.add_node("pre_solve_controller", pre_solve_controller_node)
     workflow.add_node("phase_transition_0", phase_transition_node)  # ABSTRACT→TESTGEN
+    workflow.add_node("bootstrap_tests", bootstrap_tests_node)
     workflow.add_node("testgen_phase", testgen_sg)
     workflow.add_node("phase_transition_1", phase_transition_node)  # TESTGEN→CODEGEN
     workflow.add_node("solver_skill_plan", solver_skill_plan_node)
     workflow.add_node("solver_skill_plan_ensemble", solver_skill_plan_ensemble_node)
     workflow.add_node("codegen_phase", codegen_sg)
+    workflow.add_node("verifier_phase", verifier_phase_node)
+    workflow.add_node("post_verify_controller", post_verify_controller_node)
     workflow.add_node("phase_transition_2", phase_transition_node)  # CODEGEN→HACKER
     workflow.add_node("enter_hack_phase", enter_hack_phase_node)
     workflow.add_node("hacker_phase", hacker_sg)
@@ -341,15 +410,25 @@ def create_solvita_workflow():
     workflow.add_node("terminal_hack_failure", terminal_hack_failure_node)
 
     workflow.set_entry_point("abstract_phase")
-    workflow.add_edge("abstract_phase", "phase_transition_0")
-    workflow.add_edge("phase_transition_0", "testgen_phase")
+    workflow.add_edge("abstract_phase", "failure_bank_lookup")
+    workflow.add_edge("failure_bank_lookup", "pre_solve_controller")
+    workflow.add_edge("pre_solve_controller", "phase_transition_0")
+    workflow.add_edge("phase_transition_0", "bootstrap_tests")
+    workflow.add_conditional_edges(
+        "bootstrap_tests",
+        bootstrap_routing,
+        {
+            "run_full_testgen": "testgen_phase",
+            "skip_full_testgen": "phase_transition_1",
+        },
+    )
     workflow.add_edge("testgen_phase", "phase_transition_1")
     workflow.add_conditional_edges(
         "phase_transition_1",
-        after_testgen_routing,
+        plan_or_codegen_routing,
         {
-            "ensemble": "solver_skill_plan_ensemble",
-            "single": "solver_skill_plan",
+            "skill_plan": "solver_skill_plan",
+            "direct_codegen": "codegen_phase",
         },
     )
     workflow.add_edge("solver_skill_plan_ensemble", END)
@@ -358,8 +437,19 @@ def create_solvita_workflow():
         "codegen_phase",
         post_codegen_routing,
         {
-            "to_hacker": "phase_transition_2",
+            "to_verifier": "verifier_phase",
             "end": END,
+        },
+    )
+    workflow.add_edge("verifier_phase", "post_verify_controller")
+    workflow.add_conditional_edges(
+        "post_verify_controller",
+        post_verify_routing,
+        {
+            "repair": "codegen_phase",
+            "escalate_testgen": "testgen_phase",
+            "accept_hack": "phase_transition_2",
+            "accept_end": END,
         },
     )
     workflow.add_edge("phase_transition_2", "enter_hack_phase")

@@ -32,10 +32,28 @@ def status_routing(state: Dict[str, Any]) -> str:
 
 
 def post_codegen_routing(state: Dict[str, Any]) -> str:
-    status = state.get("status", "pending")
-    if status == "success" and _hacker_enabled(state):
-        return "to_hacker"
-    return "end"
+    return "to_verifier" if state.get("status", "pending") == "success" else "end"
+
+
+def bootstrap_routing(state: Dict[str, Any]) -> str:
+    policy = state.get("solve_policy", {}) or {}
+    if bool(policy.get("run_testgen_initially", False)):
+        return "run_full_testgen"
+    return "skip_full_testgen"
+
+
+def plan_or_codegen_routing(state: Dict[str, Any]) -> str:
+    policy = state.get("solve_policy", {}) or {}
+    if bool(policy.get("run_skill_plan", False)):
+        return "skill_plan"
+    return "direct_codegen"
+
+
+def post_verify_routing(state: Dict[str, Any]) -> str:
+    action = str((state.get("solve_policy", {}) or {}).get("next_action", "") or "")
+    if action in {"repair", "escalate_testgen", "accept_hack", "accept_end"}:
+        return action
+    return "accept_end"
 
 
 def compilation_routing(state: Dict[str, Any]) -> str:
