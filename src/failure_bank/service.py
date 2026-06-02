@@ -243,6 +243,7 @@ class FailureBankService:
         matched_patterns: List[Dict[str, Any]] = []
         exact_counterexamples: List[Dict[str, Any]] = []
         tag_only_counterexamples: List[Dict[str, Any]] = []
+        repair_rows: List[sqlite3.Row] = []
 
         conn = self._connect()
         try:
@@ -285,11 +286,27 @@ class FailureBankService:
                     exact_counterexamples.append(item)
                 else:
                     tag_only_counterexamples.append(item)
+            repair_rows = conn.execute("SELECT * FROM repair_outcomes ORDER BY rowid DESC").fetchall()
         finally:
             self._finish(conn)
 
         limited_patterns = matched_patterns[:lookup_limit]
         limited_counterexamples = (exact_counterexamples + tag_only_counterexamples)[:lookup_limit]
+        source_case_ids = [item["case_id"] for item in limited_counterexamples]
+        source_case_id_set = set(source_case_ids)
+        repair_summaries = [
+            {
+                "repair_id": str(row["repair_id"]),
+                "linked_case_ids": json.loads(row["linked_case_ids_json"] or "[]"),
+                "repair_strategy": str(row["repair_strategy"] or ""),
+                "repair_summary": str(row["repair_summary"] or ""),
+                "before_solution_hash": str(row["before_solution_hash"] or ""),
+                "after_solution_hash": str(row["after_solution_hash"] or ""),
+                "validated": bool(row["validated"]),
+            }
+            for row in repair_rows
+            if source_case_id_set.intersection(json.loads(row["linked_case_ids_json"] or "[]"))
+        ][:lookup_limit]
         return {
             "matched_patterns": limited_patterns,
             "retrieved_counterexamples": limited_counterexamples,
@@ -298,6 +315,6 @@ class FailureBankService:
                 for pattern in limited_patterns
                 if pattern.get("anti_pattern_text")
             ],
-            "repair_summaries": [],
-            "source_case_ids": [item["case_id"] for item in limited_counterexamples],
+            "repair_summaries": repair_summaries,
+            "source_case_ids": source_case_ids,
         }

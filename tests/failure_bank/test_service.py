@@ -210,3 +210,55 @@ def test_failure_bank_records_repair_outcomes(tmp_path: Path):
             "validated": True,
         }
     ]
+
+
+def test_failure_bank_lookup_surfaces_repair_summaries_for_retrieved_cases(tmp_path: Path):
+    service = FailureBankService(tmp_path)
+    service.initialize()
+    case_id = service.record_failure_case(
+        {
+            "canonical_objective": "Count cyclic segments",
+            "tags_level1": ["dp"],
+            "tags_level2": ["cyclic_convolution"],
+            "constraint_bucket": "n<=2e5",
+            "phase_found": "verifier",
+            "failure_type": "WA",
+            "failure_subtype": "trusted_suite_failed",
+            "input_text": "3\n1 2 3\n",
+            "expected_output": "2\n",
+            "actual_output": "3\n",
+            "checker_context": "",
+            "trusted_level": "high",
+            "source_run_id": "run-4",
+            "source_solution_hash": "hash-4",
+            "explanation": "Verifier mismatch.",
+            "minimized": True,
+        }
+    )
+    service.record_repair_outcome(
+        linked_case_ids=[case_id],
+        repair_strategy="verifier_repair",
+        repair_summary="Switched to prefix sums.",
+        before_solution_hash="before-hash",
+        after_solution_hash="after-hash",
+        validated=True,
+    )
+
+    context = service.lookup_context(
+        canonical_objective="Count cyclic segments",
+        tags_level1=["dp"],
+        tags_level2=["cyclic_convolution"],
+        lookup_limit=3,
+    )
+
+    assert context["repair_summaries"] == [
+        {
+            "repair_id": context["repair_summaries"][0]["repair_id"],
+            "linked_case_ids": [case_id],
+            "repair_strategy": "verifier_repair",
+            "repair_summary": "Switched to prefix sums.",
+            "before_solution_hash": "before-hash",
+            "after_solution_hash": "after-hash",
+            "validated": True,
+        }
+    ]
