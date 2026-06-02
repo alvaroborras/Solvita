@@ -4,6 +4,7 @@ from collections import Counter
 import json
 from typing import Any, Dict, List, TYPE_CHECKING
 
+import src.events as events
 from src.utils.test_seed_cases import build_local_certified_tests
 
 if TYPE_CHECKING:
@@ -43,6 +44,8 @@ def _build_failure_bank_tests(counterexamples: List[Dict[str, Any]]) -> List[Dic
 
 
 def bootstrap_tests_node(state: "SolvitaState") -> Dict[str, Any]:
+    events.emit_node_enter("bootstrap_tests", "top")
+
     public_tests = (state.get("problem") or {}).get("public_tests", [])
     problem_desc = _build_problem_desc(state)
     local_certified_tests = build_local_certified_tests(problem_desc)
@@ -75,9 +78,9 @@ def bootstrap_tests_node(state: "SolvitaState") -> Dict[str, Any]:
 
     trust_counts = Counter(test.get("trust_tier", "trusted") for test in generated_tests)
     execution_log = [f"Bootstrapped {len(generated_tests)} trusted test cases"]
-
-    return {
-        "tests": {
+    tests_patch = dict(state.get("tests", {}) or {})
+    tests_patch.update(
+        {
             "generated_tests": generated_tests,
             "total_tests": len(generated_tests),
             "test_results": [],
@@ -87,6 +90,10 @@ def bootstrap_tests_node(state: "SolvitaState") -> Dict[str, Any]:
             "ready": True,
             "full_testgen_completed": False,
             "trust_tiers": dict(trust_counts),
-        },
+        }
+    )
+
+    return {
+        "tests": tests_patch,
         "execution_log": execution_log,
     }
