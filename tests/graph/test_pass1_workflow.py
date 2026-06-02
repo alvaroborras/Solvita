@@ -95,3 +95,30 @@ def test_pass1_workflow_compiles_with_new_topology(monkeypatch):
         "condition": "plan_or_codegen_routing",
         "label": "ensemble",
     } in graph.edges
+
+
+def test_ensemble_tail_includes_verifier_and_testgen_escalation(monkeypatch):
+    _install_fake_langgraph(monkeypatch)
+    monkeypatch.delitem(sys.modules, "src.graph.workflow", raising=False)
+
+    workflow_module = importlib.import_module("src.graph.workflow")
+    workflow_module = importlib.reload(workflow_module)
+
+    tail = workflow_module.compile_codegen_hacker_tail()
+    graph = tail.get_graph()
+
+    assert "verifier_phase" in graph.nodes
+    assert "post_verify_controller" in graph.nodes
+    assert "testgen_phase" in graph.nodes
+    assert {
+        "source": "codegen_phase",
+        "target": "verifier_phase",
+        "condition": "post_codegen_routing",
+        "label": "to_verifier",
+    } in graph.edges
+    assert {
+        "source": "post_verify_controller",
+        "target": "testgen_phase",
+        "condition": "post_verify_routing",
+        "label": "escalate_testgen",
+    } in graph.edges

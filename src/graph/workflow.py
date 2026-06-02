@@ -333,14 +333,25 @@ def create_hacker_subgraph():
 
 def compile_codegen_hacker_tail():
     """
-    Standalone subgraph invoked per ensemble branch: CodeGen ↔ Hacker with the same
-    structure as the main orchestrator tail (from ``codegen_phase`` onward).
+    Standalone subgraph invoked per ensemble branch.
+
+    Mirrors the main post-testgen path semantics:
+    CodeGen → Verifier → Post-Verify Controller → {Repair | TestGen | Hacker | End}.
+
+    The ensemble tail intentionally skips re-running skill selection after verifier-triggered
+    testgen escalation; each branch keeps the already chosen skill-plan and re-enters codegen
+    directly after regenerating tests.
     """
     tail = StateGraph(SolvitaState)
     codegen_sg = create_codegen_subgraph()
+    testgen_sg = create_testgen_subgraph()
     hacker_sg = create_hacker_subgraph()
 
     tail.add_node("codegen_phase", codegen_sg)
+    tail.add_node("verifier_phase", verifier_phase_node)
+    tail.add_node("post_verify_controller", post_verify_controller_node)
+    tail.add_node("testgen_phase", testgen_sg)
+    tail.add_node("phase_transition_1_tail", phase_transition_node)
     tail.add_node("phase_transition_2", phase_transition_node)
     tail.add_node("enter_hack_phase", enter_hack_phase_node)
     tail.add_node("hacker_phase", hacker_sg)
@@ -348,7 +359,27 @@ def compile_codegen_hacker_tail():
     tail.add_node("terminal_hack_failure", terminal_hack_failure_node)
 
     tail.set_entry_point("codegen_phase")
-    tail.add_edge("codegen_phase", "phase_transition_2")
+    tail.add_conditional_edges(
+        "codegen_phase",
+        post_codegen_routing,
+        {
+            "to_verifier": "verifier_phase",
+            "end": END,
+        },
+    )
+    tail.add_edge("verifier_phase", "post_verify_controller")
+    tail.add_conditional_edges(
+        "post_verify_controller",
+        post_verify_routing,
+        {
+            "repair": "codegen_phase",
+            "escalate_testgen": "testgen_phase",
+            "accept_hack": "phase_transition_2",
+            "accept_end": END,
+        },
+    )
+    tail.add_edge("testgen_phase", "phase_transition_1_tail")
+    tail.add_edge("phase_transition_1_tail", "codegen_phase")
     tail.add_edge("phase_transition_2", "enter_hack_phase")
     tail.add_edge("enter_hack_phase", "hacker_phase")
     tail.add_conditional_edges(
