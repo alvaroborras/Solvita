@@ -8,6 +8,9 @@ def __getattr__(name: str):
     if name == "abstract_problem_node":
         from .abstract_problem import abstract_problem_node
         return abstract_problem_node
+    elif name == "failure_bank_lookup_node":
+        from .failure_bank_lookup import failure_bank_lookup_node
+        return failure_bank_lookup_node
     elif name == "bootstrap_tests_node":
         from .bootstrap_tests import bootstrap_tests_node
         return bootstrap_tests_node
@@ -91,6 +94,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "abstract_problem_node",
+    "failure_bank_lookup_node",
     "bootstrap_tests_node",
     "generate_tests_node",
     "solver_skill_plan_node",
