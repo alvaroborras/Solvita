@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import src.nodes.solve_controller as solve_controller_module
 from src.failure_bank import FailureBankService
 from src.graph.state import create_initial_state
 from src.nodes.solve_controller import (
@@ -129,3 +130,21 @@ def test_post_verify_controller_records_repair_outcome_on_accept(tmp_path: Path)
     assert outcomes[0]["repair_summary"] == "Trusted mismatch fixed after verifier-driven repair."
     assert outcomes[0]["after_solution_hash"] == sha1(state["solution"]["code"].encode("utf-8")).hexdigest()
     assert outcomes[0]["validated"] is True
+
+
+def test_pre_solve_controller_tolerates_missing_emit_node_enter(monkeypatch):
+    monkeypatch.delattr(solve_controller_module.events, "emit_node_enter", raising=False)
+    state = create_initial_state(
+        raw_problem={
+            "description": "Add two numbers",
+            "public_tests": [{"input": "1 2\n", "output": "3\n"}],
+        },
+        config={},
+    )
+    state["problem"]["canonical"] = {"objective": "Add two integers"}
+    state["problem"]["abstract_confidence"] = 0.95
+    state["problem"]["tags_selected"] = ["implementation"]
+
+    update = pre_solve_controller_node(state)
+
+    assert update["solve_policy"]["run_testgen_initially"] is False

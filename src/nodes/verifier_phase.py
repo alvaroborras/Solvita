@@ -13,6 +13,12 @@ if TYPE_CHECKING:
     from src.graph.state import SolvitaState
 
 
+def _emit_node_enter(node_name: str, phase: str) -> None:
+    emitter = getattr(events, "emit_node_enter", None)
+    if callable(emitter):
+        emitter(node_name, phase)
+
+
 def _trusted_tests(tests: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [test for test in tests if test.get("trust_tier", "advisory") == "trusted"]
 
@@ -88,7 +94,7 @@ def verifier_phase_node(
     *,
     run_program_fn=run_program,
 ) -> Dict[str, Any]:
-    events.emit_node_enter("verifier_phase", "top")
+    _emit_node_enter("verifier_phase", "top")
     events.emit("phase_start", phase="verifier_phase", label="Independent Verification")
 
     tests = list((state.get("tests") or {}).get("generated_tests", []) or [])

@@ -17,6 +17,12 @@ HIGH_RISK_LEVEL2 = {
 }
 
 
+def _emit_node_enter(node_name: str, phase: str) -> None:
+    emitter = getattr(events, "emit_node_enter", None)
+    if callable(emitter):
+        emitter(node_name, phase)
+
+
 def _risk_score(state: Dict[str, Any]) -> float:
     problem = state.get("problem", {}) or {}
     score = 0.0
@@ -48,7 +54,7 @@ def _failure_bank_service_from_state(state: Dict[str, Any]) -> FailureBankServic
 
 
 def pre_solve_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    events.emit_node_enter("pre_solve_controller", "top")
+    _emit_node_enter("pre_solve_controller", "top")
 
     score = _risk_score(state)
     config = state.get("config", {}) or {}
@@ -77,7 +83,7 @@ def pre_solve_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def post_verify_controller_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    events.emit_node_enter("post_verify_controller", "top")
+    _emit_node_enter("post_verify_controller", "top")
 
     verification = state.get("verification", {}) or {}
     decision = str(verification.get("decision", "") or "")
