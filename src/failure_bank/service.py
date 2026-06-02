@@ -124,7 +124,6 @@ class FailureBankService:
 
     def lookup_context(
         self,
-        *,
         canonical_objective: str,
         tags_level1: List[str],
         tags_level2: List[str],

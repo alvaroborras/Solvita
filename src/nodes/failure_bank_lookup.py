@@ -28,14 +28,7 @@ def failure_bank_lookup_node(state: "SolvitaState") -> Dict[str, Any]:
             "execution_log": ["Failure bank lookup: disabled"],
         }
 
-    data_dir = str(config.get("data_dir", "") or "")
-    if not data_dir:
-        return {
-            "failure_bank_context": _empty_failure_bank_context(),
-            "execution_log": ["Failure bank lookup: skipped (no data_dir configured)"],
-        }
-
-    service = FailureBankService(data_dir)
+    service = FailureBankService(str(config.get("data_dir", "") or ""))
     service.initialize()
 
     problem = state.get("problem") or {}

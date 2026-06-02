@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.failure_bank.service import FailureBankService
+from src.failure_bank import FailureBankService
 
 
 def test_failure_bank_service_stores_and_retrieves_context(tmp_path: Path):
@@ -53,3 +53,32 @@ def test_failure_bank_service_stores_and_retrieves_context(tmp_path: Path):
     assert context["matched_patterns"][0]["pattern_id"] == "pattern.cyclic.counting"
     assert context["retrieved_counterexamples"][0]["failure_subtype"] == "cyclic_overcount"
     assert "Do not linearize cyclic set semantics without proof." in context["anti_patterns"]
+
+
+def test_failure_bank_service_lookup_context_accepts_positional_arguments(tmp_path: Path):
+    service = FailureBankService(tmp_path)
+    service.initialize()
+    service.record_failure_case(
+        {
+            "canonical_objective": "Count paths",
+            "tags_level1": ["graphs"],
+            "tags_level2": ["dag_longest_path"],
+            "constraint_bucket": "n<=1e5",
+            "phase_found": "verifier",
+            "failure_type": "WA",
+            "failure_subtype": "dag_off_by_one",
+            "input_text": "3 2\n1 2\n2 3\n",
+            "expected_output": "2\n",
+            "actual_output": "1\n",
+            "checker_context": "",
+            "trusted_level": "high",
+            "source_run_id": "run-3",
+            "source_solution_hash": "hash-3",
+            "explanation": "Missed one edge in path count.",
+            "minimized": True,
+        }
+    )
+
+    context = service.lookup_context("Count paths", ["graphs"], ["dag_longest_path"], 1)
+
+    assert context["retrieved_counterexamples"][0]["failure_subtype"] == "dag_off_by_one"
