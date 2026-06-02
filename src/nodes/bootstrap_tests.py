@@ -1,7 +1,6 @@
 """Bootstrap a trusted lightweight test suite before full test generation."""
 
 from collections import Counter
-import json
 from typing import Any, Dict, List, TYPE_CHECKING
 
 import src.events as events
@@ -9,18 +8,6 @@ from src.utils.test_seed_cases import build_local_certified_tests
 
 if TYPE_CHECKING:
     from src.graph.state import SolvitaState
-
-
-def _build_problem_desc(state: "SolvitaState") -> str:
-    canonical = (state.get("problem") or {}).get("canonical", {})
-    if canonical:
-        return (
-            f"Objective: {canonical.get('objective', '')}\n"
-            f"Inputs: {json.dumps(canonical.get('inputs', {}), indent=2)}\n"
-            f"Outputs: {json.dumps(canonical.get('outputs', {}), indent=2)}\n"
-            f"Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"
-        )
-    return (state.get("problem") or {}).get("description", "")
 
 
 def _build_failure_bank_tests(counterexamples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -47,8 +34,8 @@ def bootstrap_tests_node(state: "SolvitaState") -> Dict[str, Any]:
     events.emit_node_enter("bootstrap_tests", "top")
 
     public_tests = (state.get("problem") or {}).get("public_tests", [])
-    problem_desc = _build_problem_desc(state)
-    local_certified_tests = build_local_certified_tests(problem_desc)
+    raw_problem_desc = (state.get("problem") or {}).get("description", "")
+    local_certified_tests = build_local_certified_tests(raw_problem_desc)
     counterexamples = (state.get("failure_bank_context") or {}).get("retrieved_counterexamples", [])
 
     generated_tests: List[Dict[str, Any]] = []

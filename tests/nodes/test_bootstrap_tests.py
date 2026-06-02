@@ -76,3 +76,26 @@ def test_bootstrap_tests_preserves_existing_test_fields_and_emits_node_enter(mon
     assert update["tests"]["checker_exe"] == "/tmp/checker.exe"
     assert update["tests"]["validator_exe"] == "/tmp/validator.exe"
     assert update["tests"]["full_testgen_completed"] is False
+
+
+def test_bootstrap_tests_uses_raw_description_for_local_certified_detection():
+    raw_description = (
+        "Denote a cyclic sequence of size n as an array. You are given an array obtained from concatenating m copies. "
+        "Find the number of different segments where the sum of elements in the segment is divisible by k. "
+        "Two segments are considered different if the set of indices are different."
+    )
+    state = create_initial_state(
+        raw_problem={"description": raw_description, "public_tests": []},
+        config={},
+    )
+    state["problem"]["canonical"] = {
+        "objective": "Count something generic",
+        "inputs": {"n": "int"},
+        "outputs": {"answer": "int"},
+        "constraints": {"n": "large"},
+    }
+
+    update = bootstrap_tests_node(state)
+
+    assert any(test["type"] == "edge" for test in update["tests"]["generated_tests"])
+    assert any(test["trust_tier"] == "trusted" for test in update["tests"]["generated_tests"])

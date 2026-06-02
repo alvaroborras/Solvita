@@ -298,3 +298,67 @@ def test_generate_tests_node_respects_configured_no_ac_target_cap(monkeypatch, t
             "trust_tier": "trusted",
         }
     ]
+
+
+def test_generate_tests_node_uses_raw_description_for_local_certified_detection(monkeypatch, tmp_path):
+    from src.graph.state import create_initial_state
+    from src.nodes import generate_tests as gt
+
+    class FakeLLM:
+        @staticmethod
+        def build_role_config(config, role):
+            return {}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stderr = "generator failed"
+
+    def fake_retry(_llm, prompt_builder, *args, **kwargs):
+        if prompt_builder is gt.build_generator_prompt:
+            return '{"generator_cpp": "int main() { return 0; }"}', [], []
+        if prompt_builder is gt.build_validator_prompt:
+            return '{"validator_cpp": "int main() { return 0; }"}', [], []
+        raise AssertionError(f"unexpected prompt builder: {prompt_builder}")
+
+    def fake_compile_cpp(_src, _exe, include_testlib=False, diagnostic=False):
+        return True, ""
+
+    def fake_subprocess_run(*args, **kwargs):
+        stdout = kwargs.get("stdout")
+        if stdout is not None:
+            stdout.write("")
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(gt, "UnifiedLLMClient", FakeLLM)
+    monkeypatch.setattr(gt, "_generate_with_compact_retry", fake_retry)
+    monkeypatch.setattr(gt, "compile_cpp", fake_compile_cpp)
+    monkeypatch.setattr(gt.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gt, "_resolve_data_root", lambda config: tmp_path)
+
+    raw_description = (
+        "Denote a cyclic sequence of size n as an array. You are given an array obtained from concatenating m copies. "
+        "Find the number of different segments where the sum of elements in the segment is divisible by k. "
+        "Two segments are considered different if the set of indices are different."
+    )
+    state = create_initial_state(
+        {"description": raw_description, "public_tests": []},
+        {
+            "generate_tests_target_count": 200,
+            "generate_tests_target_count_without_ac": 7,
+        },
+    )
+    state["problem"]["canonical"] = {
+        "objective": "Count something generic",
+        "inputs": {"n": "int"},
+        "outputs": {"answer": "int"},
+        "constraints": {"n": "large"},
+    }
+
+    out = gt.generate_tests_node(state)
+
+    assert any(test["type"] == "edge" for test in out["tests"]["generated_tests"])
+    assert any(test["trust_tier"] == "trusted" for test in out["tests"]["generated_tests"])

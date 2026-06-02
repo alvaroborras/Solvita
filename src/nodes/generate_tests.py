@@ -757,9 +757,10 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         # Fallback to original description
         problem_desc = state["problem"].get("description", "")
     
+    raw_problem_desc = state["problem"].get("description", "")
     public_tests = state["problem"].get("public_tests", [])
     constraints = state["problem"].get("constraints", {})
-    local_certified_tests = build_local_certified_tests(problem_desc)
+    local_certified_tests = build_local_certified_tests(raw_problem_desc)
     solver_public_tests = list(public_tests) + list(local_certified_tests)
 
     def role_client(role: str) -> UnifiedLLMClient:
