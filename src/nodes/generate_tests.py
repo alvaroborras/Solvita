@@ -1,5 +1,6 @@
 """Generate Tests Node - Create test cases for the problem"""
 
+from collections import Counter
 from typing import Dict, Any, List, Optional, Set, Tuple, TYPE_CHECKING
 import json
 import re
@@ -20,6 +21,7 @@ from src.oracle.logging import build_oracle_event_payload
 from src.oracle.oracle_memory_runtime import decide_oracle_memory_gate
 from src.oracle.oracle_memory_policy import recipe_bucket_from_template_name
 from src.oracle.types import OracleRoute
+from src.utils.test_seed_cases import build_local_certified_tests
 from src.utils.json_utils import parse_json_response
 from src.utils.problem_utils import extract_problem_code
 from src.utils.prompt_templates import get_nested_template, load_prompt_templates, render_template
@@ -223,47 +225,12 @@ def _build_solver_advice(problem_desc: str) -> str:
 
 
 def _count_cyclic_divisible_segments_bruteforce(n: int, m: int, k: int, a: List[int]) -> int:
-    total_positions = n * m
-    if total_positions > 256:
-        raise ValueError("bruteforce helper is only intended for modest certification inputs")
+    from src.utils.test_seed_cases import _count_cyclic_divisible_segments_bruteforce as _impl
 
-    b = a * m
-    total_sum = sum(b)
-    answer = 0
-    for start in range(total_positions):
-        segment_sum = 0
-        for length in range(1, total_positions):
-            segment_sum += b[(start + length - 1) % total_positions]
-            if segment_sum % k == 0:
-                answer += 1
-    if total_sum % k == 0:
-        answer += 1
-    return answer % 1000000007
+    return _impl(n, m, k, a)
 
 
-def _build_local_certified_tests(problem_desc: str) -> List[Dict[str, Any]]:
-    if not _is_cyclic_sum_segment_count_problem(problem_desc):
-        return []
-
-    cases = [
-        (1, 3, 2, [1]),
-        (1, 4, 3, [1]),
-        (2, 1, 5, [0, 1]),
-        (3, 2, 5, [1, 1, 1]),
-    ]
-
-    certified = []
-    for n, m, k, a in cases:
-        expected = _count_cyclic_divisible_segments_bruteforce(n, m, k, a)
-        certified.append(
-            {
-                "input": f"{n} {m} {k}\n{' '.join(map(str, a))}\n",
-                "output": f"{expected}\n",
-                "type": "edge",
-                "description": "Local exact cyclic wrap certification case",
-            }
-        )
-    return certified
+_build_local_certified_tests = build_local_certified_tests
 
 
 def _normalize_generated_input(text: str) -> str:
@@ -1410,6 +1377,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 "expected_output": pt.get("output", ""),
                 "type": "public",
                 "description": "Public test case",
+                "trust_tier": "trusted",
             }
         )
 
@@ -1420,6 +1388,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                 "expected_output": pt.get("output", ""),
                 "type": pt.get("type", "edge"),
                 "description": pt.get("description", "Local exact certification case"),
+                "trust_tier": "trusted",
             }
         )
 
@@ -1431,6 +1400,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
                     "expected_output": out,
                     "type": "generated",
                     "description": "Generated test case",
+                    "trust_tier": "advisory",
                 }
             )
 
@@ -1445,6 +1415,7 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
     # Compute solver cert_ratio for graduated reward in training mode
     _cert_count = sum(1 for t in generated_tests if t["type"] == "generated")
     _cert_ratio = _compute_certification_ratio(_cert_count, target_count)
+    trust_counts = Counter(test.get("trust_tier", "advisory") for test in generated_tests)
 
     tests = {
         "generated_tests": generated_tests,
@@ -1482,6 +1453,8 @@ Constraints: {json.dumps(canonical.get('constraints', {}), indent=2)}"""
         "selected_template_name": selected_template_name,
         "prompt_char_stats": oracle_telemetry.get("prompt_char_stats", {}),
         "compact_retry_count": oracle_telemetry.get("compact_retry_count", 0),
+        "full_testgen_completed": True,
+        "trust_tiers": dict(trust_counts),
     }
     accepted_artifact = None
     if 'oracle_plan' in locals():
