@@ -117,6 +117,41 @@ class TestData(TypedDict, total=False):
     selected_template_name: Optional[str]
     prompt_char_stats: Dict[str, int]
     compact_retry_count: int
+    full_testgen_completed: bool
+    trust_tiers: Dict[str, int]
+
+
+class SolvePolicyData(TypedDict, total=False):
+    """Runtime orchestration policy for the pass@1-optimized workflow."""
+    risk_score: float
+    run_testgen_initially: bool
+    run_skill_plan: bool
+    initial_codegen_budget: int
+    verifier_mode: str
+    allow_hacker: bool
+    escalate_after_failures: int
+    generated_test_target_scale: int
+    next_action: str
+
+
+class VerificationData(TypedDict, total=False):
+    """Independent verification results produced after codegen success."""
+    decision: str
+    confidence: float
+    risk_flags: List[str]
+    new_tests: List[Dict[str, Any]]
+    feedback_summary: str
+    trusted_failures: List[Dict[str, Any]]
+    open_failure_case_ids: List[str]
+
+
+class FailureBankContextData(TypedDict, total=False):
+    """Structured failure-bank retrieval context shared across workflow nodes."""
+    matched_patterns: List[Dict[str, Any]]
+    retrieved_counterexamples: List[Dict[str, Any]]
+    anti_patterns: List[str]
+    repair_summaries: List[Dict[str, Any]]
+    source_case_ids: List[str]
 
 
 class FeedbackData(TypedDict, total=False):
@@ -141,6 +176,9 @@ class SolvitaState(TypedDict):
     oracle_solution: Optional[Dict[str, Any]]  # reserved (training / external runners)
     buggy_solution: Optional[Dict[str, Any]]  # reserved (training / external runners)
     tests: Annotated[TestData, merge_dict]
+    solve_policy: Annotated[SolvePolicyData, merge_dict]
+    verification: Annotated[VerificationData, merge_dict]
+    failure_bank_context: Annotated[FailureBankContextData, merge_dict]
     feedback: Annotated[FeedbackData, merge_dict]
     oracle_event_metadata: Annotated[Dict[str, Any], merge_dict]
     oracle_memory_decision: Annotated[Dict[str, Any], merge_dict]
@@ -311,6 +349,15 @@ def _fallback_codegen_defaults() -> Dict[str, Any]:
     }
 
 
+def _fallback_failure_bank_defaults(repo_root: Path) -> Dict[str, Any]:
+    """Used when pass@1 failure-bank runtime config is absent."""
+    return {
+        "enabled": True,
+        "data_dir": _resolve_repo_path(repo_root, "artifacts/failure_bank"),
+        "lookup_limit": 3,
+    }
+
+
 def _load_codegen_defaults() -> Dict[str, Any]:
     """Load ``config/codegen.yaml``."""
     repo_root = _REPO_ROOT
@@ -396,6 +443,18 @@ def _merge_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
             merged_codegen["revision_mode"] = "patch"
 
     cfg["codegen"] = merged_codegen
+
+    failure_bank = cfg.get("failure_bank")
+    if not isinstance(failure_bank, dict):
+        failure_bank = {}
+    failure_bank_base = _fallback_failure_bank_defaults(_REPO_ROOT)
+    merged_failure_bank: Dict[str, Any] = {**failure_bank_base, **failure_bank}
+    fbd = merged_failure_bank.get("data_dir", "")
+    if isinstance(fbd, str) and fbd.strip():
+        merged_failure_bank["data_dir"] = _resolve_repo_path(_REPO_ROOT, fbd)
+    else:
+        merged_failure_bank["data_dir"] = ""
+    cfg["failure_bank"] = merged_failure_bank
     return cfg
 
 
@@ -486,6 +545,35 @@ def create_initial_state(raw_problem: Dict[str, Any], config: Dict[str, Any]) ->
             selected_template_name=None,
             prompt_char_stats={},
             compact_retry_count=0,
+            full_testgen_completed=False,
+            trust_tiers={},
+        ),
+        solve_policy=SolvePolicyData(
+            risk_score=0.0,
+            run_testgen_initially=False,
+            run_skill_plan=False,
+            initial_codegen_budget=1,
+            verifier_mode="standard",
+            allow_hacker=False,
+            escalate_after_failures=1,
+            generated_test_target_scale=0,
+            next_action="",
+        ),
+        verification=VerificationData(
+            decision="",
+            confidence=0.0,
+            risk_flags=[],
+            new_tests=[],
+            feedback_summary="",
+            trusted_failures=[],
+            open_failure_case_ids=[],
+        ),
+        failure_bank_context=FailureBankContextData(
+            matched_patterns=[],
+            retrieved_counterexamples=[],
+            anti_patterns=[],
+            repair_summaries=[],
+            source_case_ids=[],
         ),
         feedback=FeedbackData(
             feedback={},
