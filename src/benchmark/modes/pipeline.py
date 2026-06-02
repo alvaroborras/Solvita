@@ -89,11 +89,13 @@ def run_pipeline_benchmark_case(
     tests_data = final_state.get("tests") or {}
     solution_code = ((final_state.get("solution") or {}).get("code") or "")
     status_str = str(final_state.get("status", "unknown"))
+    used_best_solution_fallback = False
     if status_str != "success":
         best = final_state.get("best_solution") or {}
         best_code = best.get("code") or ""
         if best_code and int(best.get("passed_tests", 0)) > 0:
             solution_code = best_code
+            used_best_solution_fallback = best_code != ((final_state.get("solution") or {}).get("code") or "")
     if not solution_code:
         score = {
             "compile_success": False,
@@ -115,10 +117,22 @@ def run_pipeline_benchmark_case(
         except Exception:
             pass
 
-    false_accept = bool(
-        verification.get("decision") == "accept"
-        and float(score.get("pass_rate", 0.0) or 0.0) < 1.0
+    verifier_decision = verification.get("decision")
+    verifier_confidence = (
+        float(verification.get("confidence", 0.0) or 0.0)
+        if verification.get("confidence") is not None
+        else None
     )
+    false_accept = (
+        bool(verifier_decision == "accept" and float(score.get("pass_rate", 0.0) or 0.0) < 1.0)
+        if verifier_decision is not None
+        else None
+    )
+
+    if used_best_solution_fallback:
+        verifier_decision = None
+        verifier_confidence = None
+        false_accept = None
 
     return BenchmarkResult(
         problem_id=problem_id,
@@ -138,12 +152,8 @@ def run_pipeline_benchmark_case(
         generator_failure_kind=final_state.get("generator_failure_kind"),
         generator_failure_reason=final_state.get("generator_failure_reason"),
         workflow_log_path=str(workflow_log_path) if workflow_log_path is not None else None,
-        verifier_decision=verification.get("decision"),
-        verifier_confidence=(
-            float(verification.get("confidence", 0.0) or 0.0)
-            if verification.get("confidence") is not None
-            else None
-        ),
+        verifier_decision=verifier_decision,
+        verifier_confidence=verifier_confidence,
         false_accept=false_accept,
         full_testgen_completed=bool(tests_data.get("full_testgen_completed", False)),
     )

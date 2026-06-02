@@ -116,3 +116,23 @@ def test_verifier_persists_trusted_failures_to_failure_bank(tmp_path: Path):
     assert context["retrieved_counterexamples"][0]["expected_output"] == "3\n"
     assert context["retrieved_counterexamples"][0]["actual_output"] == "4\n"
     assert context["retrieved_counterexamples"][0]["failure_type"] == "WA"
+
+
+def test_verifier_accept_preserves_open_case_ids_from_prior_repair(tmp_path: Path):
+    state = create_initial_state(
+        raw_problem={"description": "Example", "public_tests": []},
+        config={"failure_bank": {"data_dir": str(tmp_path)}},
+    )
+    state["verification"]["open_failure_case_ids"] = ["case-1"]
+    state["solution"]["code"] = "int main(){return 0;}"
+    state["solution"]["executable_path"] = str(tmp_path / "dummy.exe")
+    state["tests"]["generated_tests"] = []
+    state["tests"]["ready"] = True
+
+    update = verifier_phase_node(
+        state,
+        run_program_fn=lambda *_args, **_kwargs: (0, "", ""),
+    )
+
+    assert update["verification"]["decision"] == "accept"
+    assert update["verification"]["open_failure_case_ids"] == ["case-1"]

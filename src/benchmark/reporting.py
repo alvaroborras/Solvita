@@ -31,6 +31,8 @@ def summarize_results(rows: Iterable[Any], repeats: int = 1) -> Dict[str, Any]:
     for mode, items in by_mode.items():
         total = len(items)
         problem_count = len({str(item.get("problem_id", "")) for item in items if item.get("problem_id")})
+        verifier_items = [item for item in items if item.get("verifier_decision") is not None]
+        false_accept_items = [item for item in items if item.get("false_accept") is not None]
         mode_summary[mode] = {
             "row_count": total,
             "problem_count": problem_count,
@@ -53,16 +55,20 @@ def summarize_results(rows: Iterable[Any], repeats: int = 1) -> Dict[str, Any]:
                 sum(float(item.get("completion_tokens", 0.0) or 0.0) for item in items) / total if total else 0.0
             ),
             "false_accept_rate": (
-                sum(1 for item in items if item.get("false_accept")) / total if total else 0.0
+                sum(1 for item in false_accept_items if item.get("false_accept")) / len(false_accept_items)
+                if false_accept_items else 0.0
             ),
             "verifier_accept_rate": (
-                sum(1 for item in items if item.get("verifier_decision") == "accept") / total if total else 0.0
+                sum(1 for item in verifier_items if item.get("verifier_decision") == "accept") / len(verifier_items)
+                if verifier_items else 0.0
             ),
             "verifier_repair_rate": (
-                sum(1 for item in items if item.get("verifier_decision") == "repair") / total if total else 0.0
+                sum(1 for item in verifier_items if item.get("verifier_decision") == "repair") / len(verifier_items)
+                if verifier_items else 0.0
             ),
             "verifier_escalation_rate": (
-                sum(1 for item in items if item.get("verifier_decision") == "escalate_testgen") / total if total else 0.0
+                sum(1 for item in verifier_items if item.get("verifier_decision") == "escalate_testgen") / len(verifier_items)
+                if verifier_items else 0.0
             ),
             "full_testgen_completion_rate": (
                 sum(1 for item in items if item.get("full_testgen_completed")) / total if total else 0.0

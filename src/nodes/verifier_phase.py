@@ -100,6 +100,8 @@ def verifier_phase_node(
     tests = list((state.get("tests") or {}).get("generated_tests", []) or [])
     solution = state.get("solution") or {}
     problem = state.get("problem") or {}
+    prior_verification = state.get("verification") or {}
+    prior_open_case_ids = list(prior_verification.get("open_failure_case_ids", []) or [])
 
     exe_path_raw = solution.get("executable_path")
     code = str(solution.get("code", "") or "")
@@ -143,6 +145,9 @@ def verifier_phase_node(
                         }
                     )
                 )
+        if prior_open_case_ids:
+            seen_case_ids = set(case_ids)
+            case_ids.extend(case_id for case_id in prior_open_case_ids if case_id not in seen_case_ids)
         verification = {
             "decision": "repair",
             "confidence": 1.0,
@@ -170,7 +175,7 @@ def verifier_phase_node(
             "new_tests": [],
             "feedback_summary": "No trusted counterexample found, but risk remains too high for acceptance.",
             "trusted_failures": [],
-            "open_failure_case_ids": [],
+            "open_failure_case_ids": prior_open_case_ids,
         }
         events.emit(
             "phase_done",
@@ -187,7 +192,7 @@ def verifier_phase_node(
         "new_tests": [],
         "feedback_summary": "Trusted checks passed and no strong residual risk was detected.",
         "trusted_failures": [],
-        "open_failure_case_ids": [],
+        "open_failure_case_ids": prior_open_case_ids,
     }
     events.emit(
         "phase_done",
