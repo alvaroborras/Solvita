@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.failure_bank import FailureBankService
 from src.graph.state import create_initial_state
 from src.nodes.verifier_phase import verifier_phase_node
 
@@ -70,3 +71,48 @@ def test_verifier_accepts_low_risk_candidate(tmp_path: Path):
 
     assert update["verification"]["decision"] == "accept"
     assert update["verification"]["confidence"] > 0.0
+
+
+def test_verifier_persists_trusted_failures_to_failure_bank(tmp_path: Path):
+    state = create_initial_state(
+        raw_problem={"description": "Example", "public_tests": []},
+        config={"failure_bank": {"data_dir": str(tmp_path)}},
+    )
+    state["problem"]["canonical"] = {"objective": "Add two integers"}
+    state["problem"]["tags_selected"] = ["implementation"]
+    state["problem"]["tags_level2_selected"] = ["simple_arithmetic"]
+    state["solution"]["code"] = "int main(){return 0;}"
+    state["solution"]["executable_path"] = str(tmp_path / "dummy.exe")
+    state["tests"]["generated_tests"] = [
+        {
+            "input": "1 2\n",
+            "expected_output": "3\n",
+            "trust_tier": "trusted",
+            "type": "public",
+            "description": "Public test",
+        }
+    ]
+    state["tests"]["ready"] = True
+
+    update = verifier_phase_node(
+        state,
+        run_program_fn=lambda *_args, **_kwargs: (0, "4\n", ""),
+    )
+
+    assert update["verification"]["decision"] == "repair"
+    assert update["verification"]["open_failure_case_ids"]
+
+    service = FailureBankService(tmp_path)
+    service.initialize()
+    context = service.lookup_context(
+        "Add two integers",
+        ["implementation"],
+        ["simple_arithmetic"],
+        5,
+    )
+
+    assert context["source_case_ids"] == update["verification"]["open_failure_case_ids"]
+    assert context["retrieved_counterexamples"][0]["input_text"] == "1 2\n"
+    assert context["retrieved_counterexamples"][0]["expected_output"] == "3\n"
+    assert context["retrieved_counterexamples"][0]["actual_output"] == "4\n"
+    assert context["retrieved_counterexamples"][0]["failure_type"] == "WA"

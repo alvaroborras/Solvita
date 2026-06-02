@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
+from src.failure_bank import FailureBankService
 from src.nodes.hack_test import hack_test_node
 from src.utils.verdict import VerdictStatus, FailureType
 from src.hacker.runtime import execute_hack_candidate
@@ -149,6 +150,37 @@ def test_execution_exception_handled(mock_state, base_mocks, monkeypatch):
     result = hack_test_node(mock_state)
 
     assert any(f.get("type") == "System Error" for f in result["hack_failures"])
+
+
+def test_hack_break_persists_counterexample_to_failure_bank(
+    mock_state, base_mocks, monkeypatch, tmp_path
+):
+    mock_state["config"] = {"failure_bank": {"data_dir": str(tmp_path)}}
+    mock_state["problem"]["canonical"] = {"objective": "test"}
+    monkeypatch.setattr(
+        "src.nodes.hack_test.cascading_execution_router",
+        lambda *a, **k: ("semantic", "100\n", ["log"], []),
+    )
+    mock_verdict = {
+        "verdict": VerdictStatus.VALID_AND_BREAK.value,
+        "failure_type": FailureType.WA.value,
+        "details": "WA",
+    }
+    monkeypatch.setattr("src.nodes.hack_test.evaluate_verdict", lambda *a, **k: mock_verdict)
+    monkeypatch.setattr("src.nodes.hack_test.run_program", lambda *a, **k: (0, "99\n", ""))
+
+    result = hack_test_node(mock_state)
+
+    assert result["hack_result"] == "BREAK"
+
+    service = FailureBankService(tmp_path)
+    service.initialize()
+    context = service.lookup_context("test", [], [], 5)
+
+    assert len(context["retrieved_counterexamples"]) == 1
+    assert context["retrieved_counterexamples"][0]["input_text"] == "100\n"
+    assert context["retrieved_counterexamples"][0]["actual_output"] == "99"
+    assert context["retrieved_counterexamples"][0]["failure_type"] == FailureType.WA.value
 
 
 def test_execute_hack_candidate_uses_expected_output_without_checker(monkeypatch, tmp_path):
