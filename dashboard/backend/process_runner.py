@@ -179,7 +179,7 @@ class SolveProcess:
         await self._finalize_once(final_status)
 
     async def _handle_line(self, line: str, ws_manager: WebSocketManager) -> None:
-        if self._finalized:
+        if self._finalized or self._cancellation_requested:
             return
         line = line.strip()
         if not line:
@@ -214,20 +214,17 @@ class SolveProcess:
         if self._stream_task is not None and not self._stream_task.done():
             await self._stream_task
 
-        final_status = None
-        for entry in reversed(self.events):
-            event = entry.get("event", entry)
-            if event.get("type") == "final":
-                final_status = event.get("status")
-                break
-
-        if final_status is None:
+        has_cancelled_final = any(
+            (entry.get("event", entry)).get("type") == "final"
+            and (entry.get("event", entry)).get("status") == "cancelled"
+            for entry in self.events
+        )
+        if not has_cancelled_final:
             self._append_terminal_event("cancelled")
-            final_status = "cancelled"
             await self._broadcast_best_effort(self.events[-1])
 
-        await self._finalize_once(final_status)
-        return final_status
+        await self._finalize_once("cancelled")
+        return "cancelled"
 
 
 class ProcessManager:

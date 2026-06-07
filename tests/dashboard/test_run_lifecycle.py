@@ -234,7 +234,7 @@ def test_cancel_run_waits_for_stream_drain_before_finalizing(monkeypatch, tmp_pa
     assert stored["events"][-1]["event"]["status"] == "cancelled"
 
 
-def test_cancel_run_reports_natural_completion_semantics(monkeypatch, tmp_path):
+def test_cancel_run_wins_over_buffered_natural_final(monkeypatch, tmp_path):
     _configure_dashboard_runtime(monkeypatch, tmp_path)
 
     async def scenario():
@@ -269,17 +269,19 @@ def test_cancel_run_reports_natural_completion_semantics(monkeypatch, tmp_path):
         result = await cancel_task
         await stream_task
         stored = server.event_store.get_run(proc.run_id)
-        return proc, result, stored
+        return proc, result, stored, [message for _, message in broadcaster.messages]
 
-    proc, result, stored = asyncio.run(scenario())
+    proc, result, stored, messages = asyncio.run(scenario())
 
     assert result.run_id == proc.run_id
-    assert result.final_status == "success"
-    assert result.cancelled is False
+    assert result.final_status == "cancelled"
+    assert result.cancelled is True
     assert stored is not None
-    assert stored["final_status"] == "success"
+    assert stored["final_status"] == "cancelled"
     assert stored["events"][-1]["event"]["type"] == "final"
-    assert stored["events"][-1]["event"]["status"] == "success"
+    assert stored["events"][-1]["event"]["status"] == "cancelled"
+    run_complete_indexes = [idx for idx, message in enumerate(messages) if message["event"]["type"] == "run_complete"]
+    assert run_complete_indexes == [len(messages) - 1]
 
 
 def test_cancel_run_translates_runtime_race_to_conflict(monkeypatch, tmp_path):
