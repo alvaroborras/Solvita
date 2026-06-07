@@ -16,11 +16,7 @@ vi.mock('./components/Layout', () => ({
 vi.mock('./components/AlgorithmStoryCard', () => ({ default: () => <div data-testid="algorithm-story-card" /> }));
 vi.mock('./components/EvidenceWorkbench', () => ({ default: () => <div data-testid="evidence-workbench" /> }));
 vi.mock('./components/FailureAnalysisCard', () => ({ default: () => <div data-testid="failure-analysis-card" /> }));
-vi.mock('./components/FinalSummaryCard', () => ({
-  default: ({ finalStatus }: { finalStatus: string | null }) => (
-    <div data-testid="final-summary-card">{finalStatus || 'none'}</div>
-  ),
-}));
+vi.mock('./components/FinalSummaryCard', async () => await vi.importActual('./components/FinalSummaryCard'));
 vi.mock('./components/StageDetailPanel', () => ({ default: () => <div data-testid="stage-detail-panel" /> }));
 
 import App from './App';
@@ -96,6 +92,7 @@ describe('App integration', () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('supports start solve, live progress, final replay-ready mode, and refresh restore', async () => {
@@ -478,9 +475,109 @@ describe('App integration', () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole('button', { name: /^delete$/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument(), {
+      timeout: 6000,
+    });
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
     await user.click(screen.getByRole('button', { name: /delete permanently/i }));
 
     await waitFor(() => expect(dropRun).toHaveBeenCalledWith('run-delete'));
   });
+
+  it('interrupts a live run into cancelled replay and clears the session when that replay is deleted', async () => {
+    const user = userEvent.setup();
+    let runState: 'running' | 'cancelled' | 'deleted' = 'running';
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url === '/api/problems') {
+        return Promise.resolve(createResponse({
+          problems: [{ id: 'p1', name: 'Pair Sum', source: 'showcase', preview: 'Find pair', difficulty: 'easy', is_showcase: true }],
+        }));
+      }
+      if (url === '/api/problems/p1') {
+        return Promise.resolve(createResponse({
+          problem_id: 'p1',
+          description: 'Find pair',
+          public_tests: [],
+          _metadata: { name: 'Pair Sum', source: 'showcase', is_showcase: true },
+        }));
+      }
+      if (url === '/api/runs' && init?.method === 'POST') {
+        return Promise.resolve(createResponse({ run_id: 'run-live', status: 'running' }));
+      }
+      if (url === '/api/runs/run-live/cancel' && init?.method === 'POST') {
+        runState = 'cancelled';
+        return Promise.resolve(createResponse({ run_id: 'run-live', cancelled: true, final_status: 'cancelled' }));
+      }
+      if (url === '/api/runs/run-live' && init?.method === 'DELETE') {
+        runState = 'deleted';
+        return Promise.resolve(createResponse({ run_id: 'run-live', deleted: true }));
+      }
+      if (url === '/api/runs') {
+        return Promise.resolve(createResponse({
+          runs: runState === 'running'
+            ? [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'running', final_status: null, iterations: null, pass_rate: null }]
+            : runState === 'cancelled'
+              ? [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'completed', final_status: 'cancelled', iterations: 1, pass_rate: 0 }]
+              : [],
+        }));
+      }
+      if (url === '/api/runs/run-live') {
+        if (runState === 'deleted') {
+          return Promise.resolve({
+            ok: false,
+            status: 404,
+            json: async () => ({ detail: 'Run not found' }),
+          } as Response);
+        }
+        return Promise.resolve(createResponse({
+          run_id: 'run-live',
+          problem_id: 'p1',
+          problem: { description: 'Find pair', _metadata: { name: 'Pair Sum', source: 'showcase', is_showcase: true } },
+          config: { max_iterations: 5 },
+          final_status: runState === 'cancelled' ? 'cancelled' : null,
+          events: runState === 'cancelled'
+            ? [
+                { event: { type: 'solve_start', problem_id: 'p1', problem_name: 'Pair Sum' }, seq: 0, timestamp: 1 },
+                { event: { type: 'final', status: 'cancelled' }, seq: 1, timestamp: 2 },
+              ]
+            : [
+                { event: { type: 'solve_start', problem_id: 'p1', problem_name: 'Pair Sum' }, seq: 0, timestamp: 1 },
+              ],
+        }));
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: /start solve/i }));
+    await user.click((await screen.findAllByRole('button', { name: /^start solve$/i })).at(-1)!);
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+    act(() => {
+      MockWebSocket.instances[0].open();
+    });
+
+    await user.click(await screen.findByRole('button', { name: /^interrupt$/i }));
+
+    act(() => {
+      MockWebSocket.instances[0].emitMessage({ type: 'final', status: 'cancelled' });
+    });
+
+    await waitFor(() => expect(screen.getAllByText(/replay/i).length).toBeGreaterThan(0));
+    expect(screen.getByText(/The run was interrupted by the user/i)).toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument(), {
+      timeout: 6000,
+    });
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }));
+
+    await waitFor(() => expect(screen.getAllByText(/No active run/i).length).toBeGreaterThan(0));
+  }, 12000);
 });
