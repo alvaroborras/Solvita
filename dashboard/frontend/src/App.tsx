@@ -301,7 +301,7 @@ export default function App() {
     try {
       await cancelRun(currentRunId);
     } catch {
-      setInterruptPendingRunId(null);
+      setInterruptPendingRunId((pending) => (pending === currentRunId ? null : pending));
     }
   }, [interruptPendingRunId, session.mode, session.runId]);
 

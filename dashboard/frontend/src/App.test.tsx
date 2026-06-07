@@ -335,4 +335,152 @@ describe('App integration', () => {
 
     pendingCancel.resolve({ run_id: 'run-a', cancelled: true, final_status: 'cancelled' });
   });
+
+  it('does not let a failed earlier interrupt clear the pending state of a newer live run', async () => {
+    const user = userEvent.setup();
+    const cancelA = createDeferred<Record<string, unknown>>();
+    const cancelB = createDeferred<Record<string, unknown>>();
+    const sessionBase = {
+      hydrationStatus: 'ready' as const,
+      wsStatus: 'connected' as const,
+      shouldConnectLive: true,
+      selectedStageId: null,
+      selectedTimelineId: null,
+      replayCursor: 1,
+    };
+    let session = {
+      ...sessionBase,
+      runId: 'run-a',
+      mode: 'live' as const,
+      runDetail: {
+        runId: 'run-a',
+        problemId: 'a',
+        problem: { description: 'A', _metadata: { name: 'Run A' } },
+        config: {},
+        finalStatus: null,
+      },
+      events: [{ type: 'solve_start', problem_id: 'a', problem_name: 'Run A', seq: 0, ts: 1 }],
+    };
+
+    vi.spyOn(useRunSessionModule, 'useRunSession').mockImplementation(() => ({
+      clearSession: vi.fn(),
+      dropRun: vi.fn(),
+      reconnect: vi.fn(async () => false),
+      restoreLatestRun: vi.fn(async () => false),
+      selectLiveRun: vi.fn(async () => true),
+      selectReplayRun: vi.fn(async () => true),
+      session,
+      setReplayCursor: vi.fn(),
+      setSelectedStageId: vi.fn(),
+      setSelectedTimelineId: vi.fn(),
+    }));
+
+    vi.spyOn(runApiModule, 'cancelRun').mockImplementation((runId: string) => {
+      if (runId === 'run-a') return cancelA.promise;
+      if (runId === 'run-b') return cancelB.promise;
+      throw new Error(`Unexpected runId: ${runId}`);
+    });
+
+    const view = render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^interrupt$/i })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /^interrupt$/i }));
+    expect(screen.getByRole('button', { name: /interrupting/i })).toBeDisabled();
+
+    session = {
+      ...sessionBase,
+      runId: 'run-b',
+      mode: 'live',
+      runDetail: {
+        runId: 'run-b',
+        problemId: 'b',
+        problem: { description: 'B', _metadata: { name: 'Run B' } },
+        config: {},
+        finalStatus: null,
+      },
+      events: [{ type: 'solve_start', problem_id: 'b', problem_name: 'Run B', seq: 0, ts: 1 }],
+    };
+    view.rerender(<App />);
+    await user.click(screen.getByRole('button', { name: /^interrupt$/i }));
+    expect(screen.getByRole('button', { name: /interrupting/i })).toBeDisabled();
+
+    cancelA.reject(new Error('cancel failed'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('button', { name: /interrupting/i })).toBeDisabled();
+
+    cancelB.resolve({ run_id: 'run-b', cancelled: true, final_status: 'cancelled' });
+  });
+
+  it('routes deleting the active replay run through dropRun', async () => {
+    const user = userEvent.setup();
+    const dropRun = vi.fn();
+
+    vi.spyOn(useRunSessionModule, 'useRunSession').mockImplementation(() => ({
+      clearSession: vi.fn(),
+      dropRun,
+      reconnect: vi.fn(async () => false),
+      restoreLatestRun: vi.fn(async () => false),
+      selectLiveRun: vi.fn(async () => true),
+      selectReplayRun: vi.fn(async () => true),
+      session: {
+        runId: 'run-delete',
+        mode: 'replay',
+        hydrationStatus: 'ready',
+        wsStatus: 'disconnected',
+        runDetail: {
+          runId: 'run-delete',
+          problemId: 'p1',
+          problem: { description: 'demo', _metadata: { name: 'Delete Run' } },
+          config: {},
+          finalStatus: 'success',
+        },
+        events: [
+          { type: 'solve_start', problem_id: 'p1', problem_name: 'Delete Run', seq: 0, ts: 1 },
+          { type: 'final', status: 'success', seq: 1, ts: 2 },
+        ],
+        shouldConnectLive: false,
+        selectedStageId: null,
+        selectedTimelineId: null,
+        replayCursor: 2,
+      },
+      setReplayCursor: vi.fn(),
+      setSelectedStageId: vi.fn(),
+      setSelectedTimelineId: vi.fn(),
+    }));
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/runs' && !init) {
+        return Promise.resolve(createResponse({
+          runs: [
+            {
+              run_id: 'run-delete',
+              problem_name: 'Delete Run',
+              problem_id: 'p1',
+              started_at: '2026-06-07T00:00:00Z',
+              status: 'completed',
+              final_status: 'success',
+              iterations: 1,
+              pass_rate: 1,
+            },
+          ],
+        }));
+      }
+      if (url === '/api/runs/run-delete' && init?.method === 'DELETE') {
+        return Promise.resolve(createResponse({ run_id: 'run-delete', deleted: true }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /^delete$/i }));
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }));
+
+    await waitFor(() => expect(dropRun).toHaveBeenCalledWith('run-delete'));
+  });
 });
