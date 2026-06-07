@@ -311,10 +311,10 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       const started = await onSubmit(problem, { max_iterations: maxIter });
       if (!started) {
         setErrorMessage('Solve did not start. Please try again.');
-        setManageLoadingId(null);
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to launch saved problem');
+    } finally {
       setManageLoadingId(null);
     }
   }, [loading, manageLoadingId, maxIter, onSubmit]);
@@ -387,10 +387,10 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       const started = await onSubmit(importedProblem as Record<string, unknown>, { max_iterations: maxIter });
       if (!started) {
         setErrorMessage('Solve did not start. Please try again.');
-        setCodeforcesImportId(null);
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to import Codeforces problem');
+    } finally {
       setCodeforcesImportId(null);
     }
   }, [codeforcesImportId, loadProblems, loading, manageLoadingId, maxIter, onSubmit]);
@@ -454,16 +454,15 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
           });
         }
       } else {
-        setLoading(false);
         return;
       }
       const started = await onSubmit(problem, { max_iterations: maxIter });
       if (!started) {
         setErrorMessage('Solve did not start. Please try again.');
-        setLoading(false);
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Solve launch failed');
+    } finally {
       setLoading(false);
     }
   };

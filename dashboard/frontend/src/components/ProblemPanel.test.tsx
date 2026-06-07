@@ -123,6 +123,80 @@ describe('ProblemPanel', () => {
     );
   });
 
+  it('re-enables Codeforces import after a successful solve start when the panel stays mounted', async () => {
+    const user = userEvent.setup();
+    const importedProblem = {
+      problem_id: 'codeforces_1575_C',
+      description: 'Cyclic Sum statement',
+      public_tests: [
+        { input: '1', output: '1' },
+      ],
+      _metadata: {
+        source: 'codeforces',
+        platform: 'codeforces',
+        question_id: 'codeforces_1575_C',
+        name: 'Cyclic Sum',
+      },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url === '/api/problems') {
+        return Promise.resolve(createResponse({
+          problems: [
+            { id: 'p1', name: 'Demo', source: 'sample', preview: 'demo preview', difficulty: 'easy' },
+          ],
+        }));
+      }
+
+      if (url.startsWith('/api/sources/codeforces/search?')) {
+        return Promise.resolve(createResponse({
+          results: [
+            {
+              contest_id: 1575,
+              index: 'C',
+              name: 'Cyclic Sum',
+              rating: 2100,
+              tags: ['math', 'dp'],
+              url: 'https://codeforces.com/contest/1575/problem/C',
+              problem_id: 'codeforces_1575_C',
+            },
+          ],
+          cache_status: 'ready',
+        }));
+      }
+
+      if (url === '/api/sources/codeforces/import' && init?.method === 'POST') {
+        return Promise.resolve(createResponse({
+          problem_id: 'codeforces_1575_C',
+          filename: 'codeforces_1575_C.json',
+          problem: importedProblem,
+        }));
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const submission = createDeferred<boolean>();
+    const onSubmit = vi.fn().mockReturnValue(submission.promise);
+    render(<ProblemPanel onSubmit={onSubmit} onClose={vi.fn()} />);
+
+    await user.click(await screen.findByRole('button', { name: /codeforces/i }));
+    await user.type(screen.getByRole('textbox', { name: /search codeforces/i }), '1575 C');
+    await user.click(screen.getByRole('button', { name: /^search$/i }));
+
+    const importButton = await screen.findByRole('button', { name: /import and solve/i });
+    await user.click(importButton);
+
+    await waitFor(() => expect(importButton).toBeDisabled());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    submission.resolve(true);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /import and solve/i })).not.toBeDisabled());
+  });
+
   it('re-enables Start Solve when onSubmit reports failure', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
