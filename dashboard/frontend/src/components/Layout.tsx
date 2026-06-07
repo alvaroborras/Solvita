@@ -68,6 +68,26 @@ export default function Layout({ header, main, sidebar, footer, showFooter = fal
           overflow-x: hidden;
           padding: 0 var(--space-xl) var(--space-2xl);
         }
+        .layout__sidebar--prominent-scrollbar {
+          scrollbar-gutter: stable;
+          scrollbar-width: auto;
+          scrollbar-color: rgba(157, 176, 199, 0.72) rgba(255, 255, 255, 0.06);
+        }
+        .layout__sidebar--prominent-scrollbar::-webkit-scrollbar {
+          width: 12px;
+        }
+        .layout__sidebar--prominent-scrollbar::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.04);
+          border-radius: 999px;
+        }
+        .layout__sidebar--prominent-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(157, 176, 199, 0.72);
+          border-radius: 999px;
+          border: 2px solid rgba(7, 16, 25, 0.35);
+        }
+        .layout__sidebar--prominent-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(238, 246, 255, 0.82);
+        }
         .layout__footer {
           grid-area: footer;
           border-top: 1px solid var(--color-border-subtle);

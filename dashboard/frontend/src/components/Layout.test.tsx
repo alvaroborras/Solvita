@@ -20,4 +20,24 @@ describe('Layout', () => {
 
     expect(sidebar).not.toBeNull();
   });
+
+  it('defines a visible native scrollbar contract for the right rail', () => {
+    const { container } = render(
+      <Layout
+        header={<div>Header</div>}
+        main={<div>Main</div>}
+        sidebar={<div>Sidebar</div>}
+        footer={<div>Footer</div>}
+      />,
+    );
+
+    const stylesheet = container.querySelector('style');
+
+    expect(stylesheet?.textContent).toContain('.layout__sidebar--prominent-scrollbar {');
+    expect(stylesheet?.textContent).toContain('scrollbar-gutter: stable');
+    expect(stylesheet?.textContent).toContain('scrollbar-width: auto');
+    expect(stylesheet?.textContent).toContain(
+      '.layout__sidebar--prominent-scrollbar::-webkit-scrollbar',
+    );
+  });
 });
