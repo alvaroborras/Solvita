@@ -91,7 +91,6 @@ class SolveProcess:
         async with self._finalize_lock:
             if self._finalized:
                 return False
-            self._finalized = True
 
             self.final_status = final_status
             self.status = "completed"
@@ -110,17 +109,18 @@ class SolveProcess:
                         completed_at=self.completed_at,
                     )
 
+                self._finalized = True
                 await self._broadcast_best_effort({
                     "seq": self._seq,
                     "timestamp": time.time(),
                     "event": {"type": "run_complete", "final_status": final_status},
                 })
+                if self._manager is not None:
+                    self._manager.release(self.run_id)
                 return True
             finally:
                 if self._tmp_file and self._tmp_file.exists():
                     self._tmp_file.unlink()
-                if self._manager is not None:
-                    self._manager.release(self.run_id)
 
     def _append_terminal_event(self, status: str) -> None:
         wrapped = {

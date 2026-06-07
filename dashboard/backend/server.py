@@ -306,7 +306,7 @@ async def cancel_run(run_id: str):
         raise HTTPException(status_code=409, detail="Run is not active") from exc
     return RunCancelResponse(
         run_id=run_id,
-        cancelled=True,
+        cancelled=final_status == "cancelled",
         final_status=final_status,
     )
 

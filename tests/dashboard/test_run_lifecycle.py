@@ -234,6 +234,54 @@ def test_cancel_run_waits_for_stream_drain_before_finalizing(monkeypatch, tmp_pa
     assert stored["events"][-1]["event"]["status"] == "cancelled"
 
 
+def test_cancel_run_reports_natural_completion_semantics(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        proc = server.process_manager.create_run(problem={"_metadata": {"name": "Demo"}}, config={})
+        proc.problem_id = "demo-problem"
+        proc._tmp_file = tmp_path / "cancel-natural-finish.json"
+        proc._tmp_file.write_text("{}", encoding="utf-8")
+        broadcaster = _BroadcastCollector()
+        release_event = asyncio.Event()
+        pausing_stdout = _PausingStdout(
+            [
+                b'{"type":"solve_start","problem_id":"demo-problem"}\n',
+                b'{"type":"final","status":"success","iterations":1,"pass_rate":1.0}\n',
+                b"",
+            ],
+            pause_before_read=1,
+            release_event=release_event,
+        )
+        proc._process = _FakeCancellableProcess([])
+        proc._process.stdout = pausing_stdout
+        proc._ws_manager = broadcaster
+        proc._event_store = server.event_store
+
+        stream_task = asyncio.create_task(proc._read_stream(broadcaster, server.event_store))
+        proc._stream_task = stream_task
+
+        await pausing_stdout.paused.wait()
+        cancel_task = asyncio.create_task(server.cancel_run(proc.run_id))
+        await asyncio.sleep(0)
+        release_event.set()
+
+        result = await cancel_task
+        await stream_task
+        stored = server.event_store.get_run(proc.run_id)
+        return proc, result, stored
+
+    proc, result, stored = asyncio.run(scenario())
+
+    assert result.run_id == proc.run_id
+    assert result.final_status == "success"
+    assert result.cancelled is False
+    assert stored is not None
+    assert stored["final_status"] == "success"
+    assert stored["events"][-1]["event"]["type"] == "final"
+    assert stored["events"][-1]["event"]["status"] == "success"
+
+
 def test_cancel_run_translates_runtime_race_to_conflict(monkeypatch, tmp_path):
     _configure_dashboard_runtime(monkeypatch, tmp_path)
 
@@ -265,5 +313,9 @@ def test_cancel_run_cleans_up_when_persist_fails(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="save failed"):
         asyncio.run(proc.cancel())
 
-    assert server.process_manager.get(proc.run_id) is None
+    retained = server.process_manager.get(proc.run_id)
+    assert retained is proc
+    assert proc.status == "completed"
+    assert proc.final_status == "cancelled"
+    assert proc.completed_at is not None
     assert proc._tmp_file.exists() is False
