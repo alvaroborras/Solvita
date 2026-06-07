@@ -59,6 +59,30 @@ def test_catalog_search_matches_by_contest_index_and_keyword(tmp_path: Path):
     assert [row["problem_id"] for row in by_name] == ["codeforces_1575_C"]
 
 
+def test_catalog_search_matches_problem_id_case_insensitively(tmp_path: Path):
+    cache_path = tmp_path / "cache.json"
+    catalog = CodeforcesCatalog(cache_path)
+    catalog.save_cache(
+        [
+            {
+                "contest_id": 1575,
+                "index": "C",
+                "name": "Cyclic Sum",
+                "rating": 2100,
+                "tags": ["math", "dp"],
+                "url": "https://codeforces.com/contest/1575/problem/C",
+                "problem_id": "codeforces_1575_C",
+            }
+        ]
+    )
+
+    by_problem_id_upper = catalog.search("codeforces_1575_C", limit=5)
+    by_problem_id_lower = catalog.search("codeforces_1575_c", limit=5)
+
+    assert [row["problem_id"] for row in by_problem_id_upper] == ["codeforces_1575_C"]
+    assert [row["problem_id"] for row in by_problem_id_lower] == ["codeforces_1575_C"]
+
+
 def test_server_search_codeforces_returns_cached_results(monkeypatch, tmp_path: Path):
     cache_path = tmp_path / "cache.json"
     catalog = CodeforcesCatalog(cache_path)

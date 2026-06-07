@@ -77,7 +77,7 @@ class CodeforcesCatalog:
         for row in rows:
             haystack = " ".join(
                 [
-                    row["problem_id"],
+                    row["problem_id"].lower(),
                     row["name"].lower(),
                     row["index"].lower(),
                     " ".join(tag.lower() for tag in row["tags"]),
