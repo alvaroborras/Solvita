@@ -487,6 +487,7 @@ describe('App integration', () => {
   it('interrupts a live run into cancelled replay and clears the session when that replay is deleted', async () => {
     const user = userEvent.setup();
     let runState: 'running' | 'cancelled' | 'deleted' = 'running';
+    const cancelDeferred = createDeferred<Response>();
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -508,8 +509,7 @@ describe('App integration', () => {
         return Promise.resolve(createResponse({ run_id: 'run-live', status: 'running' }));
       }
       if (url === '/api/runs/run-live/cancel' && init?.method === 'POST') {
-        runState = 'cancelled';
-        return Promise.resolve(createResponse({ run_id: 'run-live', cancelled: true, final_status: 'cancelled' }));
+        return cancelDeferred.promise;
       }
       if (url === '/api/runs/run-live' && init?.method === 'DELETE') {
         runState = 'deleted';
@@ -564,6 +564,17 @@ describe('App integration', () => {
     });
 
     await user.click(await screen.findByRole('button', { name: /^interrupt$/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/runs/run-live/cancel',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+
+    runState = 'cancelled';
+    await act(async () => {
+      cancelDeferred.resolve(createResponse({ run_id: 'run-live', cancelled: true, final_status: 'cancelled' }));
+      await Promise.resolve();
+    });
 
     act(() => {
       MockWebSocket.instances[0].emitMessage({ type: 'final', status: 'cancelled' });
