@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 import { deleteRun } from '../utils/runApi';
 
@@ -48,13 +48,19 @@ export default function RunList({
   const [filter, setFilter] = useState<RunFilter>('all');
   const [deleteTarget, setDeleteTarget] = useState<RunSummary | null>(null);
   const [deletePending, setDeletePending] = useState(false);
+  const deletedRunIdsRef = useRef<Set<string>>(new Set());
   const deferredQuery = useDeferredValue(query);
 
   useEffect(() => {
     const fetchRuns = () => {
       fetch('/api/runs')
         .then((r) => r.json())
-        .then((data) => setRuns(data.runs || []))
+        .then((data) => {
+          const nextRuns = (data.runs || []).filter(
+            (run: RunSummary) => !deletedRunIdsRef.current.has(run.run_id),
+          );
+          setRuns(nextRuns);
+        })
         .catch(() => {});
     };
     fetchRuns();
@@ -94,6 +100,7 @@ export default function RunList({
     setDeletePending(true);
     try {
       await deleteRun(deleteTarget.run_id);
+      deletedRunIdsRef.current.add(deleteTarget.run_id);
       setRuns((current) => current.filter((run) => run.run_id !== deleteTarget.run_id));
       onDeletedRun?.(deleteTarget.run_id);
       setDeleteTarget(null);

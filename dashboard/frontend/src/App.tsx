@@ -74,7 +74,7 @@ export default function App() {
   const [showProblemPanel, setShowProblemPanel] = useState(false);
   const [replayPlaying, setReplayPlaying] = useState(false);
   const [replaySpeed, setReplaySpeed] = useState(1);
-  const [interruptPending, setInterruptPending] = useState(false);
+  const [interruptPendingRunId, setInterruptPendingRunId] = useState<string | null>(null);
   const previousModeRef = useRef(session.mode);
   const previousRunIdRef = useRef(session.runId);
 
@@ -174,7 +174,7 @@ export default function App() {
 
   useEffect(() => {
     if (session.mode !== 'live') {
-      setInterruptPending(false);
+      setInterruptPendingRunId(null);
     }
   }, [session.mode]);
 
@@ -293,16 +293,17 @@ export default function App() {
   }, [selectLiveRun]);
 
   const handleInterruptRun = useCallback(async () => {
-    if (!session.runId || session.mode !== 'live' || interruptPending) {
+    if (!session.runId || session.mode !== 'live' || interruptPendingRunId === session.runId) {
       return;
     }
-    setInterruptPending(true);
+    const currentRunId = session.runId;
+    setInterruptPendingRunId(currentRunId);
     try {
-      await cancelRun(session.runId);
+      await cancelRun(currentRunId);
     } catch {
-      setInterruptPending(false);
+      setInterruptPendingRunId(null);
     }
-  }, [interruptPending, session.mode, session.runId]);
+  }, [interruptPendingRunId, session.mode, session.runId]);
 
   const handleDeletedRun = useCallback((runId: string) => {
     dropRun(runId);
@@ -320,7 +321,7 @@ export default function App() {
         wsStatus={session.wsStatus}
         hydrationStatus={session.hydrationStatus}
         canInterrupt={session.mode === 'live' && session.runId !== null}
-        interruptPending={interruptPending}
+        interruptPending={session.runId !== null && interruptPendingRunId === session.runId}
         onInterrupt={() => {
           void handleInterruptRun();
         }}
