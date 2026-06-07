@@ -121,6 +121,10 @@ def parse_codeforces_problem_html(
     if sample_tests_root is not None:
         inputs = sample_tests_root.select(".input pre")
         outputs = sample_tests_root.select(".output pre")
+        if len(inputs) != len(outputs):
+            raise ValueError(
+                f"Codeforces sample count mismatch: {len(inputs)} inputs, {len(outputs)} outputs"
+            )
         public_tests = [
             {
                 "input": _normalize_text(input_node.get_text()),

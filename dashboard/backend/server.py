@@ -180,9 +180,14 @@ def _resolve_codeforces_problem_key(req: CodeforcesImportRequest) -> tuple[int, 
         return int(req.contest_id), req.index.strip().upper()
 
     if req.url:
-        match = CODEFORCES_URL_RE.match(req.url.strip())
+        normalized_url = req.url.strip()
+        match = CODEFORCES_URL_RE.match(normalized_url)
         if match is not None:
             return int(match.group("contest_id")), match.group("index").upper()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported Codeforces problem URL: {normalized_url}",
+        )
 
     raise HTTPException(
         status_code=400,
@@ -233,8 +238,18 @@ async def search_codeforces(q: str, limit: int = 20):
 @app.post("/api/sources/codeforces/import", response_model=CodeforcesImportResponse)
 async def import_codeforces_problem(req: CodeforcesImportRequest):
     PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
+    contest_id, index = _resolve_codeforces_problem_key(req)
+    problem_id = f"codeforces_{contest_id}_{index}"
+    problem_path = PROBLEMS_DIR / f"{problem_id}.json"
+    if problem_path.exists():
+        payload = _load_problem_content(problem_path)
+        return CodeforcesImportResponse(
+            problem_id=problem_id,
+            filename=problem_path.name,
+            problem=payload,
+        )
+
     payload = import_codeforces_problem_payload(req)
-    problem_path = PROBLEMS_DIR / f"{payload['problem_id']}.json"
     problem_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return CodeforcesImportResponse(
         problem_id=payload["problem_id"],
