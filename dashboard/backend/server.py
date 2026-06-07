@@ -321,6 +321,9 @@ async def delete_run(run_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Run not found")
 
+    if proc is not None:
+        process_manager.release(run_id)
+
     return RunDeleteResponse(
         run_id=run_id,
         deleted=True,

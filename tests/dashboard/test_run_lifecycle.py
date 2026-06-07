@@ -369,3 +369,37 @@ def test_delete_run_removes_file_and_index_entry(monkeypatch, tmp_path):
     assert result.deleted is True
     assert server.event_store.get_run(run_id) is None
     assert all(entry["run_id"] != run_id for entry in server.event_store.list_runs())
+
+
+def test_delete_run_evicts_completed_in_memory_process(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    proc = server.process_manager.create_run(problem={"_metadata": {"name": "Demo"}}, config={})
+    proc.problem_id = "demo-problem"
+    proc.status = "completed"
+    proc.final_status = "success"
+    proc.completed_at = "2026-06-07T00:00:02Z"
+    proc.events = [
+        {"seq": 0, "timestamp": 1.0, "event": {"type": "solve_start", "problem_id": "demo-problem"}},
+        {"seq": 1, "timestamp": 2.0, "event": {"type": "final", "status": "success", "iterations": 1, "pass_rate": 1.0}},
+    ]
+
+    server.event_store.save_run(
+        run_id=proc.run_id,
+        problem_id=proc.problem_id,
+        problem=proc.problem,
+        config=proc.config,
+        events=proc.events,
+        started_at=proc.started_at,
+        final_status="success",
+        completed_at=proc.completed_at,
+    )
+
+    result = asyncio.run(server.delete_run(proc.run_id))
+
+    assert result.run_id == proc.run_id
+    assert result.deleted is True
+    assert server.process_manager.get(proc.run_id) is None
+    assert server.event_store.get_run(proc.run_id) is None
+    assert all(entry["run_id"] != proc.run_id for entry in server.event_store.list_runs())
+    assert asyncio.run(server.get_run(proc.run_id)) == {"error": "Run not found"}
