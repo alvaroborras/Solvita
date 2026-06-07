@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 try:
     from .config import (
+        CODEFORCES_CACHE_PATH,
         CORS_ORIGINS,
         CORS_ORIGIN_REGEX,
         DAG_DEFINITION_PATH,
@@ -20,8 +21,11 @@ try:
         PROBLEMS_DIR,
         PROJECT_ROOT,
     )
+    from .codeforces_catalog import CodeforcesCatalog
     from .event_store import EventStore
     from .models import (
+        CodeforcesSearchResponse,
+        CodeforcesSearchResult,
         CustomProblemDeleteResponse,
         CustomProblemRequest,
         CustomProblemResponse,
@@ -35,6 +39,7 @@ try:
     from .ws_manager import WebSocketManager
 except ImportError:
     from config import (
+        CODEFORCES_CACHE_PATH,
         CORS_ORIGINS,
         CORS_ORIGIN_REGEX,
         DAG_DEFINITION_PATH,
@@ -44,8 +49,11 @@ except ImportError:
         PROBLEMS_DIR,
         PROJECT_ROOT,
     )
+    from codeforces_catalog import CodeforcesCatalog
     from event_store import EventStore
     from models import (
+        CodeforcesSearchResponse,
+        CodeforcesSearchResult,
         CustomProblemDeleteResponse,
         CustomProblemRequest,
         CustomProblemResponse,
@@ -72,6 +80,14 @@ app.add_middleware(
 ws_manager = WebSocketManager()
 event_store = EventStore()
 process_manager = ProcessManager()
+_codeforces_catalog: CodeforcesCatalog | None = None
+
+
+def get_codeforces_catalog() -> CodeforcesCatalog:
+    global _codeforces_catalog
+    if _codeforces_catalog is None:
+        _codeforces_catalog = CodeforcesCatalog(CODEFORCES_CACHE_PATH)
+    return _codeforces_catalog
 
 
 def _slugify(value: str, fallback: str = "custom-problem") -> str:
@@ -145,6 +161,16 @@ def _build_custom_problem_payload(
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/sources/codeforces/search", response_model=CodeforcesSearchResponse)
+async def search_codeforces(q: str, limit: int = 20):
+    catalog = get_codeforces_catalog()
+    results = [
+        CodeforcesSearchResult(**row)
+        for row in catalog.search(q, limit=max(1, min(limit, 50)))
+    ]
+    return CodeforcesSearchResponse(results=results, cache_status="ready")
 
 
 @app.get("/api/dag")
