@@ -328,6 +328,51 @@ describe('useRunSession', () => {
     expect(window.localStorage.getItem('algopilot.dashboard.lastRun')).toBeNull();
   });
 
+  it('ignores an in-flight hydrate result after dropRun clears the matching session', async () => {
+    const pending = createDeferred<Response>();
+    const fetchImpl = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs/run-delete') {
+        return pending.promise;
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const { result } = renderHook(() => useRunSession({ fetchImpl, storage: window.localStorage }));
+
+    act(() => {
+      void result.current.selectReplayRun('run-delete');
+    });
+
+    await waitFor(() => expect(result.current.session.hydrationStatus).toBe('restoring'));
+
+    act(() => {
+      result.current.dropRun('run-delete');
+    });
+
+    expect(result.current.session.runId).toBeNull();
+    expect(window.localStorage.getItem('algopilot.dashboard.lastRun')).toBeNull();
+
+    await act(async () => {
+      pending.resolve(createResponse({
+        run_id: 'run-delete',
+        problem_id: 'p1',
+        problem: { description: 'demo' },
+        config: {},
+        final_status: 'success',
+        events: [
+          { event: { type: 'solve_start', problem_id: 'p1' }, seq: 0, timestamp: 1 },
+          { event: { type: 'final', status: 'success' }, seq: 1, timestamp: 2 },
+        ],
+      }));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.session.runId).toBeNull());
+    expect(result.current.session.mode).toBe('idle');
+    expect(result.current.session.hydrationStatus).toBe('idle');
+  });
+
   it('ignores a slower older hydration response after a newer run selection resolves first', async () => {
     const pendingRunA = createDeferred<Response>();
     const pendingRunB = createDeferred<Response>();

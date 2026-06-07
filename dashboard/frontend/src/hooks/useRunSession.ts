@@ -411,6 +411,7 @@ export function useRunSession({
   }, [hydrateRun, storage]);
 
   const clearSession = useCallback(() => {
+    hydrateGenerationRef.current += 1;
     clearPersistedRunSession(storage);
     setSocketEnabled(false);
     setSessionState(createInitialRunSessionState());
@@ -421,6 +422,7 @@ export function useRunSession({
     if (current.runId !== runId) {
       return;
     }
+    hydrateGenerationRef.current += 1;
     clearPersistedRunSession(storage);
     setSocketEnabled(false);
     setSessionState(createInitialRunSessionState());

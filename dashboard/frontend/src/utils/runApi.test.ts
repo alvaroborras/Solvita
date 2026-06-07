@@ -91,6 +91,19 @@ describe('cancelRun', () => {
     expect(payload.run_id).toBe('run-live');
     expect(payload.final_status).toBe('cancelled');
   });
+
+  it('throws the backend message when cancelRun fails', async () => {
+    await expect(
+      cancelRun(
+        'run-live',
+        async () => ({
+          ok: false,
+          status: 404,
+          json: async () => ({ detail: 'Run not found' }),
+        }) as Response,
+      ),
+    ).rejects.toThrow('Run not found');
+  });
 });
 
 describe('deleteRun', () => {
@@ -106,5 +119,18 @@ describe('deleteRun', () => {
 
     expect(payload.run_id).toBe('run-done');
     expect(payload.deleted).toBe(true);
+  });
+
+  it('throws the backend message when deleteRun fails', async () => {
+    await expect(
+      deleteRun(
+        'run-live',
+        async () => ({
+          ok: false,
+          status: 409,
+          json: async () => ({ detail: 'Cannot delete a running run' }),
+        }) as Response,
+      ),
+    ).rejects.toThrow('Cannot delete a running run');
   });
 });
