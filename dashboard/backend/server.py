@@ -289,7 +289,7 @@ async def get_run(run_id: str):
             "final_status": proc.final_status or proc.status,
             "events": proc.events,
         }
-    return {"error": "Run not found"}
+    raise HTTPException(status_code=404, detail="Run not found")
 
 
 @app.post("/api/runs/{run_id}/cancel", response_model=RunCancelResponse)
@@ -319,6 +319,8 @@ async def delete_run(run_id: str):
 
     deleted = event_store.delete_run(run_id)
     if not deleted:
+        if proc is not None:
+            process_manager.release(run_id)
         raise HTTPException(status_code=404, detail="Run not found")
 
     if proc is not None:

@@ -77,6 +77,8 @@ export default function App() {
   const [interruptPendingRunId, setInterruptPendingRunId] = useState<string | null>(null);
   const previousModeRef = useRef(session.mode);
   const previousRunIdRef = useRef(session.runId);
+  const sessionStateRef = useRef(session);
+  sessionStateRef.current = session;
 
   const displayEvents = useMemo(
     () => (session.mode === 'replay' ? session.events.slice(0, session.replayCursor) : session.events),
@@ -300,10 +302,16 @@ export default function App() {
     setInterruptPendingRunId(currentRunId);
     try {
       await cancelRun(currentRunId);
+      const latestSession = sessionStateRef.current;
+      if (latestSession.runId === currentRunId && latestSession.mode === 'live') {
+        await selectReplayRun(currentRunId);
+      } else {
+        setInterruptPendingRunId((pending) => (pending === currentRunId ? null : pending));
+      }
     } catch {
       setInterruptPendingRunId((pending) => (pending === currentRunId ? null : pending));
     }
-  }, [interruptPendingRunId, session.mode, session.runId]);
+  }, [interruptPendingRunId, selectReplayRun, session.mode, session.runId]);
 
   const handleDeletedRun = useCallback((runId: string) => {
     dropRun(runId);

@@ -20,6 +20,10 @@ except ImportError:
     from ws_manager import WebSocketManager
 
 
+CANCEL_PROCESS_WAIT_TIMEOUT_SECONDS = 5.0
+CANCEL_STREAM_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
 class SolveProcess:
     """Manages a single main.py subprocess with --stream-events."""
 
@@ -142,6 +146,31 @@ class SolveProcess:
         except Exception:
             pass
 
+    async def _wait_for_process_exit(self) -> None:
+        if self._process is None or self._process.returncode is not None:
+            return
+        self._process.terminate()
+        try:
+            await asyncio.wait_for(self._process.wait(), timeout=CANCEL_PROCESS_WAIT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            kill = getattr(self._process, "kill", None)
+            if not callable(kill):
+                raise
+            kill()
+            await asyncio.wait_for(self._process.wait(), timeout=CANCEL_PROCESS_WAIT_TIMEOUT_SECONDS)
+
+    async def _wait_for_stream_drain(self) -> None:
+        if self._stream_task is None or self._stream_task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(self._stream_task), timeout=CANCEL_STREAM_DRAIN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            self._stream_task.cancel()
+            try:
+                await self._stream_task
+            except asyncio.CancelledError:
+                pass
+
     async def _read_stream(self, ws_manager: WebSocketManager, event_store: EventStore) -> None:
         self._ws_manager = ws_manager
         self._event_store = event_store
@@ -179,7 +208,7 @@ class SolveProcess:
         await self._finalize_once(final_status)
 
     async def _handle_line(self, line: str, ws_manager: WebSocketManager) -> None:
-        if self._finalized or self._cancellation_requested:
+        if self._finalized:
             return
         line = line.strip()
         if not line:
@@ -187,6 +216,11 @@ class SolveProcess:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            return
+
+        # Preserve already-read non-terminal events during cancel drain, but do not let
+        # a buffered final event override the accepted cancelled terminal state.
+        if self._cancellation_requested and event.get("type") == "final":
             return
 
         if event.get("type") == "solve_start":
@@ -207,12 +241,8 @@ class SolveProcess:
 
         self._cancellation_requested = True
 
-        if self._process and self._process.returncode is None:
-            self._process.terminate()
-            await self._process.wait()
-
-        if self._stream_task is not None and not self._stream_task.done():
-            await self._stream_task
+        await self._wait_for_process_exit()
+        await self._wait_for_stream_drain()
 
         has_cancelled_final = any(
             (entry.get("event", entry)).get("type") == "final"

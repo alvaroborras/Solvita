@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +21,7 @@ vi.mock('./components/StageDetailPanel', () => ({ default: () => <div data-testi
 
 import App from './App';
 import * as useRunSessionModule from './hooks/useRunSession';
+import type { RunSessionState } from './state/runSessionReducer';
 import * as runApiModule from './utils/runApi';
 
 class MockWebSocket {
@@ -277,7 +278,7 @@ describe('App integration', () => {
       selectedTimelineId: null,
       replayCursor: 1,
     };
-    let session = {
+    let session: RunSessionState = {
       ...sessionBase,
       runId: 'run-a',
       mode: 'live' as const,
@@ -345,7 +346,7 @@ describe('App integration', () => {
       selectedTimelineId: null,
       replayCursor: 1,
     };
-    let session = {
+    let session: RunSessionState = {
       ...sessionBase,
       runId: 'run-a',
       mode: 'live' as const,
@@ -556,7 +557,8 @@ describe('App integration', () => {
     render(<App />);
 
     await user.click(screen.getByRole('button', { name: /start solve/i }));
-    await user.click((await screen.findAllByRole('button', { name: /^start solve$/i })).at(-1)!);
+    const startSolveButtons = await screen.findAllByRole('button', { name: /^start solve$/i });
+    await user.click(startSolveButtons[startSolveButtons.length - 1]);
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
 
     act(() => {
@@ -574,10 +576,6 @@ describe('App integration', () => {
     await act(async () => {
       cancelDeferred.resolve(createResponse({ run_id: 'run-live', cancelled: true, final_status: 'cancelled' }));
       await Promise.resolve();
-    });
-
-    act(() => {
-      MockWebSocket.instances[0].emitMessage({ type: 'final', status: 'cancelled' });
     });
 
     await waitFor(() => expect(screen.getAllByText(/replay/i).length).toBeGreaterThan(0));

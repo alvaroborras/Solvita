@@ -57,6 +57,30 @@ class _FakeCancellableProcess:
         self.terminated = True
         self.returncode = -15
 
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+class _StubbornProcess:
+    def __init__(self) -> None:
+        self.stdout = _FakeStdout([])
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+
+    async def wait(self) -> int:
+        if self.killed:
+            self.returncode = -9
+            return self.returncode
+        await asyncio.sleep(3600)
+        return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
 
 class _PausingStdout:
     def __init__(self, chunks: list[bytes], pause_before_read: int, release_event: asyncio.Event) -> None:
@@ -230,8 +254,65 @@ def test_cancel_run_waits_for_stream_drain_before_finalizing(monkeypatch, tmp_pa
     assert run_complete_indexes == [len(messages) - 1]
     assert stored is not None
     assert stored["final_status"] == "cancelled"
+    assert any(
+        (entry.get("event", entry)).get("type") == "progress"
+        for entry in stored["events"]
+    )
     assert stored["events"][-1]["event"]["type"] == "final"
     assert stored["events"][-1]["event"]["status"] == "cancelled"
+
+
+def test_cancel_run_kills_stubborn_process_after_timeout(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr("dashboard.backend.process_runner.CANCEL_PROCESS_WAIT_TIMEOUT_SECONDS", 0.01, raising=False)
+
+    async def scenario():
+        proc = server.process_manager.create_run(problem={"_metadata": {"name": "Demo"}}, config={})
+        proc.problem_id = "demo-problem"
+        proc._process = _StubbornProcess()
+        proc._tmp_file = tmp_path / "cancel-stubborn-input.json"
+        proc._tmp_file.write_text("{}", encoding="utf-8")
+        proc._ws_manager = _BroadcastCollector()
+        proc._event_store = server.event_store
+
+        final_status = await asyncio.wait_for(proc.cancel(), timeout=0.5)
+        stored = server.event_store.get_run(proc.run_id)
+        return proc, final_status, stored
+
+    proc, final_status, stored = asyncio.run(scenario())
+
+    assert final_status == "cancelled"
+    assert proc._process.terminated is True
+    assert proc._process.killed is True
+    assert stored is not None
+    assert stored["final_status"] == "cancelled"
+
+
+def test_cancel_run_cancels_hung_stream_task_after_timeout(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr("dashboard.backend.process_runner.CANCEL_STREAM_DRAIN_TIMEOUT_SECONDS", 0.01, raising=False)
+
+    async def scenario():
+        proc = server.process_manager.create_run(problem={"_metadata": {"name": "Demo"}}, config={})
+        proc.problem_id = "demo-problem"
+        proc._process = _FakeCancellableProcess([])
+        proc._tmp_file = tmp_path / "cancel-hung-stream.json"
+        proc._tmp_file.write_text("{}", encoding="utf-8")
+        proc._ws_manager = _BroadcastCollector()
+        proc._event_store = server.event_store
+        proc._stream_task = asyncio.create_task(asyncio.sleep(3600))
+
+        final_status = await asyncio.wait_for(proc.cancel(), timeout=0.5)
+        stored = server.event_store.get_run(proc.run_id)
+        return proc, final_status, stored
+
+    proc, final_status, stored = asyncio.run(scenario())
+
+    assert final_status == "cancelled"
+    assert proc._stream_task is not None
+    assert proc._stream_task.done()
+    assert stored is not None
+    assert stored["final_status"] == "cancelled"
 
 
 def test_cancel_run_wins_over_buffered_natural_final(monkeypatch, tmp_path):
@@ -345,6 +426,23 @@ def test_delete_run_rejects_missing_persisted_run(monkeypatch, tmp_path):
     assert exc.value.detail == "Run not found"
 
 
+def test_delete_run_releases_completed_in_memory_process_without_persisted_record(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    proc = server.process_manager.create_run(problem={"_metadata": {"name": "Ghost"}}, config={})
+    proc.problem_id = "ghost-problem"
+    proc.status = "completed"
+    proc.final_status = "cancelled"
+    proc.completed_at = "2026-06-07T00:00:02Z"
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.delete_run(proc.run_id))
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Run not found"
+    assert server.process_manager.get(proc.run_id) is None
+
+
 def test_delete_run_removes_file_and_index_entry(monkeypatch, tmp_path):
     _configure_dashboard_runtime(monkeypatch, tmp_path)
 
@@ -402,4 +500,17 @@ def test_delete_run_evicts_completed_in_memory_process(monkeypatch, tmp_path):
     assert server.process_manager.get(proc.run_id) is None
     assert server.event_store.get_run(proc.run_id) is None
     assert all(entry["run_id"] != proc.run_id for entry in server.event_store.list_runs())
-    assert asyncio.run(server.get_run(proc.run_id)) == {"error": "Run not found"}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.get_run(proc.run_id))
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Run not found"
+
+
+def test_get_run_returns_404_for_missing_run(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.get_run("missing-run"))
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Run not found"
