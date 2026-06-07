@@ -25,7 +25,10 @@ def test_parse_codeforces_problem_html_and_build_payload():
         parse_codeforces_problem_html,
     )
 
-    parsed = parse_codeforces_problem_html(_fixture_html(), 1575, "C")
+    html = _fixture_html()
+    assert "<br" in html
+
+    parsed = parse_codeforces_problem_html(html, 1575, "C")
 
     assert parsed["title"] == "C. Cyclic Sum"
     assert parsed["name"] == "Cyclic Sum"

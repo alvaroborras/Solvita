@@ -44,6 +44,10 @@ def _extract_statement_text(problem_statement: Tag) -> str:
     return "\n\n".join(parts)
 
 
+def _extract_sample_text(pre_node: Tag) -> str:
+    return _normalize_text(pre_node.get_text("\n"))
+
+
 def _parse_time_limit_ms(value: str) -> int | None:
     match = re.search(
         r"(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s)\b",
@@ -127,8 +131,8 @@ def parse_codeforces_problem_html(
             )
         public_tests = [
             {
-                "input": _normalize_text(input_node.get_text()),
-                "output": _normalize_text(output_node.get_text()),
+                "input": _extract_sample_text(input_node),
+                "output": _extract_sample_text(output_node),
             }
             for input_node, output_node in zip(inputs, outputs)
         ]
