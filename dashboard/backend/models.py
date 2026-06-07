@@ -97,10 +97,6 @@ class CodeforcesImportRequest(BaseModel):
     index: str | None = None
     url: str | None = None
 
-    @property
-    def uses_key(self) -> bool:
-        return self.contest_id is not None and bool(self.index)
-
 
 class CodeforcesImportResponse(BaseModel):
     problem_id: str
