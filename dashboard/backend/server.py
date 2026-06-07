@@ -22,8 +22,15 @@ try:
         PROJECT_ROOT,
     )
     from .codeforces_catalog import CodeforcesCatalog
+    from .codeforces_import import (
+        build_problem_payload,
+        fetch_problem_html,
+        parse_codeforces_problem_html,
+    )
     from .event_store import EventStore
     from .models import (
+        CodeforcesImportRequest,
+        CodeforcesImportResponse,
         CodeforcesSearchResponse,
         CodeforcesSearchResult,
         CustomProblemDeleteResponse,
@@ -50,8 +57,15 @@ except ImportError:
         PROJECT_ROOT,
     )
     from codeforces_catalog import CodeforcesCatalog
+    from codeforces_import import (
+        build_problem_payload,
+        fetch_problem_html,
+        parse_codeforces_problem_html,
+    )
     from event_store import EventStore
     from models import (
+        CodeforcesImportRequest,
+        CodeforcesImportResponse,
         CodeforcesSearchResponse,
         CodeforcesSearchResult,
         CustomProblemDeleteResponse,
@@ -81,6 +95,9 @@ ws_manager = WebSocketManager()
 event_store = EventStore()
 process_manager = ProcessManager()
 _codeforces_catalog: CodeforcesCatalog | None = None
+CODEFORCES_URL_RE = re.compile(
+    r"^https?://(?:www\.)?codeforces\.com/contest/(?P<contest_id>\d+)/problem/(?P<index>[A-Za-z0-9]+)$"
+)
 
 
 def get_codeforces_catalog() -> CodeforcesCatalog:
@@ -158,6 +175,46 @@ def _build_custom_problem_payload(
     return stem, payload
 
 
+def _resolve_codeforces_problem_key(req: CodeforcesImportRequest) -> tuple[int, str]:
+    if req.contest_id is not None and req.index:
+        return int(req.contest_id), req.index.strip().upper()
+
+    if req.url:
+        match = CODEFORCES_URL_RE.match(req.url.strip())
+        if match is not None:
+            return int(match.group("contest_id")), match.group("index").upper()
+
+    raise HTTPException(
+        status_code=400,
+        detail="Provide contest_id and index, or a valid Codeforces problem URL",
+    )
+
+
+def import_codeforces_problem_payload(req: CodeforcesImportRequest) -> dict:
+    contest_id, index = _resolve_codeforces_problem_key(req)
+    rating = None
+    tags: list[str] = []
+
+    try:
+        catalog_rows = get_codeforces_catalog().search(f"{contest_id} {index}", limit=1)
+    except Exception:
+        catalog_rows = []
+
+    if catalog_rows:
+        rating = catalog_rows[0].get("rating")
+        tags = list(catalog_rows[0].get("tags", []))
+
+    try:
+        html = fetch_problem_html(contest_id, index)
+        parsed = parse_codeforces_problem_html(html, contest_id, index)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Failed to fetch Codeforces problem") from exc
+
+    return build_problem_payload(parsed, contest_id, index, rating, tags)
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
@@ -171,6 +228,19 @@ async def search_codeforces(q: str, limit: int = 20):
         for row in catalog.search(q, limit=max(1, min(limit, 50)))
     ]
     return CodeforcesSearchResponse(results=results, cache_status="ready")
+
+
+@app.post("/api/sources/codeforces/import", response_model=CodeforcesImportResponse)
+async def import_codeforces_problem(req: CodeforcesImportRequest):
+    PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
+    payload = import_codeforces_problem_payload(req)
+    problem_path = PROBLEMS_DIR / f"{payload['problem_id']}.json"
+    problem_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return CodeforcesImportResponse(
+        problem_id=payload["problem_id"],
+        filename=problem_path.name,
+        problem=payload,
+    )
 
 
 @app.get("/api/dag")
