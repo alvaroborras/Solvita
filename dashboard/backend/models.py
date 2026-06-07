@@ -75,3 +75,34 @@ class CustomProblemResponse(BaseModel):
 class CustomProblemDeleteResponse(BaseModel):
     deleted: bool
     filename: str
+
+
+class CodeforcesSearchResult(BaseModel):
+    contest_id: int
+    index: str
+    name: str
+    rating: int | None = None
+    tags: list[str] = Field(default_factory=list)
+    url: str
+    problem_id: str
+
+
+class CodeforcesSearchResponse(BaseModel):
+    results: list[CodeforcesSearchResult] = Field(default_factory=list)
+    cache_status: str
+
+
+class CodeforcesImportRequest(BaseModel):
+    contest_id: int | None = None
+    index: str | None = None
+    url: str | None = None
+
+    @property
+    def uses_key(self) -> bool:
+        return self.contest_id is not None and bool(self.index)
+
+
+class CodeforcesImportResponse(BaseModel):
+    problem_id: str
+    filename: str
+    problem: dict[str, Any]
