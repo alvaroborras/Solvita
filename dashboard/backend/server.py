@@ -313,8 +313,18 @@ async def cancel_run(run_id: str):
 
 @app.delete("/api/runs/{run_id}", response_model=RunDeleteResponse)
 async def delete_run(run_id: str):
+    proc = process_manager.get(run_id)
+    if proc is not None and proc.status == "running":
+        raise HTTPException(status_code=409, detail="Cannot delete a running run")
+
     deleted = event_store.delete_run(run_id)
-    return RunDeleteResponse(run_id=run_id, deleted=deleted)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    return RunDeleteResponse(
+        run_id=run_id,
+        deleted=True,
+    )
 
 
 @app.websocket("/ws/live/{run_id}")

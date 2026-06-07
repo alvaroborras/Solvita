@@ -321,3 +321,51 @@ def test_cancel_run_cleans_up_when_persist_fails(monkeypatch, tmp_path):
     assert proc.final_status == "cancelled"
     assert proc.completed_at is not None
     assert proc._tmp_file.exists() is False
+
+
+def test_delete_run_rejects_active_process(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    proc = server.process_manager.create_run(problem={"_metadata": {"name": "Live"}}, config={})
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.delete_run(proc.run_id))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "Cannot delete a running run"
+
+
+def test_delete_run_rejects_missing_persisted_run(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.delete_run("missing-run"))
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Run not found"
+
+
+def test_delete_run_removes_file_and_index_entry(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    run_id = "done-run"
+    server.event_store.save_run(
+        run_id=run_id,
+        problem_id="demo-problem",
+        problem={"_metadata": {"name": "Demo"}},
+        config={},
+        events=[
+            {"seq": 0, "timestamp": 1.0, "event": {"type": "solve_start", "problem_id": "demo-problem"}},
+            {"seq": 1, "timestamp": 2.0, "event": {"type": "final", "status": "success", "iterations": 1, "pass_rate": 1.0}},
+        ],
+        started_at="2026-06-07T00:00:00Z",
+        final_status="success",
+        completed_at="2026-06-07T00:00:02Z",
+    )
+
+    result = asyncio.run(server.delete_run(run_id))
+
+    assert result.run_id == run_id
+    assert result.deleted is True
+    assert server.event_store.get_run(run_id) is None
+    assert all(entry["run_id"] != run_id for entry in server.event_store.list_runs())
