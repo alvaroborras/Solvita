@@ -300,7 +300,10 @@ async def cancel_run(run_id: str):
     if proc.status != "running":
         raise HTTPException(status_code=409, detail="Run is not active")
 
-    final_status = await proc.cancel()
+    try:
+        final_status = await proc.cancel()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail="Run is not active") from exc
     return RunCancelResponse(
         run_id=run_id,
         cancelled=True,

@@ -19,6 +19,11 @@ class _BroadcastCollector:
         self.messages.append((run_id, message))
 
 
+class _FailingBroadcastCollector:
+    async def broadcast(self, run_id: str, message: dict) -> None:
+        raise RuntimeError("broadcast failed")
+
+
 class _FakeStdout:
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = list(chunks)
@@ -51,6 +56,32 @@ class _FakeCancellableProcess:
     def terminate(self) -> None:
         self.terminated = True
         self.returncode = -15
+
+
+class _PausingStdout:
+    def __init__(self, chunks: list[bytes], pause_before_read: int, release_event: asyncio.Event) -> None:
+        self._chunks = list(chunks)
+        self._pause_before_read = pause_before_read
+        self._release_event = release_event
+        self.paused = asyncio.Event()
+        self._reads = 0
+
+    async def read(self, _size: int) -> bytes:
+        if self._reads == self._pause_before_read:
+            self.paused.set()
+            await self._release_event.wait()
+        self._reads += 1
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _FailingEventStore:
+    def get_run(self, _run_id: str):
+        return None
+
+    def save_run(self, **_kwargs) -> None:
+        raise RuntimeError("save failed")
 
 
 def _configure_dashboard_runtime(monkeypatch, data_dir: Path) -> None:
@@ -153,3 +184,86 @@ def test_cancel_run_rejects_non_running_process(monkeypatch, tmp_path):
 
     assert exc.value.status_code == 409
     assert exc.value.detail == "Run is not active"
+
+
+def test_cancel_run_waits_for_stream_drain_before_finalizing(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    async def scenario() -> tuple[str, list[dict], dict | None]:
+        proc = server.process_manager.create_run(problem={"_metadata": {"name": "Demo"}}, config={})
+        proc.problem_id = "demo-problem"
+        proc._tmp_file = tmp_path / "cancel-race-input.json"
+        proc._tmp_file.write_text("{}", encoding="utf-8")
+        broadcaster = _BroadcastCollector()
+        release_event = asyncio.Event()
+        pausing_stdout = _PausingStdout(
+            [
+                b'{"type":"solve_start","problem_id":"demo-problem"}\n',
+                b'{"type":"progress","step":"buffered"}\n',
+                b"",
+            ],
+            pause_before_read=1,
+            release_event=release_event,
+        )
+        proc._process = _FakeCancellableProcess([])
+        proc._process.stdout = pausing_stdout
+        proc._ws_manager = broadcaster
+        proc._event_store = server.event_store
+
+        stream_task = asyncio.create_task(proc._read_stream(broadcaster, server.event_store))
+        proc._stream_task = stream_task
+
+        await pausing_stdout.paused.wait()
+        cancel_task = asyncio.create_task(proc.cancel())
+        await asyncio.sleep(0)
+        release_event.set()
+
+        final_status = await cancel_task
+        await stream_task
+        stored = server.event_store.get_run(proc.run_id)
+        return final_status, [message for _, message in broadcaster.messages], stored
+
+    final_status, messages, stored = asyncio.run(scenario())
+
+    assert final_status == "cancelled"
+    run_complete_indexes = [idx for idx, message in enumerate(messages) if message["event"]["type"] == "run_complete"]
+    assert run_complete_indexes == [len(messages) - 1]
+    assert stored is not None
+    assert stored["final_status"] == "cancelled"
+    assert stored["events"][-1]["event"]["type"] == "final"
+    assert stored["events"][-1]["event"]["status"] == "cancelled"
+
+
+def test_cancel_run_translates_runtime_race_to_conflict(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    proc = server.process_manager.create_run(problem={"_metadata": {"name": "Race"}}, config={})
+
+    async def _raise_runtime_error() -> str:
+        raise RuntimeError("Run is not active")
+
+    monkeypatch.setattr(proc, "cancel", _raise_runtime_error)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.cancel_run(proc.run_id))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "Run is not active"
+
+
+def test_cancel_run_cleans_up_when_persist_fails(monkeypatch, tmp_path):
+    _configure_dashboard_runtime(monkeypatch, tmp_path)
+
+    proc = server.process_manager.create_run(problem={"_metadata": {"name": "Demo"}}, config={})
+    proc.problem_id = "demo-problem"
+    proc._process = _FakeCancellableProcess([])
+    proc._tmp_file = tmp_path / "cancel-fail-input.json"
+    proc._tmp_file.write_text("{}", encoding="utf-8")
+    proc._ws_manager = _BroadcastCollector()
+    proc._event_store = _FailingEventStore()
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        asyncio.run(proc.cancel())
+
+    assert server.process_manager.get(proc.run_id) is None
+    assert proc._tmp_file.exists() is False

@@ -47,6 +47,8 @@ class SolveProcess:
         self._event_store: EventStore | None = None
         self._finalized = False
         self._finalize_lock = asyncio.Lock()
+        self._stream_task: asyncio.Task[None] | None = None
+        self._cancellation_requested = False
 
     async def start(self, ws_manager: WebSocketManager, event_store: EventStore) -> None:
         self._ws_manager = ws_manager
@@ -75,7 +77,15 @@ class SolveProcess:
         )
 
         asyncio.create_task(self._drain_stderr())
-        asyncio.create_task(self._read_stream(ws_manager, event_store))
+        self._stream_task = asyncio.create_task(self._read_stream(ws_manager, event_store))
+
+    async def _broadcast_best_effort(self, message: dict[str, Any]) -> None:
+        if self._ws_manager is None:
+            return
+        try:
+            await self._ws_manager.broadcast(self.run_id, message)
+        except Exception:
+            pass
 
     async def _finalize_once(self, final_status: str | None) -> bool:
         async with self._finalize_lock:
@@ -87,30 +97,30 @@ class SolveProcess:
             self.status = "completed"
             self.completed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
-            if self._event_store is not None:
-                self._event_store.save_run(
-                    run_id=self.run_id,
-                    problem_id=self.problem_id,
-                    problem=self.problem,
-                    config=self.config,
-                    events=self.events,
-                    started_at=self.started_at,
-                    final_status=final_status,
-                    completed_at=self.completed_at,
-                )
+            try:
+                if self._event_store is not None:
+                    self._event_store.save_run(
+                        run_id=self.run_id,
+                        problem_id=self.problem_id,
+                        problem=self.problem,
+                        config=self.config,
+                        events=self.events,
+                        started_at=self.started_at,
+                        final_status=final_status,
+                        completed_at=self.completed_at,
+                    )
 
-            if self._ws_manager is not None:
-                await self._ws_manager.broadcast(self.run_id, {
+                await self._broadcast_best_effort({
                     "seq": self._seq,
                     "timestamp": time.time(),
                     "event": {"type": "run_complete", "final_status": final_status},
                 })
-
-            if self._tmp_file and self._tmp_file.exists():
-                self._tmp_file.unlink()
-            if self._manager is not None:
-                self._manager.release(self.run_id)
-            return True
+                return True
+            finally:
+                if self._tmp_file and self._tmp_file.exists():
+                    self._tmp_file.unlink()
+                if self._manager is not None:
+                    self._manager.release(self.run_id)
 
     def _append_terminal_event(self, status: str) -> None:
         wrapped = {
@@ -135,6 +145,10 @@ class SolveProcess:
     async def _read_stream(self, ws_manager: WebSocketManager, event_store: EventStore) -> None:
         self._ws_manager = ws_manager
         self._event_store = event_store
+        if self._stream_task is None:
+            current = asyncio.current_task()
+            if current is not None:
+                self._stream_task = current
         assert self._process and self._process.stdout
         buffer = b""
         try:
@@ -160,9 +174,13 @@ class SolveProcess:
                 final_status = ev.get("status")
                 break
 
+        if self._cancellation_requested:
+            return
         await self._finalize_once(final_status)
 
     async def _handle_line(self, line: str, ws_manager: WebSocketManager) -> None:
+        if self._finalized:
+            return
         line = line.strip()
         if not line:
             return
@@ -187,21 +205,29 @@ class SolveProcess:
         if self.status != "running":
             raise RuntimeError("Run is not active")
 
+        self._cancellation_requested = True
+
         if self._process and self._process.returncode is None:
             self._process.terminate()
             await self._process.wait()
 
-        has_final = any(
-            (entry.get("event", entry)).get("type") == "final"
-            for entry in self.events
-        )
-        if not has_final:
-            self._append_terminal_event("cancelled")
-            if self._ws_manager is not None:
-                await self._ws_manager.broadcast(self.run_id, self.events[-1])
+        if self._stream_task is not None and not self._stream_task.done():
+            await self._stream_task
 
-        await self._finalize_once("cancelled")
-        return "cancelled"
+        final_status = None
+        for entry in reversed(self.events):
+            event = entry.get("event", entry)
+            if event.get("type") == "final":
+                final_status = event.get("status")
+                break
+
+        if final_status is None:
+            self._append_terminal_event("cancelled")
+            final_status = "cancelled"
+            await self._broadcast_best_effort(self.events[-1])
+
+        await self._finalize_once(final_status)
+        return final_status
 
 
 class ProcessManager:
