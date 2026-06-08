@@ -444,11 +444,13 @@ export default function App() {
 
       <FailureAnalysisCard analysis={failureAnalysis} />
 
-      <AlgorithmStoryCard
-        story={displayArtifacts.finalArtifact?.algorithmVisualization || null}
-        mode={session.mode}
-        revision={displayArtifacts.finalArtifact?.solution.version || 0}
-      />
+      {(finalStatus === null || finalStatus === 'success') && (
+        <AlgorithmStoryCard
+          story={displayArtifacts.finalArtifact?.algorithmVisualization || null}
+          mode={session.mode}
+          revision={displayArtifacts.finalArtifact?.solution.version || 0}
+        />
+      )}
 
       <SolveTimeline
         entries={canonicalJourney.timeline}

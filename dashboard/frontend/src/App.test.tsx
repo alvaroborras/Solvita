@@ -267,6 +267,105 @@ describe('App integration', () => {
     await waitFor(() => expect(screen.getAllByText(/compile the draft/i).length).toBeGreaterThan(0));
   });
 
+  it('hides the algorithm story card after a non-success completed run', async () => {
+    const user = userEvent.setup();
+    let runFailed = false;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url === '/api/problems') {
+        return Promise.resolve(createResponse({
+          problems: [
+            {
+              id: 'p1',
+              name: 'Pair Sum',
+              source: 'showcase',
+              preview: 'Find two numbers that sum to target.',
+              difficulty: 'easy',
+              is_showcase: true,
+            },
+          ],
+        }));
+      }
+
+      if (url === '/api/problems/p1') {
+        return Promise.resolve(createResponse({
+          problem_id: 'p1',
+          description: 'Find two numbers that sum to target.',
+          public_tests: [],
+          _metadata: { name: 'Pair Sum', source: 'showcase', is_showcase: true },
+        }));
+      }
+
+      if (url === '/api/runs' && init?.method === 'POST') {
+        return Promise.resolve(createResponse({ run_id: 'run-live', status: 'running' }));
+      }
+
+      if (url === '/api/runs') {
+        return Promise.resolve(createResponse({
+          runs: runFailed
+            ? [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'completed', final_status: 'max_iterations', iterations: 3, pass_rate: 0 }]
+            : [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'running', final_status: null, iterations: null, pass_rate: null }],
+        }));
+      }
+
+      if (url === '/api/runs/run-live') {
+        return Promise.resolve(createResponse(
+          runFailed
+            ? {
+                run_id: 'run-live',
+                problem_id: 'p1',
+                problem: {
+                  description: 'Find two numbers that sum to target.',
+                  _metadata: { name: 'Pair Sum', source: 'showcase', is_showcase: true },
+                },
+                config: { max_iterations: 5 },
+                final_status: 'max_iterations',
+                events: [
+                  { event: { type: 'solve_start', problem_id: 'p1', problem_name: 'Pair Sum' }, seq: 0, timestamp: 1 },
+                  { event: { type: 'artifact_snapshot', data: { algorithm_visualization: { supported: true, family: 'bfs', mode: 'teaching', title: 'Story', summary: 'summary', sample_source: 'public', sample_focus: '', sample_input: '', sample_output: '', steps: [{ step: 1, label: 'step', caption: 'caption' }] } } }, seq: 1, timestamp: 2 },
+                  { event: { type: 'final', status: 'max_iterations' }, seq: 2, timestamp: 3 },
+                ],
+              }
+            : {
+                run_id: 'run-live',
+                problem_id: 'p1',
+                problem: {
+                  description: 'Find two numbers that sum to target.',
+                  _metadata: { name: 'Pair Sum', source: 'showcase', is_showcase: true },
+                },
+                config: { max_iterations: 5 },
+                final_status: null,
+                events: [
+                  { event: { type: 'solve_start', problem_id: 'p1', problem_name: 'Pair Sum' }, seq: 0, timestamp: 1 },
+                  { event: { type: 'artifact_snapshot', data: { algorithm_visualization: { supported: true, family: 'bfs', mode: 'teaching', title: 'Story', summary: 'summary', sample_source: 'public', sample_focus: '', sample_input: '', sample_output: '', steps: [{ step: 1, label: 'step', caption: 'caption' }] } } }, seq: 1, timestamp: 2 },
+                ],
+              },
+        ));
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: /start solve/i }));
+    const startSolveButtons = await screen.findAllByRole('button', { name: /^start solve$/i });
+    await user.click(startSolveButtons[startSolveButtons.length - 1]);
+
+    await waitFor(() => expect(screen.getByTestId('algorithm-story-card')).toBeInTheDocument());
+
+    runFailed = true;
+    act(() => {
+      MockWebSocket.instances[0].emitMessage({ type: 'final', status: 'max_iterations' });
+    });
+
+    await waitFor(() => expect(screen.queryByTestId('algorithm-story-card')).not.toBeInTheDocument());
+  });
+
   it('does not carry interrupt pending state to a different live run', async () => {
     const user = userEvent.setup();
     const pendingCancel = createDeferred<Record<string, unknown>>();
