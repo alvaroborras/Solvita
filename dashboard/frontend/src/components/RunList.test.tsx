@@ -113,6 +113,50 @@ describe('RunList', () => {
     expect(onDeletedRun).toHaveBeenCalledWith('done-1');
   });
 
+  it('renders completed-run actions in a dedicated footer row layout', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/runs' && !init) {
+        return Promise.resolve(createResponse({
+          runs: [
+            {
+              run_id: 'done-1',
+              problem_name: 'A Very Long Completed Run Name For Layout Testing',
+              problem_id: 'done-run',
+              started_at: '2026-06-05T15:00:00Z',
+              status: 'completed',
+              final_status: 'success',
+              iterations: 3,
+              pass_rate: 1,
+            },
+          ],
+        }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(
+      <RunList
+        activeRunId={null}
+        mode="idle"
+        onSelectLive={vi.fn()}
+        onSelectReplay={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('button', { name: /a very long completed run name for layout testing/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /replay/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /delete/i })).toBeInTheDocument();
+
+    const stylesheet = container.querySelector('style');
+    expect(stylesheet?.textContent).toContain('.run-list__item {');
+    expect(stylesheet?.textContent).toContain('grid-template-columns: minmax(0, 1fr);');
+    expect(stylesheet?.textContent).toContain('.run-list__actions {');
+    expect(stylesheet?.textContent).toContain('width: 100%;');
+    expect(stylesheet?.textContent).toContain('justify-content: flex-start;');
+  });
+
   it('hides delete for running rows and waits for confirmation before sending delete', async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

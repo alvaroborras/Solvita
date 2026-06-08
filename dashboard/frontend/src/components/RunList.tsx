@@ -310,10 +310,10 @@ export default function RunList({
           padding: 10px 0;
         }
         .run-list__item {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+          gap: 12px;
           padding: 12px;
           margin-bottom: 8px;
           background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
@@ -326,7 +326,7 @@ export default function RunList({
           border-color: rgba(255,255,255,0.16);
         }
         .run-list__select {
-          flex: 1;
+          width: 100%;
           min-width: 0;
           border: none;
           background: transparent;
@@ -407,8 +407,12 @@ export default function RunList({
           text-transform: uppercase;
         }
         .run-list__actions {
+          width: 100%;
           display: flex;
-          gap: 4px;
+          flex-wrap: wrap;
+          justify-content: flex-start;
+          gap: 8px;
+          padding-top: 2px;
         }
         .run-list__btn {
           font-size: 12px;
