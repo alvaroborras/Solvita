@@ -114,3 +114,19 @@ The Python backend uses Linux `rlimit` for C++ sandboxing.
 On Windows, compilation falls back to basic `subprocess.run()` — no resource limits.
 The CLI displays a yellow warning when running on Windows.
 For full sandbox support, run under WSL2.
+
+---
+
+## Codeforces Interactive Mode
+
+- The interactive CLI now supports a `Codeforces` tab.
+
+Flow:
+1. Run `algopilot` or `algopilot solve`
+2. Press `Tab` until the `Codeforces` tab is selected
+3. Type a query such as `1575 C` or a title keyword
+4. Press `Enter` to search
+5. Use `↑ / ↓` to choose a result
+6. Press `Enter` again to import and solve it
+
+The CLI uses the dashboard backend's Codeforces endpoints, so the backend must be running and reachable at `ALGOPILOT_DASHBOARD_BACKEND_URL` or the default `http://127.0.0.1:8766`.
