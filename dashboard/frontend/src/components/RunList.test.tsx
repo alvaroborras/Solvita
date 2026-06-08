@@ -145,9 +145,19 @@ describe('RunList', () => {
       />,
     );
 
-    expect(await screen.findByRole('button', { name: /a very long completed run name for layout testing/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /replay/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /delete/i })).toBeInTheDocument();
+    const selectButton = await screen.findByRole('button', {
+      name: /a very long completed run name for layout testing/i,
+    });
+    const card = selectButton.closest('article');
+
+    expect(card).not.toBeNull();
+    expect(card?.firstElementChild).toHaveClass('run-list__select');
+    expect(card?.lastElementChild).toHaveClass('run-list__actions');
+
+    const actions = card?.querySelector('.run-list__actions');
+    expect(actions).not.toBeNull();
+    expect(within(actions as HTMLElement).getByRole('button', { name: /replay/i })).toBeInTheDocument();
+    expect(within(actions as HTMLElement).getByRole('button', { name: /delete/i })).toBeInTheDocument();
 
     const stylesheet = container.querySelector('style');
     expect(stylesheet?.textContent).toContain('.run-list__item {');
