@@ -193,3 +193,29 @@ export interface SolveOptions {
   /** Python executable name ('python' | 'python3') */
   pythonBin: string;
 }
+
+export interface CodeforcesSearchResult {
+  contest_id: number;
+  index: string;
+  name: string;
+  rating?: number | null;
+  tags: string[];
+  url: string;
+  problem_id: string;
+}
+
+export interface ImportedProblemPayload {
+  problem_id: string;
+  description: string;
+  public_tests: Array<{ input: string; output: string }>;
+  constraints?: Record<string, unknown>;
+  time_limit?: number | null;
+  space_limit?: number | null;
+  types?: string[];
+  _metadata?: Record<string, unknown>;
+}
+
+export type InteractiveSubmission =
+  | { kind: 'file'; inputFile: string }
+  | { kind: 'paste'; description: string }
+  | { kind: 'imported_problem'; problem: ImportedProblemPayload };

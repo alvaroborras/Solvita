@@ -58,6 +58,8 @@ The display must support:
 
 If a field is absent, the UI must omit that block cleanly rather than rendering placeholders or empty headings.
 
+The statement body must remain fully readable even when it is long. The dashboard must not replace long problem text with an ellipsis-based preview on either the `Start Solve` preview or the active run page.
+
 ### Requirement 2: Family playback gating
 
 The active run page must display full teaching playback only when all of the following are true:
@@ -220,7 +222,7 @@ This compact view should still prioritize scan speed, but it must include:
 
 - title
 - source/family/difficulty chips
-- full statement text
+- full statement text without truncating it into an ellipsis preview
 - public samples
 - time/memory limits if present
 
@@ -233,6 +235,8 @@ No family playback belongs in this surface.
 - Preserve line breaks and paragraph grouping where possible.
 - Render code-like blocks such as sample input/output in `<pre>` style blocks.
 - Hide empty sections.
+- Do not truncate long statement text with `...` or a fixed preview length.
+- If the statement is long, solve the layout problem with vertical flow, sectioning, or a readable container, not by removing statement content.
 - If multiple samples exist, render them in order and label them clearly.
 - If `public_tests` exist but the description already contains sample sections, keep both sources consistent:
   - description-derived samples take precedence for presentation order when clearly extractable
@@ -319,6 +323,7 @@ The gate solves the misleading UI problem by refusing to show fake or empty play
 This design is complete when all of the following are true:
 
 - users can read the full statement in both `Start Solve` preview and the active run page
+- long statements are still shown in full and are not collapsed into an ellipsis-only preview
 - sample input/output and limits are visible when present
 - unsupported family runs do not render full algorithm playback
 - supported family runs render playback only when real step data exists
