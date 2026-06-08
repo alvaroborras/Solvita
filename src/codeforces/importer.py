@@ -8,8 +8,13 @@ from bs4 import BeautifulSoup, Tag
 
 
 CODEFORCES_USER_AGENT = "AlgoPilot-Codeforces/1.0"
-CODEFORCES_URL_RE = re.compile(
-    r"^https?://(?:www\.)?codeforces\.com/contest/(?P<contest_id>\d+)/problem/(?P<index>[A-Za-z0-9]+)$"
+CODEFORCES_URL_PATTERNS = (
+    re.compile(
+        r"^https?://(?:www\.)?codeforces\.com/contest/(?P<contest_id>\d+)/problem/(?P<index>[A-Za-z0-9]+)/?$"
+    ),
+    re.compile(
+        r"^https?://(?:www\.)?codeforces\.com/problemset/problem/(?P<contest_id>\d+)/(?P<index>[A-Za-z0-9]+)/?$"
+    ),
 )
 
 
@@ -23,9 +28,10 @@ def resolve_problem_key(*, contest_id: int | None, index: str | None, url: str |
 
     if url:
         normalized_url = url.strip()
-        match = CODEFORCES_URL_RE.match(normalized_url)
-        if match is not None:
-            return int(match.group("contest_id")), match.group("index").upper()
+        for pattern in CODEFORCES_URL_PATTERNS:
+            match = pattern.match(normalized_url)
+            if match is not None:
+                return int(match.group("contest_id")), match.group("index").upper()
         raise ValueError(f"Unsupported Codeforces problem URL: {normalized_url}")
 
     raise ValueError("Provide contest_id and index, or a valid Codeforces problem URL")
@@ -87,6 +93,16 @@ def _parse_memory_limit_mb(value: str) -> int | None:
     if unit.startswith("k"):
         return int(amount / 1024)
     return int(amount / (1024 * 1024))
+
+
+def _response_charset(response: Any) -> str:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return "utf-8"
+    get_content_charset = getattr(headers, "get_content_charset", None)
+    if not callable(get_content_charset):
+        return "utf-8"
+    return get_content_charset() or "utf-8"
 
 
 def parse_codeforces_problem_html(html: str, contest_id: int, index: str) -> dict[str, Any]:
@@ -182,4 +198,11 @@ def fetch_problem_html(contest_id: int, index: str) -> str:
         headers={"User-Agent": CODEFORCES_USER_AGENT},
     )
     with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8")
+        body = response.read()
+        charset = _response_charset(response)
+        try:
+            return body.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            if charset.lower() != "utf-8":
+                return body.decode("utf-8")
+            raise
