@@ -57,13 +57,6 @@ function createArtifact(): FinalArtifactSnapshot {
       fullTestgenCompleted: false,
       trustTiers: {},
     },
-    verification: {
-      decision: 'repair',
-      confidence: 0.22,
-      feedbackSummary: 'Trusted checks still indicate the solver is unsafe.',
-      riskFlags: ['trusted_suite_failed'],
-      trustedFailures: [],
-    },
     hack: {
       result: null,
       passed: null,
@@ -77,13 +70,13 @@ function createArtifact(): FinalArtifactSnapshot {
 }
 
 describe('buildFailureAnalysis', () => {
-  it('builds a max-iterations failure chain with compile and verifier evidence', () => {
+  it('builds a max-iterations failure chain with compile and hack evidence', () => {
     const analysis = buildFailureAnalysis({
       finalStatus: 'max_iterations',
       artifact: createArtifact(),
       timeline: [
         createTimelineEntry('codegen', 'Generating & Testing Code', 'Attempt 3 failed to compile cleanly and needs repair.', 'repairing', ['Compile status: failure']),
-        createTimelineEntry('verify', 'Independent Verification', 'The verifier requested a repair before acceptance.', 'repairing', ['Verifier decision: repair']),
+        createTimelineEntry('hack', 'Adversarial Hack Testing', 'The hacker found a breaking case before acceptance.', 'repairing', ['Hack decision: repair']),
       ],
       events: [],
     });
@@ -91,7 +84,7 @@ describe('buildFailureAnalysis', () => {
     expect(analysis).not.toBeNull();
     expect(analysis?.headline).toBe('The solver ran out of repair budget.');
     expect(analysis?.rootCause).toContain('compile-time syntax issue');
-    expect(analysis?.chain.map((item) => item.stageLabel)).toEqual(['Codegen', 'Verify', 'Run Ended']);
+    expect(analysis?.chain.map((item) => item.stageLabel)).toEqual(['Codegen', 'Hack', 'Run Ended']);
     expect(analysis?.signals.compilationErrors).toContain("missing ';' after return");
     expect(analysis?.signals.suggestedFixes).toContain('Add the missing semicolon.');
   });
@@ -149,7 +142,7 @@ describe('buildFailureAnalysis', () => {
       events,
     });
 
-    expect(analysis?.headline).toBe('The workflow crashed before a final verdict.');
+    expect(analysis?.headline).toBe('The workflow crashed before a final result.');
     expect(analysis?.rootCause).toContain('sandbox timeout');
     expect(analysis?.signals.errorEvents).toContain('Workflow execution failed: sandbox timeout');
     expect(analysis?.chain[analysis.chain.length - 1]?.stageLabel).toBe('System');

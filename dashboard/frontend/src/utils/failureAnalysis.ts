@@ -3,11 +3,9 @@ import type { AlgoPilotEvent } from '../types/events';
 import type { JourneyStageId, JourneyTimelineEntry } from '../types/journey';
 
 export interface FailureAnalysisSignalSet {
-  riskFlags: string[];
   suggestedFixes: string[];
   compilationErrors: string[];
   errorEvents: string[];
-  trustedFailures: string[];
   hackFailures: string[];
   executionLogTail: string[];
 }
@@ -38,11 +36,8 @@ interface BuildFailureAnalysisArgs {
 
 const STAGE_LABELS: Record<JourneyStageId, string> = {
   read_problem: 'Read Problem',
-  recall_failures: 'Recall Failures',
-  seed_tests: 'Seed Tests',
   full_testgen: 'Full Testgen',
   codegen: 'Codegen',
-  verify: 'Verify',
   hack: 'Hack',
 };
 
@@ -62,8 +57,6 @@ export function buildFailureAnalysis({
 
   const liveFailure =
     Boolean(artifact?.solution.compilationSuccess === false && (artifact?.solution.compilationErrors.length || 0) > 0)
-    || Boolean((artifact?.verification.decision || '') === 'repair')
-    || Boolean((artifact?.verification.decision || '') === 'escalate_testgen')
     || Boolean((artifact?.hack.failures.length || 0) > 0)
     || Boolean((artifact?.hack.result || '') === 'BREAK')
     || Boolean((artifact?.hack.result || '') === 'GEN_FAILED');
@@ -78,11 +71,9 @@ export function buildFailureAnalysis({
   }
 
   const signals: FailureAnalysisSignalSet = {
-    riskFlags: artifact?.verification.riskFlags || [],
     suggestedFixes: artifact?.feedback.suggestedFixes || [],
     compilationErrors: artifact?.solution.compilationErrors || [],
     errorEvents,
-    trustedFailures: (artifact?.verification.trustedFailures || []).map(formatFailureCase),
     hackFailures: (artifact?.hack.failures || []).map(formatFailureCase),
     executionLogTail: artifact?.executionLogTail || [],
   };
@@ -110,7 +101,6 @@ function buildFailureChain(
     entry.status === 'repairing'
       || entry.status === 'failed'
       || entry.stageId === 'codegen'
-      || entry.stageId === 'verify'
       || entry.stageId === 'hack',
   );
 
@@ -132,7 +122,7 @@ function buildFailureChain(
       status: 'failed',
       evidence: [
         `iterations: ${artifact?.iteration ?? '—'}`,
-        artifact?.verification.decision ? `verifier: ${artifact.verification.decision}` : '',
+        artifact?.tests.passRate !== undefined ? `visible pass rate: ${Math.round(artifact.tests.passRate * 100)}%` : '',
       ].filter(Boolean),
     });
   } else if (finalStatus === 'terminal_failure') {
@@ -188,10 +178,6 @@ function chooseRootCause(
     return artifact.hack.generatorFailureReason;
   }
 
-  if (artifact?.verification.feedbackSummary) {
-    return artifact.verification.feedbackSummary;
-  }
-
   if (signals.executionLogTail.length > 0) {
     return signals.executionLogTail[signals.executionLogTail.length - 1];
   }
@@ -215,7 +201,7 @@ function describeFailure(
 ): { headline: string; summary: string } {
   if (errorEvents.length > 0) {
     return {
-      headline: 'The workflow crashed before a final verdict.',
+      headline: 'The workflow crashed before a final result.',
       summary: 'A runtime-level error interrupted the solve loop, so the run ended without a clean final decision.',
     };
   }
@@ -223,8 +209,7 @@ function describeFailure(
   if (finalStatus === 'max_iterations') {
     return {
       headline: 'The solver ran out of repair budget.',
-      summary: artifact?.verification.feedbackSummary
-        || 'The run kept looping through codegen and verification, but never reached a state the verifier would accept.',
+      summary: 'The run kept looping through codegen and repair, but never reached an accepted solution before the iteration budget ran out.',
     };
   }
 
@@ -241,14 +226,6 @@ function describeFailure(
       headline: 'The current attempt is failing and being repaired.',
       summary: artifact.feedback.analysis
         || 'Compilation failed on the current draft, and the agent is analyzing how to patch the code.',
-    };
-  }
-
-  if (artifact?.verification.decision === 'repair' || artifact?.verification.decision === 'escalate_testgen') {
-    return {
-      headline: 'The verifier is blocking acceptance.',
-      summary: artifact.verification.feedbackSummary
-        || 'The independent verifier is still unconvinced by the current candidate.',
     };
   }
 

@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap');
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100%;
+}
+
+button, input, textarea, select {
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+}
+
+/* Utility: Glass Card */
+.glass-card {
+  background: var(--color-bg-glass);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--color-border-glass);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ReactFlow Overrides */
+.react-flow__background {
+  background: var(--color-bg-primary) !important;
+}
+.react-flow__controls {
+  background: var(--color-bg-glass) !important;
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--color-border-subtle) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+.react-flow__controls button {
+  background: transparent !important;
+  border: none !important;
+  color: var(--color-text-secondary) !important;
+  width: 28px !important;
+  height: 28px !important;
+}
+.react-flow__controls button:hover {
+  background: var(--color-bg-elevated) !important;
+  color: var(--color-text-primary) !important;
+}
+.react-flow__controls button svg {
+  fill: currentColor !important;
+}
+.react-flow__minimap {
+  background: var(--color-bg-glass) !important;
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--color-border-subtle) !important;
+  border-radius: var(--radius-md) !important;
+}
+.react-flow__attribution {
+  display: none !important;
+}

@@ -38,10 +38,7 @@ export default function Layout({ header, main, sidebar, footer, showFooter = fal
         .layout__backdrop {
           position: absolute;
           inset: 0;
-          background:
-            radial-gradient(circle at top left, rgba(40, 131, 255, 0.18), transparent 34%),
-            radial-gradient(circle at 78% 18%, rgba(83, 208, 168, 0.16), transparent 26%),
-            linear-gradient(180deg, rgba(255,255,255,0.02), transparent 28%);
+          background: var(--color-layout-backdrop);
           pointer-events: none;
           z-index: 0;
         }
@@ -63,7 +60,7 @@ export default function Layout({ header, main, sidebar, footer, showFooter = fal
           position: relative;
           z-index: 1;
           border-left: 1px solid var(--color-border-subtle);
-          background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+          background: var(--color-sidebar-bg);
           overflow-y: auto;
           overflow-x: hidden;
           padding: 0 var(--space-xl) var(--space-2xl);
@@ -71,22 +68,22 @@ export default function Layout({ header, main, sidebar, footer, showFooter = fal
         .layout__sidebar--prominent-scrollbar {
           scrollbar-gutter: stable;
           scrollbar-width: auto;
-          scrollbar-color: rgba(157, 176, 199, 0.72) rgba(255, 255, 255, 0.06);
+          scrollbar-color: var(--color-sidebar-scrollbar-thumb) var(--color-sidebar-scrollbar-track);
         }
         .layout__sidebar--prominent-scrollbar::-webkit-scrollbar {
           width: 12px;
         }
         .layout__sidebar--prominent-scrollbar::-webkit-scrollbar-track {
-          background: rgba(255, 255, 255, 0.04);
+          background: var(--color-sidebar-scrollbar-track);
           border-radius: 999px;
         }
         .layout__sidebar--prominent-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(157, 176, 199, 0.72);
+          background: var(--color-sidebar-scrollbar-thumb);
           border-radius: 999px;
-          border: 2px solid rgba(7, 16, 25, 0.35);
+          border: 2px solid var(--color-sidebar-scrollbar-thumb-border);
         }
         .layout__sidebar--prominent-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(238, 246, 255, 0.82);
+          background: var(--color-sidebar-scrollbar-thumb-hover);
         }
         .layout__footer {
           grid-area: footer;

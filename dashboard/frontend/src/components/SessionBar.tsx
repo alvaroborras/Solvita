@@ -1,3 +1,5 @@
+import { localizeDashboardText, useI18n } from '../i18n';
+
 interface SessionBarProps {
   problemName: string;
   runId: string | null;
@@ -11,18 +13,18 @@ interface SessionBarProps {
   onResumeLatest: () => void;
 }
 
-function recoveryLabel(hydrationStatus: string): string {
+function recoveryLabel(hydrationStatus: string, t: ReturnType<typeof useI18n>['t']): string {
   switch (hydrationStatus) {
     case 'restoring':
-      return 'Restoring saved session';
+      return t('restoringSavedSession');
     case 'ready':
-      return 'Session hydrated';
+      return t('sessionHydrated');
     case 'missing':
-      return 'Saved run missing';
+      return t('savedRunMissing');
     case 'error':
-      return 'Recovery failed';
+      return t('recoveryFailed');
     default:
-      return 'Waiting for a run';
+      return t('waitingForRun');
   }
 }
 
@@ -38,23 +40,27 @@ export default function SessionBar({
   onReconnect,
   onResumeLatest,
 }: SessionBarProps) {
+  const { language, t } = useI18n();
   const canReconnect = mode === 'live' && runId !== null && wsStatus !== 'connected';
+  const modeLabel = localizeDashboardText(language, mode);
+  const wsStatusLabel = localizeDashboardText(language, wsStatus);
+  const hydrationStatusLabel = localizeDashboardText(language, hydrationStatus);
 
   return (
     <section className="session-bar surface-card">
       <div className="session-bar__identity">
-        <div className="surface-kicker">AlgoPilot Session</div>
-        <h1 className="surface-title">{problemName || 'No active run'}</h1>
+        <div className="surface-kicker">{t('algoPilotSession')}</div>
+        <h1 className="surface-title">{problemName || t('noActiveRun')}</h1>
         <p className="session-bar__meta">
-          {runId ? `run ${runId}` : 'idle'} · {mode} · {wsStatus} · {recoveryLabel(hydrationStatus)}
+          {runId ? `run ${runId}` : t('idle')} · {modeLabel} · {wsStatusLabel} · {recoveryLabel(hydrationStatus, t)}
         </p>
       </div>
 
       <div className="session-bar__chips">
-        <span className={`journey-pill journey-pill--mode journey-pill--mode-${mode}`}>{mode}</span>
-        <span className={`journey-pill journey-pill--session journey-pill--session-${wsStatus}`}>{wsStatus}</span>
+        <span className={`journey-pill journey-pill--mode journey-pill--mode-${mode}`}>{modeLabel}</span>
+        <span className={`journey-pill journey-pill--session journey-pill--session-${wsStatus}`}>{wsStatusLabel}</span>
         <span className={`journey-pill journey-pill--session journey-pill--hydration-${hydrationStatus}`}>
-          {hydrationStatus}
+          {hydrationStatusLabel}
         </span>
       </div>
 
@@ -66,7 +72,7 @@ export default function SessionBar({
             disabled={interruptPending}
             onClick={onInterrupt}
           >
-            {interruptPending ? 'Interrupting...' : 'Interrupt'}
+            {interruptPending ? t('interrupting') : t('interrupt')}
           </button>
         )}
         <button
@@ -75,7 +81,7 @@ export default function SessionBar({
           disabled={!canReconnect}
           onClick={onReconnect}
         >
-          Reconnect
+          {t('reconnect')}
         </button>
         <button
           type="button"
@@ -83,7 +89,7 @@ export default function SessionBar({
           disabled={hydrationStatus === 'restoring'}
           onClick={onResumeLatest}
         >
-          Resume Latest AlgoPilot Run
+          {t('resumeLatestRun')}
         </button>
       </div>
     </section>

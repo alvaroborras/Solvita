@@ -1,13 +1,27 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
+import sys
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.codeforces.catalog import CodeforcesCatalog
+from src.codeforces.importer import (
+    build_problem_payload,
+    fetch_problem_html,
+    parse_codeforces_problem_html,
+    resolve_problem_key,
+)
+from src.utils.problem_origin import mark_user_supplied_problem
 
 try:
     from .config import (
@@ -20,12 +34,6 @@ try:
         PORT,
         PROBLEMS_DIR,
         PROJECT_ROOT,
-    )
-    from .codeforces_catalog import CodeforcesCatalog
-    from .codeforces_import import (
-        build_problem_payload,
-        fetch_problem_html,
-        parse_codeforces_problem_html,
     )
     from .event_store import EventStore
     from .models import (
@@ -55,12 +63,6 @@ except ImportError:
         PORT,
         PROBLEMS_DIR,
         PROJECT_ROOT,
-    )
-    from codeforces_catalog import CodeforcesCatalog
-    from codeforces_import import (
-        build_problem_payload,
-        fetch_problem_html,
-        parse_codeforces_problem_html,
     )
     from event_store import EventStore
     from models import (
@@ -95,9 +97,6 @@ ws_manager = WebSocketManager()
 event_store = EventStore()
 process_manager = ProcessManager()
 _codeforces_catalog: CodeforcesCatalog | None = None
-CODEFORCES_URL_RE = re.compile(
-    r"^https?://(?:www\.)?codeforces\.com/contest/(?P<contest_id>\d+)/problem/(?P<index>[A-Za-z0-9]+)$"
-)
 
 
 def get_codeforces_catalog() -> CodeforcesCatalog:
@@ -138,7 +137,7 @@ def _build_custom_problem_payload(
     *,
     problem_id_override: str | None = None,
 ) -> tuple[str, dict]:
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     stem = problem_id_override or f"custom_{timestamp}_{_slugify(req.title)}"
     description = req.description.strip()
     constraints_text = req.constraints_text.strip()
@@ -172,27 +171,18 @@ def _build_custom_problem_payload(
             "custom": True,
         },
     }
-    return stem, payload
+    return stem, mark_user_supplied_problem(payload, source="custom")
 
 
 def _resolve_codeforces_problem_key(req: CodeforcesImportRequest) -> tuple[int, str]:
-    if req.contest_id is not None and req.index:
-        return int(req.contest_id), req.index.strip().upper()
-
-    if req.url:
-        normalized_url = req.url.strip()
-        match = CODEFORCES_URL_RE.match(normalized_url)
-        if match is not None:
-            return int(match.group("contest_id")), match.group("index").upper()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported Codeforces problem URL: {normalized_url}",
+    try:
+        return resolve_problem_key(
+            contest_id=req.contest_id,
+            index=req.index,
+            url=req.url,
         )
-
-    raise HTTPException(
-        status_code=400,
-        detail="Provide contest_id and index, or a valid Codeforces problem URL",
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def import_codeforces_problem_payload(req: CodeforcesImportRequest) -> dict:
@@ -217,7 +207,13 @@ def import_codeforces_problem_payload(req: CodeforcesImportRequest) -> dict:
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Failed to fetch Codeforces problem") from exc
 
-    return build_problem_payload(parsed, contest_id, index, rating, tags)
+    return build_problem_payload(
+        parsed,
+        contest_id=contest_id,
+        index=index,
+        rating=rating,
+        tags=tags,
+    )
 
 
 @app.get("/api/health")

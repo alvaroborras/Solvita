@@ -1,1 +1,0 @@
-{"version":3,"file":"InputMode.d.ts","sourceRoot":"","sources":["../../src/components/InputMode.tsx"],"names":[],"mappings":"AAmBA,UAAU,cAAc;IACtB,WAAW,EAAE,MAAM,CAAC;IACpB,QAAQ,EAAE,CAAC,SAAS,EAAE,MAAM,EAAE,WAAW,CAAC,EAAE,MAAM,KAAK,IAAI,CAAC;CAC7D;AAED,wBAAgB,SAAS,CAAC,EAAE,WAAW,EAAE,QAAQ,EAAE,EAAE,cAAc,2CAuIlE"}

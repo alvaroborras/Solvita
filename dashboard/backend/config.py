@@ -92,7 +92,7 @@ def load_settings(
     )
     codeforces_cache_path = _resolve_path(
         resolved_env.get("ALGOPILOT_CODEFORCES_CACHE_PATH"),
-        dashboard_root / "data" / "codeforces" / "cache.json",
+        project_root / "data" / "codeforces" / "cache.json",
     )
     problems_dir = _resolve_path(
         resolved_env.get("ALGOPILOT_PROBLEMS_DIR"),

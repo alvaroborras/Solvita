@@ -1,5 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 
+import { useI18n } from '../i18n';
+import ProblemStatementCard from './ProblemStatementCard';
+
 interface ProblemSummary {
   id: string;
   name: string;
@@ -74,9 +77,9 @@ function createTestDraft(): CustomTestDraft {
   };
 }
 
-function formatDifficulty(value: number | string): string | null {
+function formatDifficulty(value: number | string, difficultyPrefix = 'difficulty'): string | null {
   if (typeof value === 'number') {
-    return value > 0 ? `difficulty ${value}` : null;
+    return value > 0 ? `${difficultyPrefix} ${value}` : null;
   }
   const normalized = value.trim();
   return normalized ? normalized : null;
@@ -133,6 +136,7 @@ function removeAppendedConstraints(description: string, constraintsRaw: string):
 }
 
 export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>('browse');
   const [problems, setProblems] = useState<ProblemSummary[]>([]);
   const [search, setSearch] = useState('');
@@ -140,6 +144,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
   const [codeforcesResults, setCodeforcesResults] = useState<CodeforcesResult[]>([]);
   const [codeforcesSearchLoading, setCodeforcesSearchLoading] = useState(false);
   const [codeforcesImportId, setCodeforcesImportId] = useState<string | null>(null);
+  const [browseProblemDetails, setBrowseProblemDetails] = useState<Record<string, Record<string, unknown>>>({});
+  const [browsePreviewLoadingId, setBrowsePreviewLoadingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [manageSelectedId, setManageSelectedId] = useState<string | null>(null);
   const [editingProblemId, setEditingProblemId] = useState<string | null>(null);
@@ -160,12 +166,12 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
 
   const loadProblems = useCallback(() => {
     fetch('/api/problems')
-      .then((response) => readJsonOrThrow(response, 'Failed to load problem library'))
+      .then((response) => readJsonOrThrow(response, t('problemPanelLoadLibraryFailed')))
       .then((data) => setProblems(Array.isArray(data.problems) ? data.problems as ProblemSummary[] : []))
       .catch((error: unknown) => {
-        setErrorMessage(error instanceof Error ? error.message : 'Failed to load problem library');
+        setErrorMessage(error instanceof Error ? error.message : t('problemPanelLoadLibraryFailed'));
       });
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadProblems();
@@ -218,10 +224,52 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
   }, [manageSelectedId, savedCustomProblems, tab]);
 
   const selectedProblem = filtered.find((problem) => problem.id === selectedId) || null;
+  const selectedProblemDetail = selectedId ? (browseProblemDetails[selectedId] || null) : null;
   const managedProblem = savedCustomProblems.find((problem) => problem.id === manageSelectedId) || null;
   const nonEmptyPublicTests = customTests
     .map((test) => ({ input: test.input.trim(), output: test.output.trim() }))
     .filter((test) => test.input || test.output);
+
+  useEffect(() => {
+    if (tab !== 'browse' || !selectedId) {
+      setBrowsePreviewLoadingId(null);
+      return;
+    }
+
+    if (browseProblemDetails[selectedId]) {
+      setBrowsePreviewLoadingId(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    setBrowsePreviewLoadingId(selectedId);
+    Promise.resolve()
+      .then(() => fetch(`/api/problems/${selectedId}`))
+      .then((response) => readJsonOrThrow(response, t('problemPanelLoadSelectedFailed')))
+      .then((problem) => {
+        if (cancelled) {
+          return;
+        }
+        setBrowseProblemDetails((current) => ({ ...current, [selectedId]: problem }));
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setErrorMessage(error instanceof Error ? error.message : t('problemPanelLoadSelectedFailed'));
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+        setBrowsePreviewLoadingId((current) => (current === selectedId ? null : current));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [browseProblemDetails, selectedId, t, tab]);
 
   const populateFromProblem = useCallback((problem: Record<string, unknown>, filename: string | null) => {
     const metadata = ((problem._metadata as Record<string, unknown> | undefined) || {});
@@ -257,35 +305,35 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
     setErrorMessage(null);
     try {
       const response = await fetch(`/api/problems/${problemId}`);
-      const problem = await readJsonOrThrow(response, 'Failed to load saved problem');
+      const problem = await readJsonOrThrow(response, t('problemPanelLoadSavedFailed'));
       populateFromProblem(problem, problemId);
       setTab('custom');
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load saved problem');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelLoadSavedFailed'));
     }
-  }, [populateFromProblem]);
+  }, [populateFromProblem, t]);
 
   const handleCloneCustomProblem = useCallback(async (problemId: string) => {
     setErrorMessage(null);
     try {
       const response = await fetch(`/api/problems/${problemId}`);
-      const problem = await readJsonOrThrow(response, 'Failed to clone saved problem');
+      const problem = await readJsonOrThrow(response, t('problemPanelCloneSavedFailed'));
       populateFromProblem(problem, null);
       const metadata = ((problem._metadata as Record<string, unknown> | undefined) || {});
-      setCustomTitle(`${String(metadata.name || 'Custom Problem')} Copy`);
+      setCustomTitle(`${String(metadata.name || t('problemPanelCustomProblem'))} ${t('problemPanelCopySuffix')}`);
       setEditingProblemId(null);
       setSaveToLibrary(true);
       setTab('custom');
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to clone saved problem');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelCloneSavedFailed'));
     }
-  }, [populateFromProblem]);
+  }, [populateFromProblem, t]);
 
   const handleExportCustomProblem = useCallback(async (problemId: string) => {
     setErrorMessage(null);
     try {
       const response = await fetch(`/api/problems/${problemId}`);
-      const problem = await readJsonOrThrow(response, 'Failed to export saved problem');
+      const problem = await readJsonOrThrow(response, t('problemPanelExportSavedFailed'));
       const blob = new Blob([JSON.stringify(problem, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
@@ -294,9 +342,9 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to export saved problem');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelExportSavedFailed'));
     }
-  }, []);
+  }, [t]);
 
   const handleSolveSavedProblem = useCallback(async (problemId: string) => {
     if (loading || manageLoadingId !== null) {
@@ -307,24 +355,24 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
     setManageLoadingId(problemId);
     try {
       const response = await fetch(`/api/problems/${problemId}`);
-      const problem = await readJsonOrThrow(response, 'Failed to load saved problem');
+      const problem = await readJsonOrThrow(response, t('problemPanelLoadSavedFailed'));
       const started = await onSubmit(problem, { max_iterations: maxIter });
       if (!started) {
-        setErrorMessage('Solve did not start. Please try again.');
+        setErrorMessage(t('problemPanelSolveDidNotStart'));
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to launch saved problem');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelLaunchSavedFailed'));
     } finally {
       setManageLoadingId(null);
     }
-  }, [loading, manageLoadingId, maxIter, onSubmit]);
+  }, [loading, manageLoadingId, maxIter, onSubmit, t]);
 
   const handleDeleteCustomProblem = useCallback(async (problemId: string) => {
-    if (!window.confirm('Delete this saved custom problem from the local library?')) return;
+    if (!window.confirm(t('problemPanelDeleteConfirm'))) return;
     setErrorMessage(null);
     try {
       const response = await fetch(`/api/problems/custom/${problemId}`, { method: 'DELETE' });
-      await readJsonOrThrow(response, 'Failed to delete saved problem');
+      await readJsonOrThrow(response, t('problemPanelDeleteSavedFailed'));
       if (editingProblemId === problemId) {
         resetCustomForm();
       }
@@ -333,9 +381,9 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       }
       loadProblems();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to delete saved problem');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelDeleteSavedFailed'));
     }
-  }, [editingProblemId, loadProblems, manageSelectedId, resetCustomForm]);
+  }, [editingProblemId, loadProblems, manageSelectedId, resetCustomForm, t]);
 
   const searchCodeforces = useCallback(async () => {
     if (!codeforcesQuery.trim() || codeforcesSearchLoading || codeforcesImportId !== null) {
@@ -350,15 +398,15 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         limit: '20',
       });
       const response = await fetch(`/api/sources/codeforces/search?${params.toString()}`);
-      const data = await readJsonOrThrow(response, 'Failed to search Codeforces');
+      const data = await readJsonOrThrow(response, t('problemPanelSearchCodeforcesFailed'));
       setCodeforcesResults(Array.isArray(data.results) ? data.results as CodeforcesResult[] : []);
     } catch (error) {
       setCodeforcesResults([]);
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to search Codeforces');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelSearchCodeforcesFailed'));
     } finally {
       setCodeforcesSearchLoading(false);
     }
-  }, [codeforcesImportId, codeforcesQuery, codeforcesSearchLoading]);
+  }, [codeforcesImportId, codeforcesQuery, codeforcesSearchLoading, t]);
 
   const importAndSolveCodeforces = useCallback(async (result: CodeforcesResult) => {
     if (loading || manageLoadingId !== null || codeforcesImportId !== null) {
@@ -377,23 +425,23 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
           url: result.url,
         }),
       });
-      const data = await readJsonOrThrow(response, 'Failed to import Codeforces problem');
+      const data = await readJsonOrThrow(response, t('problemPanelImportCodeforcesFailed'));
       const importedProblem = data.problem;
       if (!importedProblem || typeof importedProblem !== 'object') {
-        throw new Error('Imported Codeforces response is missing problem');
+        throw new Error(t('problemPanelImportedMissingProblem'));
       }
 
       loadProblems();
       const started = await onSubmit(importedProblem as Record<string, unknown>, { max_iterations: maxIter });
       if (!started) {
-        setErrorMessage('Solve did not start. Please try again.');
+        setErrorMessage(t('problemPanelSolveDidNotStart'));
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to import Codeforces problem');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelImportCodeforcesFailed'));
     } finally {
       setCodeforcesImportId(null);
     }
-  }, [codeforcesImportId, loadProblems, loading, manageLoadingId, maxIter, onSubmit]);
+  }, [codeforcesImportId, loadProblems, loading, manageLoadingId, maxIter, onSubmit, t]);
 
   const handleSubmit = async () => {
     if (loading || manageLoadingId !== null) {
@@ -406,10 +454,10 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       let problem: Record<string, unknown>;
       if (tab === 'browse' && selectedId) {
         const res = await fetch(`/api/problems/${selectedId}`);
-        problem = await readJsonOrThrow(res, 'Failed to load selected problem');
+        problem = await readJsonOrThrow(res, t('problemPanelLoadSelectedFailed'));
       } else if (tab === 'custom' && customDesc.trim()) {
         const requestPayload = {
-          title: customTitle.trim() || 'Untitled Custom Problem',
+          title: customTitle.trim() || t('problemPanelUntitledCustomProblem'),
           description: customDesc.trim(),
           source: customSource.trim() || 'custom',
           difficulty: customDifficulty.trim() || 'custom',
@@ -429,12 +477,18 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestPayload),
           });
-          const saved = await readJsonOrThrow(saveResponse, 'Failed to save custom problem');
+          const saved = await readJsonOrThrow(saveResponse, t('problemPanelSaveCustomFailed'));
           const savedProblem = saved.problem;
           if (!savedProblem || typeof savedProblem !== 'object') {
-            throw new Error('Saved custom problem response is missing problem');
+            throw new Error(t('problemPanelSavedMissingProblem'));
           }
           problem = savedProblem as Record<string, unknown>;
+          if (saved.filename) {
+            setBrowseProblemDetails((current) => ({
+              ...current,
+              [String(saved.filename)]: savedProblem as Record<string, unknown>,
+            }));
+          }
           loadProblems();
           if (saved.filename) {
             setSelectedId(String(saved.filename));
@@ -458,10 +512,10 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       }
       const started = await onSubmit(problem, { max_iterations: maxIter });
       if (!started) {
-        setErrorMessage('Solve did not start. Please try again.');
+        setErrorMessage(t('problemPanelSolveDidNotStart'));
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Solve launch failed');
+      setErrorMessage(error instanceof Error ? error.message : t('problemPanelSolveLaunchFailed'));
     } finally {
       setLoading(false);
     }
@@ -477,8 +531,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
       <div className="pp-modal" onClick={(event) => event.stopPropagation()}>
         <div className="pp-header">
           <div>
-            <h2 className="pp-title">Start an AlgoPilot Run</h2>
-            <p className="pp-subtitle">Choose a sample problem or build a custom one for AlgoPilot to solve.</p>
+            <h2 className="pp-title">{t('problemPanelTitle')}</h2>
+            <p className="pp-subtitle">{t('problemPanelSubtitle')}</p>
           </div>
           <button type="button" className="pp-close" onClick={onClose}>×</button>
         </div>
@@ -492,7 +546,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               setTab('browse');
             }}
           >
-            AlgoPilot Library
+            {t('problemPanelLibraryTab')}
           </button>
           <button
             type="button"
@@ -502,7 +556,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               setTab('custom');
             }}
           >
-            Custom Problem
+            {t('problemPanelCustomProblem')}
           </button>
           <button
             type="button"
@@ -522,7 +576,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               setTab('manage');
             }}
           >
-            Manage AlgoPilot Library
+            {t('problemPanelManageLibraryTab')}
           </button>
         </div>
 
@@ -532,13 +586,13 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               <input
                 className="pp-search"
                 type="text"
-                placeholder={tab === 'manage' ? 'Search saved custom problems...' : 'Search by name or source...'}
+                placeholder={tab === 'manage' ? t('problemPanelSearchSavedPlaceholder') : t('problemPanelSearchPlaceholder')}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
               <div className="pp-stats">
-                <span>{problems.length} samples</span>
-                <span>{savedCustomProblems.length} saved custom</span>
+                <span>{t('problemPanelSamplesCount').replace('{count}', String(problems.length))}</span>
+                <span>{t('problemPanelSavedCustomCount').replace('{count}', String(savedCustomProblems.length))}</span>
               </div>
             </div>
           )}
@@ -547,7 +601,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
             <div className="pp-browse">
               <div className="pp-list">
                 {filtered.map((problem) => {
-                  const difficultyLabel = formatDifficulty(problem.difficulty);
+                  const difficultyLabel = formatDifficulty(problem.difficulty, t('problemPanelDifficultyPrefix'));
                   return (
                     <button
                       key={problem.id}
@@ -560,8 +614,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                         <span className="pp-item__name">{problem.name}</span>
                         <span className="pp-item__badge">{problem.source}</span>
                         {problem.family && <span className="pp-item__family">{problem.family}</span>}
-                        {problem.is_showcase && <span className="pp-item__showcase">showcase</span>}
-                        {problem.is_custom && <span className="pp-item__custom">saved</span>}
+                        {problem.is_showcase && <span className="pp-item__showcase">{t('problemPanelShowcaseBadge')}</span>}
+                        {problem.is_custom && <span className="pp-item__custom">{t('problemPanelSavedBadge')}</span>}
                         {difficultyLabel && (
                           <span className="pp-item__diff">{difficultyLabel}</span>
                         )}
@@ -571,31 +625,39 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                   );
                 })}
                 {filtered.length === 0 && (
-                  <div className="pp-empty">No problems found</div>
+                  <div className="pp-empty">{t('problemPanelNoProblemsFound')}</div>
                 )}
               </div>
 
-              <div className="pp-preview">
-                <div className="pp-preview__kicker">Selected Problem</div>
+              <div className="pp-preview pp-preview--statement">
+                <div className="pp-preview__kicker">{t('problemPanelSelectedProblem')}</div>
                 {selectedProblem ? (
                   <>
                     <h3 className="pp-preview__title">{selectedProblem.name}</h3>
-                      <div className="pp-preview__chips">
-                        <span className="pp-preview__chip">{selectedProblem.source}</span>
-                        {selectedProblem.family && <span className="pp-preview__chip">{selectedProblem.family}</span>}
-                        {selectedProblem.is_showcase && <span className="pp-preview__chip">showcase</span>}
-                        {selectedProblem.is_custom && <span className="pp-preview__chip">saved custom</span>}
-                        {formatDifficulty(selectedProblem.difficulty) && (
-                          <span className="pp-preview__chip">{formatDifficulty(selectedProblem.difficulty)}</span>
+                    <div className="pp-preview__chips">
+                      <span className="pp-preview__chip">{selectedProblem.source}</span>
+                      {selectedProblem.family && <span className="pp-preview__chip">{selectedProblem.family}</span>}
+                      {selectedProblem.is_showcase && <span className="pp-preview__chip">{t('problemPanelShowcaseBadge')}</span>}
+                      {selectedProblem.is_custom && <span className="pp-preview__chip">{t('problemPanelSavedCustomBadge')}</span>}
+                      {formatDifficulty(selectedProblem.difficulty, t('problemPanelDifficultyPrefix')) && (
+                        <span className="pp-preview__chip">{formatDifficulty(selectedProblem.difficulty, t('problemPanelDifficultyPrefix'))}</span>
                       )}
                     </div>
-                    <p className="pp-preview__text">{selectedProblem.preview}</p>
+                    {selectedProblemDetail ? (
+                      <ProblemStatementCard problem={selectedProblemDetail} mode="compact" />
+                    ) : browsePreviewLoadingId === selectedId ? (
+                      <div className="pp-preview__hint">{t('problemPanelLoadingPreview')}</div>
+                    ) : (
+                      <div className="pp-preview__hint">
+                        {t('problemPanelPreviewUnavailable')}
+                      </div>
+                    )}
                     <div className="pp-preview__hint">
-                      Launching from the library uses the stored statement and built-in public samples.
+                      {t('problemPanelLibraryLaunchHint')}
                     </div>
                   </>
                 ) : (
-                  <p className="pp-empty">Choose a problem to preview it here.</p>
+                  <p className="pp-empty">{t('problemPanelChoosePreview')}</p>
                 )}
               </div>
             </div>
@@ -605,11 +667,11 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
             <div className="pp-custom">
               <div className="pp-custom__header">
                 <div>
-                  <div className="pp-preview__kicker">Custom Authoring</div>
+                  <div className="pp-preview__kicker">{t('problemPanelCustomAuthoring')}</div>
                   <p className="pp-tests__hint">
                     {editingProblemId
-                      ? `Editing saved problem ${editingProblemId}`
-                      : 'Build a structured custom problem, optionally save it, then launch the run.'}
+                      ? t('problemPanelEditingSavedProblem').replace('{id}', editingProblemId)
+                      : t('problemPanelCustomAuthoringHint')}
                   </p>
                 </div>
                 {editingProblemId && (
@@ -618,44 +680,44 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                     className="pp-tests__add"
                     onClick={resetCustomForm}
                   >
-                    + New Blank Problem
+                    {t('problemPanelNewBlankProblem')}
                   </button>
                 )}
               </div>
 
               <div className="pp-custom__grid">
                 <label className="pp-field">
-                  <span className="pp-field__label">Title</span>
+                  <span className="pp-field__label">{t('problemPanelFieldTitle')}</span>
                   <input
                     className="pp-input"
                     type="text"
-                    placeholder="e.g. Minimum Segment Covers"
+                    placeholder={t('problemPanelTitlePlaceholder')}
                     value={customTitle}
                     onChange={(event) => setCustomTitle(event.target.value)}
                   />
                 </label>
                 <label className="pp-field">
-                  <span className="pp-field__label">Source Label</span>
+                  <span className="pp-field__label">{t('problemPanelFieldSourceLabel')}</span>
                   <input
                     className="pp-input"
                     type="text"
-                    placeholder="custom / interview / contest"
+                    placeholder={t('problemPanelSourcePlaceholder')}
                     value={customSource}
                     onChange={(event) => setCustomSource(event.target.value)}
                   />
                 </label>
                 <label className="pp-field">
-                  <span className="pp-field__label">Difficulty</span>
+                  <span className="pp-field__label">{t('problemPanelFieldDifficulty')}</span>
                   <input
                     className="pp-input"
                     type="text"
-                    placeholder="easy / medium / hard"
+                    placeholder={t('problemPanelDifficultyPlaceholder')}
                     value={customDifficulty}
                     onChange={(event) => setCustomDifficulty(event.target.value)}
                   />
                 </label>
                 <label className="pp-field">
-                  <span className="pp-field__label">Time Limit (ms)</span>
+                  <span className="pp-field__label">{t('problemPanelFieldTimeLimit')}</span>
                   <input
                     className="pp-input"
                     type="number"
@@ -665,7 +727,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                   />
                 </label>
                 <label className="pp-field">
-                  <span className="pp-field__label">Memory Limit (MB)</span>
+                  <span className="pp-field__label">{t('problemPanelFieldMemoryLimit')}</span>
                   <input
                     className="pp-input"
                     type="number"
@@ -677,20 +739,20 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               </div>
 
               <label className="pp-field">
-                <span className="pp-field__label">Problem Statement</span>
+                <span className="pp-field__label">{t('problemStatement')}</span>
                 <textarea
                   className="pp-textarea pp-textarea--statement"
-                  placeholder="Paste the full statement here..."
+                  placeholder={t('problemPanelStatementPlaceholder')}
                   value={customDesc}
                   onChange={(event) => setCustomDesc(event.target.value)}
                 />
               </label>
 
               <label className="pp-field">
-                <span className="pp-field__label">Constraints / Notes</span>
+                <span className="pp-field__label">{t('problemPanelFieldConstraintsNotes')}</span>
                 <textarea
                   className="pp-textarea pp-textarea--constraints"
-                  placeholder="Optional: list numeric bounds, edge conditions, or notes you want the agent to see clearly."
+                  placeholder={t('problemPanelConstraintsPlaceholder')}
                   value={constraintsText}
                   onChange={(event) => setConstraintsText(event.target.value)}
                 />
@@ -699,38 +761,38 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               <div className="pp-tests">
                 <div className="pp-tests__head">
                   <div>
-                    <div className="pp-preview__kicker">Public Tests</div>
-                    <p className="pp-tests__hint">Add any sample cases you want the agent to use as trusted starter tests.</p>
+                    <div className="pp-preview__kicker">{t('problemPanelPublicTests')}</div>
+                    <p className="pp-tests__hint">{t('problemPanelPublicTestsHint')}</p>
                   </div>
                   <button
                     className="pp-tests__add"
                     type="button"
                     onClick={() => setCustomTests((prev) => [...prev, createTestDraft()])}
                   >
-                    + Add Test
+                    {t('problemPanelAddTest')}
                   </button>
                 </div>
                 <div className="pp-tests__list">
                   {customTests.map((test, index) => (
                     <div key={test.id} className="pp-testCard">
                       <div className="pp-testCard__head">
-                        <span>Sample {index + 1}</span>
+                        <span>{t('problemPanelSampleNumber').replace('{number}', String(index + 1))}</span>
                         {customTests.length > 1 && (
                           <button
                             className="pp-testCard__remove"
                             type="button"
                             onClick={() => setCustomTests((prev) => prev.filter((item) => item.id !== test.id))}
                           >
-                            Remove
+                            {t('problemPanelRemove')}
                           </button>
                         )}
                       </div>
                       <div className="pp-testCard__grid">
                         <label className="pp-field">
-                          <span className="pp-field__label">Input</span>
+                          <span className="pp-field__label">{t('input')}</span>
                           <textarea
                             className="pp-textarea pp-textarea--test"
-                            placeholder="Sample input"
+                            placeholder={t('sampleInput')}
                             value={test.input}
                             onChange={(event) => {
                               const value = event.target.value;
@@ -739,10 +801,10 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                           />
                         </label>
                         <label className="pp-field">
-                          <span className="pp-field__label">Expected Output</span>
+                          <span className="pp-field__label">{t('expectedOutput')}</span>
                           <textarea
                             className="pp-textarea pp-textarea--test"
-                            placeholder="Expected output"
+                            placeholder={t('expectedOutput')}
                             value={test.output}
                             onChange={(event) => {
                               const value = event.target.value;
@@ -763,9 +825,9 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                     checked={saveToLibrary}
                     onChange={(event) => setSaveToLibrary(event.target.checked)}
                   />
-                  <span>Save this custom problem into the local library before solving</span>
+                  <span>{t('problemPanelSaveCustomBeforeSolving')}</span>
                 </label>
-                <span>{customDesc.trim().length} chars • {nonEmptyPublicTests.length} test case(s)</span>
+                <span>{t('problemPanelCustomMeta').replace('{chars}', String(customDesc.trim().length)).replace('{tests}', String(nonEmptyPublicTests.length))}</span>
               </div>
             </div>
           )}
@@ -775,18 +837,18 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
               <div className="pp-tests">
                 <div className="pp-tests__head">
                   <div>
-                    <div className="pp-preview__kicker">Codeforces Import</div>
+                    <div className="pp-preview__kicker">{t('problemPanelCodeforcesImport')}</div>
                     <p className="pp-tests__hint">
-                      Search by contest/index or title, then import the selected problem into the local library and solve it.
+                      {t('problemPanelCodeforcesHint')}
                     </p>
                   </div>
                 </div>
 
                 <label className="pp-field">
-                  <span className="pp-field__label">Search Codeforces</span>
+                  <span className="pp-field__label">{t('problemPanelSearchCodeforces')}</span>
                   <div className="pp-codeforces__controls">
                     <input
-                      aria-label="Search Codeforces"
+                      aria-label={t('problemPanelSearchCodeforces')}
                       className="pp-input"
                       type="text"
                       placeholder="e.g. 1575 C or Cyclic Sum"
@@ -799,12 +861,12 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                       disabled={codeforcesSearchLoading || codeforcesImportId !== null || !codeforcesQuery.trim()}
                       onClick={searchCodeforces}
                     >
-                      {codeforcesSearchLoading ? 'Searching...' : 'Search'}
+                      {codeforcesSearchLoading ? t('problemPanelSearching') : t('problemPanelSearch')}
                     </button>
                   </div>
                 </label>
 
-                <div className="pp-codeforces__results" role="list" aria-label="Codeforces Results">
+                <div className="pp-codeforces__results" role="list" aria-label={t('problemPanelCodeforcesResults')}>
                   {codeforcesResults.map((result) => (
                     <div key={result.problem_id} className="pp-codeforcesCard" role="listitem">
                       <div className="pp-item__top">
@@ -815,7 +877,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                           {result.index}
                         </span>
                         {typeof result.rating === 'number' && (
-                          <span className="pp-item__diff">rating {result.rating}</span>
+                          <span className="pp-item__diff">{t('problemPanelRatingPrefix')} {result.rating}</span>
                         )}
                       </div>
                       <div className="pp-item__preview">{result.problem_id}</div>
@@ -835,13 +897,13 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                           disabled={loading || manageLoadingId !== null || codeforcesImportId !== null}
                           onClick={() => importAndSolveCodeforces(result)}
                         >
-                          {codeforcesImportId === result.problem_id ? 'Importing...' : 'Import and Solve'}
+                          {codeforcesImportId === result.problem_id ? t('problemPanelImporting') : t('problemPanelImportAndSolve')}
                         </button>
                       </div>
                     </div>
                   ))}
                   {!codeforcesSearchLoading && codeforcesResults.length === 0 && (
-                    <div className="pp-empty">Search Codeforces to import a problem.</div>
+                    <div className="pp-empty">{t('problemPanelSearchCodeforcesEmpty')}</div>
                   )}
                 </div>
               </div>
@@ -862,26 +924,26 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                     <div className="pp-item__top">
                       <span className="pp-item__name">{problem.name}</span>
                       <span className="pp-item__badge">{problem.source}</span>
-                      <span className="pp-item__custom">saved</span>
+                      <span className="pp-item__custom">{t('problemPanelSavedBadge')}</span>
                     </div>
                     <div className="pp-item__preview">{problem.preview}</div>
                   </button>
                 ))}
                 {savedCustomProblems.length === 0 && (
-                  <div className="pp-empty">No saved custom problems yet.</div>
+                  <div className="pp-empty">{t('problemPanelNoSavedCustom')}</div>
                 )}
               </div>
 
               <div className="pp-preview">
-                <div className="pp-preview__kicker">Library Actions</div>
+                <div className="pp-preview__kicker">{t('problemPanelLibraryActions')}</div>
                 {managedProblem ? (
                   <>
                     <h3 className="pp-preview__title">{managedProblem.name}</h3>
                     <div className="pp-preview__chips">
                       <span className="pp-preview__chip">{managedProblem.source}</span>
-                      <span className="pp-preview__chip">saved custom</span>
-                      {formatDifficulty(managedProblem.difficulty) && (
-                        <span className="pp-preview__chip">{formatDifficulty(managedProblem.difficulty)}</span>
+                      <span className="pp-preview__chip">{t('problemPanelSavedCustomBadge')}</span>
+                      {formatDifficulty(managedProblem.difficulty, t('problemPanelDifficultyPrefix')) && (
+                        <span className="pp-preview__chip">{formatDifficulty(managedProblem.difficulty, t('problemPanelDifficultyPrefix'))}</span>
                       )}
                     </div>
                     <p className="pp-preview__text">{managedProblem.preview}</p>
@@ -892,7 +954,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                         disabled={loading || manageLoadingId !== null}
                         onClick={() => handleLoadCustomForEditing(managedProblem.id)}
                       >
-                        Rename / Edit
+                        {t('problemPanelRenameEdit')}
                       </button>
                       <button
                         type="button"
@@ -900,7 +962,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                         disabled={loading || manageLoadingId !== null}
                         onClick={() => handleSolveSavedProblem(managedProblem.id)}
                       >
-                        {manageLoadingId === managedProblem.id ? 'Starting...' : 'Solve Now'}
+                        {manageLoadingId === managedProblem.id ? t('problemPanelStarting') : t('problemPanelSolveNow')}
                       </button>
                       <button
                         type="button"
@@ -908,7 +970,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                         disabled={loading || manageLoadingId !== null}
                         onClick={() => handleCloneCustomProblem(managedProblem.id)}
                       >
-                        Clone
+                        {t('problemPanelClone')}
                       </button>
                       <button
                         type="button"
@@ -916,7 +978,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                         disabled={loading || manageLoadingId !== null}
                         onClick={() => handleExportCustomProblem(managedProblem.id)}
                       >
-                        Export JSON
+                        {t('problemPanelExportJson')}
                       </button>
                       <button
                         type="button"
@@ -924,12 +986,12 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
                         disabled={loading || manageLoadingId !== null}
                         onClick={() => handleDeleteCustomProblem(managedProblem.id)}
                       >
-                        Delete
+                        {t('delete')}
                       </button>
                     </div>
                   </>
                 ) : (
-                  <p className="pp-empty">Select a saved custom problem to edit, solve, or delete it.</p>
+                  <p className="pp-empty">{t('problemPanelSelectSavedCustom')}</p>
                 )}
               </div>
             </div>
@@ -944,7 +1006,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
 
         <div className="pp-footer">
           <div className="pp-config">
-            <label className="pp-config__label">Max Iterations</label>
+            <label className="pp-config__label">{t('problemPanelMaxIterations')}</label>
             <input
               className="pp-config__input"
               type="number"
@@ -959,11 +1021,11 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
             disabled={submitDisabled}
             onClick={handleSubmit}
           >
-            {loading ? 'Starting...' : editingProblemId && saveToLibrary && tab === 'custom'
-              ? 'Update & Start Solve'
+            {loading ? t('problemPanelStarting') : editingProblemId && saveToLibrary && tab === 'custom'
+              ? t('problemPanelUpdateStartSolve')
               : saveToLibrary && tab === 'custom'
-                ? 'Save & Start Solve'
-                : 'Start Solve'}
+                ? t('problemPanelSaveStartSolve')
+                : t('startSolve')}
           </button>
         </div>
       </div>
@@ -976,7 +1038,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: rgba(0, 0, 0, 0.6);
+          background: var(--color-problem-panel-overlay-bg);
           backdrop-filter: blur(6px);
           animation: fade-in 0.2s ease;
         }
@@ -986,7 +1048,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
           max-height: 90vh;
           display: flex;
           flex-direction: column;
-          background: linear-gradient(180deg, rgba(14, 19, 28, 0.98), rgba(7, 11, 17, 0.96));
+          background: var(--color-problem-panel-modal-bg);
           border: 1px solid var(--color-border-glass);
           border-radius: 24px;
           box-shadow: var(--shadow-md);
@@ -1107,7 +1169,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
           width: 100%;
           text-align: left;
           padding: 14px;
-          background: rgba(255,255,255,0.04);
+          background: var(--color-problem-panel-item-bg);
           border: 1px solid var(--color-border-subtle);
           border-radius: 16px;
           cursor: pointer;
@@ -1119,8 +1181,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         }
         .pp-item--selected {
           border-color: var(--color-accent-blue);
-          background: rgba(64, 139, 255, 0.08);
-          box-shadow: 0 12px 26px rgba(64, 139, 255, 0.12);
+          background: var(--color-problem-panel-selected-bg);
+          box-shadow: var(--color-problem-panel-selected-shadow);
         }
         .pp-item:focus-visible {
           outline: 2px solid rgba(64, 139, 255, 0.48);
@@ -1177,9 +1239,27 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         .pp-preview {
           padding: 18px;
           border-radius: 20px;
-          background: linear-gradient(180deg, rgba(64, 139, 255, 0.09), rgba(64, 139, 255, 0.03));
-          border: 1px solid rgba(64, 139, 255, 0.14);
+          background: var(--color-problem-panel-preview-bg);
+          border: 1px solid var(--color-problem-panel-preview-border);
           min-height: 240px;
+        }
+        .pp-preview--statement {
+          max-height: 560px;
+          overflow-y: auto;
+        }
+        .pp-preview--statement .statement-card {
+          padding: 0;
+        }
+        .pp-preview--statement .statement-card__bodyText {
+          font-size: 13px;
+          line-height: 1.7;
+        }
+        .pp-preview--statement .statement-card__code {
+          padding: 12px 14px;
+          font-size: 11px;
+        }
+        .pp-preview--statement .statement-card__sample {
+          padding: 14px;
         }
         .pp-error {
           margin: 0 28px;
@@ -1211,7 +1291,7 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         .pp-preview__chip {
           padding: 5px 10px;
           border-radius: 999px;
-          background: rgba(255,255,255,0.08);
+          background: var(--color-problem-panel-chip-bg);
           color: var(--color-text-secondary);
           font-size: 11px;
           font-weight: 700;
@@ -1294,8 +1374,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         .pp-tests {
           padding: 18px;
           border-radius: 20px;
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.06);
+          background: var(--color-problem-panel-nested-bg);
+          border: 1px solid var(--color-problem-panel-nested-border);
         }
         .pp-tests__head {
           display: flex;
@@ -1343,8 +1423,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         .pp-codeforcesCard {
           padding: 16px;
           border-radius: 18px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.06);
+          background: var(--color-problem-panel-card-bg);
+          border: 1px solid var(--color-problem-panel-nested-border);
         }
         .pp-codeforcesCard__actions {
           display: flex;
@@ -1354,8 +1434,8 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
         .pp-testCard {
           padding: 14px;
           border-radius: 18px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.05);
+          background: var(--color-problem-panel-card-bg);
+          border: 1px solid var(--color-problem-panel-card-border);
         }
         .pp-testCard__head {
           display: flex;
@@ -1503,6 +1583,9 @@ export default function ProblemPanel({ onSubmit, onClose }: ProblemPanelProps) {
           }
           .pp-footer {
             gap: 12px;
+          }
+          .pp-preview--statement {
+            max-height: none;
           }
         }
       `}</style>

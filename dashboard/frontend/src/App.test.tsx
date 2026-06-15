@@ -96,6 +96,59 @@ describe('App integration', () => {
     vi.useRealTimers();
   });
 
+  it('switches core dashboard chrome between English and Chinese', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs') {
+        return Promise.resolve(createResponse({ runs: [] }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+
+    render(<App />);
+
+    expect(screen.getByRole('button', { name: /switch language to chinese/i })).toBeInTheDocument();
+    expect(screen.getByText('Current Run')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /start solve/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /switch language to chinese/i }));
+
+    expect(screen.getByRole('button', { name: /切换语言为英文/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /切换风格为明亮/ })).toBeInTheDocument();
+    expect(screen.getByText('当前运行')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /开始求解/ })).toBeInTheDocument();
+    expect(screen.getByText('求解旅程')).toBeInTheDocument();
+  });
+
+  it('switches dashboard theme between dark and bright and remembers the choice', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs') {
+        return Promise.resolve(createResponse({ runs: [] }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+
+    const mounted = render(<App />);
+
+    expect(document.documentElement.dataset.dashboardTheme).toBe('dark');
+    expect(screen.getByRole('button', { name: /switch theme to bright/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /switch theme to bright/i }));
+
+    expect(document.documentElement.dataset.dashboardTheme).toBe('bright');
+    expect(window.localStorage.getItem('algopilot-dashboard-theme')).toBe('bright');
+    expect(screen.getByRole('button', { name: /switch theme to dark/i })).toBeInTheDocument();
+
+    mounted.unmount();
+    render(<App />);
+
+    expect(document.documentElement.dataset.dashboardTheme).toBe('bright');
+    expect(screen.getByRole('button', { name: /switch theme to dark/i })).toBeInTheDocument();
+  });
+
   it('supports start solve, live progress, final replay-ready mode, and refresh restore', async () => {
     const user = userEvent.setup();
     let runCompleted = false;
@@ -182,9 +235,6 @@ describe('App integration', () => {
 
     const mounted = render(<App />);
 
-    expect(screen.getByText(/^AlgoPilot$/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Algorithm Agent Journey/i)).not.toBeInTheDocument();
-
     await user.click(screen.getByRole('button', { name: /start solve/i }));
     await screen.findByText(/selected problem/i);
     const startSolveButtons = screen.getAllByRole('button', { name: /^start solve$/i });
@@ -197,8 +247,23 @@ describe('App integration', () => {
       MockWebSocket.instances[0].open();
     });
 
+    act(() => {
+      MockWebSocket.instances[0].emitMessage({
+        type: 'phase_done',
+        phase: 'abstract_phase',
+        seq: 3,
+        ts: 3,
+        data: { tags: ['two pointers', 'greedy'], confidence: 0.88 },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText('Abstract tags')).toBeInTheDocument());
+    expect(screen.getByText('two pointers')).toBeInTheDocument();
+    expect(screen.getByText('greedy')).toBeInTheDocument();
+    expect(screen.getByText('88% confidence')).toBeInTheDocument();
+
     await waitFor(() => expect(screen.getAllByText(/compile the draft/i).length).toBeGreaterThan(0));
-    expect(screen.getByText('showcase')).toBeInTheDocument();
+    expect(screen.getAllByText('showcase').length).toBeGreaterThan(0);
 
     act(() => {
       MockWebSocket.instances[0].emitMessage({
@@ -214,13 +279,6 @@ describe('App integration', () => {
             pass_rate: 2 / 3,
             full_testgen_completed: true,
             trust_tiers: {},
-          },
-          verification: {
-            decision: null,
-            confidence: null,
-            feedback_summary: null,
-            risk_flags: [],
-            trusted_failures: [],
           },
           hack: {
             result: null,
@@ -404,7 +462,7 @@ describe('App integration', () => {
       if (url === '/api/runs') {
         return Promise.resolve(createResponse({
           runs: runCompleted
-            ? [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'completed', final_status: 'success', iterations: 3, pass_rate: 1 }]
+            ? [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'completed', final_status: 'accepted', iterations: 3, pass_rate: 1 }]
             : [{ run_id: 'run-live', problem_name: 'Pair Sum', status: 'running', final_status: null, iterations: null, pass_rate: null }],
         }));
       }
@@ -420,11 +478,11 @@ describe('App integration', () => {
                   _metadata: { name: 'Pair Sum', source: 'showcase', is_showcase: true },
                 },
                 config: { max_iterations: 5 },
-                final_status: 'success',
+                final_status: 'accepted',
                 events: [
                   { event: { type: 'solve_start', problem_id: 'p1', problem_name: 'Pair Sum' }, seq: 0, timestamp: 1 },
                   { event: { type: 'artifact_snapshot', data: { algorithm_visualization: { supported: true, family: 'bfs', mode: 'teaching', title: 'Story', summary: 'summary', sample_source: 'public', sample_focus: '', sample_input: '', sample_output: '', steps: [{ step: 1, label: 'step', caption: 'caption' }] } } }, seq: 1, timestamp: 2 },
-                  { event: { type: 'final', status: 'success' }, seq: 2, timestamp: 3 },
+                  { event: { type: 'final', status: 'accepted' }, seq: 2, timestamp: 3 },
                 ],
               }
             : {
@@ -459,7 +517,7 @@ describe('App integration', () => {
 
     runCompleted = true;
     act(() => {
-      MockWebSocket.instances[0].emitMessage({ type: 'final', status: 'success' });
+      MockWebSocket.instances[0].emitMessage({ type: 'final', status: 'accepted' });
     });
 
     await waitFor(() => expect(screen.getAllByText(/replay/i).length).toBeGreaterThan(0));
@@ -682,6 +740,96 @@ describe('App integration', () => {
     await user.click(screen.getByRole('button', { name: /delete permanently/i }));
 
     await waitFor(() => expect(dropRun).toHaveBeenCalledWith('run-delete'));
+  });
+
+  it('renders the full problem statement before the unsupported story placeholder on the active run page', async () => {
+    vi.spyOn(useRunSessionModule, 'useRunSession').mockImplementation(() => ({
+      clearSession: vi.fn(),
+      dropRun: vi.fn(),
+      reconnect: vi.fn(async () => false),
+      restoreLatestRun: vi.fn(async () => false),
+      selectLiveRun: vi.fn(async () => true),
+      selectReplayRun: vi.fn(async () => true),
+      session: {
+        runId: 'run-story',
+        mode: 'live',
+        hydrationStatus: 'ready',
+        wsStatus: 'connected',
+        runDetail: {
+          runId: 'run-story',
+          problemId: 'p1',
+          problem: {
+            description: `Problem
+Find the shortest path in the graph.
+
+Input Format
+n m
+
+Output Format
+minimum distance`,
+            _metadata: {
+              name: 'Shortest Path',
+              source: 'showcase',
+              family: 'graphs',
+            },
+            public_tests: [{ input: '1 0', output: '0' }],
+          },
+          config: { max_iterations: 4 },
+          finalStatus: null,
+        },
+        events: [
+          { type: 'solve_start', problem_id: 'p1', problem_name: 'Shortest Path', seq: 0, ts: 1 },
+          { type: 'phase_start', phase: 'plan', seq: 1, ts: 2 },
+          {
+            type: 'artifact_snapshot',
+            seq: 2,
+            ts: 3,
+            data: {
+              algorithm_visualization: {
+                supported: false,
+                family: 'unsupported',
+                mode: 'teaching',
+                sample_source: 'public',
+                sample_focus: '',
+                sample_input: '',
+                sample_output: '',
+                title: 'Unsupported story',
+                summary: 'No supported story.',
+                steps: [],
+                fallback_text: '',
+              },
+            },
+          },
+        ],
+        shouldConnectLive: true,
+        selectedStageId: null,
+        selectedTimelineId: null,
+        replayCursor: 3,
+      },
+      setReplayCursor: vi.fn(),
+      setSelectedStageId: vi.fn(),
+      setSelectedTimelineId: vi.fn(),
+    }));
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs') {
+        return Promise.resolve(createResponse({ runs: [] }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+
+    render(<App />);
+
+    const main = screen.getByTestId('layout-main');
+    const problemStatement = await screen.findByText('Problem Statement');
+    const unsupportedPlaceholder = await screen.findByText('No family-level walkthrough is available for this problem.');
+
+    expect(screen.getByText('AlgoPilot Run Context')).toBeInTheDocument();
+    expect(problemStatement).toBeInTheDocument();
+    expect(unsupportedPlaceholder).toBeInTheDocument();
+    expect(main).toContainElement(problemStatement);
+    expect(main).toContainElement(unsupportedPlaceholder);
+    expect(problemStatement.compareDocumentPosition(unsupportedPlaceholder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('interrupts a live run into cancelled replay and clears the session when that replay is deleted', async () => {

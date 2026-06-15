@@ -1,5 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useI18n } from '../i18n';
 import { deleteRun } from '../utils/runApi';
 
 interface RunSummary {
@@ -43,6 +44,7 @@ export default function RunList({
   mode = 'idle',
   onDeletedRun,
 }: RunListProps) {
+  const { t } = useI18n();
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<RunFilter>('all');
@@ -112,7 +114,7 @@ export default function RunList({
   return (
     <div className="run-list">
       <div className="run-list__headerRow">
-        <div className="run-list__header">AlgoPilot runs and replays</div>
+        <div className="run-list__header">{t('runListTitle')}</div>
         <div className="run-list__count">{visibleRuns.length}</div>
       </div>
 
@@ -120,7 +122,7 @@ export default function RunList({
         <input
           className="run-list__search"
           type="text"
-          placeholder="Search runs..."
+          placeholder={t('searchRuns')}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
@@ -132,13 +134,13 @@ export default function RunList({
               className={`run-list__filter ${filter === nextFilter ? 'run-list__filter--active' : ''}`}
               onClick={() => setFilter(nextFilter)}
             >
-              {nextFilter}
+              {nextFilter === 'all' ? t('all') : nextFilter === 'live' ? t('live') : t('completed')}
             </button>
           ))}
         </div>
       </div>
 
-      {visibleRuns.length === 0 && <div className="run-list__empty">No runs match the current filter.</div>}
+      {visibleRuns.length === 0 && <div className="run-list__empty">{t('noRunsMatch')}</div>}
       {visibleRuns.map((run) => {
         const selected = activeRunId === run.run_id && mode !== 'idle';
         const selectionMode: RunSelectionMode = activeRunId === run.run_id && mode !== 'idle'
@@ -164,7 +166,7 @@ export default function RunList({
                 <div className="run-list__nameRow">
                   <span className="run-list__name">{run.problem_name || run.problem_id || run.run_id.slice(0, 8)}</span>
                   <span className={`run-list__status run-list__status--${run.status}`}>
-                    {run.status === 'running' ? 'Live' : (run.final_status || 'Replay')}
+                    {run.status === 'running' ? t('live') : (run.final_status || t('replay'))}
                   </span>
                   {run.problem_family && (
                     <span className="run-list__family">{run.problem_family}</span>
@@ -172,8 +174,8 @@ export default function RunList({
                 </div>
                 <span className="run-list__meta">{run.started_at?.slice(11, 19) || ''}</span>
                 <div className="run-list__stats">
-                  <span>pass {formatPassRate(run.pass_rate)}</span>
-                  <span>iters {run.iterations ?? '—'}</span>
+                  <span>{t('pass')} {formatPassRate(run.pass_rate)}</span>
+                  <span>{t('iters')} {run.iterations ?? '—'}</span>
                 </div>
               </div>
             </button>
@@ -185,7 +187,7 @@ export default function RunList({
                   disabled={selected}
                   onClick={() => selectRun(run)}
                 >
-                  {selected ? 'Watching' : 'Watch'}
+                  {selected ? t('watching') : t('watch')}
                 </button>
               )}
               {selectionMode === 'replay' && (
@@ -195,7 +197,7 @@ export default function RunList({
                   disabled={selected}
                   onClick={() => selectRun(run)}
                 >
-                  {selected ? 'Opened' : 'Replay'}
+                  {selected ? t('opened') : t('replay')}
                 </button>
               )}
               {run.status !== 'running' && (
@@ -204,7 +206,7 @@ export default function RunList({
                   className="run-list__btn run-list__btn--danger"
                   onClick={() => setDeleteTarget(run)}
                 >
-                  Delete
+                  {t('delete')}
                 </button>
               )}
             </div>
@@ -215,17 +217,17 @@ export default function RunList({
       {deleteTarget && (
         <div className="run-list__modalBackdrop" role="presentation">
           <div className="run-list__modal surface-card" role="dialog" aria-modal="true" aria-labelledby="run-delete-title">
-            <h3 id="run-delete-title">Delete this run record?</h3>
+            <h3 id="run-delete-title">{t('deleteRunTitle')}</h3>
             <p>
               This permanently deletes the dashboard record for <strong>{deleteTarget.problem_name || deleteTarget.run_id}</strong>
-              {' '}and removes the corresponding backend run file.
+              {' '}{t('deleteRunBodySuffix')}
             </p>
             <div className="run-list__modalActions">
               <button type="button" className="run-list__btn" disabled={deletePending} onClick={() => setDeleteTarget(null)}>
-                Cancel
+                {t('cancel')}
               </button>
               <button type="button" className="run-list__btn run-list__btn--danger" disabled={deletePending} onClick={() => { void confirmDelete(); }}>
-                {deletePending ? 'Deleting...' : 'Delete Permanently'}
+                {deletePending ? t('deleting') : t('deletePermanently')}
               </button>
             </div>
           </div>

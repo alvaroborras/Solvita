@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import AlgorithmStoryCard from './components/AlgorithmStoryCard';
 import EvidenceWorkbench from './components/EvidenceWorkbench';
 import FailureAnalysisCard from './components/FailureAnalysisCard';
 import FinalSummaryCard from './components/FinalSummaryCard';
+import AlgorithmStoryGate from './components/AlgorithmStoryGate';
+import LanguageToggle from './components/LanguageToggle';
+import ThemeToggle from './components/ThemeToggle';
 import Layout from './components/Layout';
 import LiveProgressPanel from './components/LiveProgressPanel';
 import LiveStatusStrip from './components/LiveStatusStrip';
 import PlaybackControls from './components/PlaybackControls';
 import ProblemPanel from './components/ProblemPanel';
+import ProblemStatementCard from './components/ProblemStatementCard';
 import ReplayScrubber from './components/ReplayScrubber';
 import RunContextCard from './components/RunContextCard';
 import RunList from './components/RunList';
@@ -18,12 +21,24 @@ import SolveTimeline from './components/SolveTimeline';
 import StageDetailPanel from './components/StageDetailPanel';
 import StatsPanel from './components/StatsPanel';
 import { useRunSession } from './hooks/useRunSession';
+import { DashboardThemeProvider } from './dashboardTheme';
+import {
+  DashboardI18nProvider,
+  localizeAlgorithmStory,
+  localizeDashboardText,
+  localizeLiveProgress,
+  localizeStageCard,
+  localizeStatusStrip,
+  localizeTimelineEntry,
+  useI18n,
+} from './i18n';
 import type { AlgoPilotEvent } from './types/events';
 import type { JourneyStageId, JourneyTimelineEntry } from './types/journey';
 import { buildSolveJourney } from './utils/buildSolveJourney';
 import { buildLiveProgress } from './utils/buildLiveProgress';
 import { buildFailureAnalysis } from './utils/failureAnalysis';
 import { extractRunArtifacts } from './utils/extractRunArtifacts';
+import { extractAbstractInsight } from './utils/abstractInsight';
 import { cancelRun, createRun } from './utils/runApi';
 
 function latestProcessedSeq(events: AlgoPilotEvent[]): number {
@@ -58,7 +73,8 @@ function clampReplayCursor(cursor: number, total: number): number {
   return Math.max(0, Math.min(cursor, total));
 }
 
-export default function App() {
+function AppContent() {
+  const { language, t } = useI18n();
   const {
     dropRun,
     reconnect,
@@ -89,10 +105,15 @@ export default function App() {
   const displayJourney = useMemo(() => buildSolveJourney(displayEvents), [displayEvents]);
   const canonicalArtifacts = useMemo(() => extractRunArtifacts(session.events), [session.events]);
   const displayArtifacts = useMemo(() => extractRunArtifacts(displayEvents), [displayEvents]);
+  const abstractInsight = useMemo(() => extractAbstractInsight(displayEvents), [displayEvents]);
 
   const liveProgress = useMemo(
     () => buildLiveProgress({ events: displayEvents, artifact: displayArtifacts.finalArtifact }),
     [displayArtifacts.finalArtifact, displayEvents],
+  );
+  const localizedLiveProgress = useMemo(
+    () => localizeLiveProgress(language, liveProgress),
+    [language, liveProgress],
   );
 
   const failureAnalysis = useMemo(
@@ -106,7 +127,29 @@ export default function App() {
   );
 
   const currentStageId = displayJourney.activeStageId || displayJourney.lastVisitedStageId;
-  const currentStage = displayJourney.stages.find((stage) => stage.id === currentStageId) || null;
+  const localizedStages = useMemo(
+    () => displayJourney.stages.map((stage) => localizeStageCard(language, stage)),
+    [displayJourney.stages, language],
+  );
+  const localizedDisplayStatus = useMemo(
+    () => localizeStatusStrip(language, displayJourney.statusStrip),
+    [displayJourney.statusStrip, language],
+  );
+  const localizedDisplayTimeline = useMemo(
+    () => displayJourney.timeline.map((entry) => localizeTimelineEntry(language, entry)),
+    [displayJourney.timeline, language],
+  );
+  const localizedCanonicalTimeline = useMemo(
+    () => canonicalJourney.timeline.map((entry) => localizeTimelineEntry(language, entry)),
+    [canonicalJourney.timeline, language],
+  );
+  const localizedAlgorithmStory = useMemo(
+    () => displayArtifacts.finalArtifact?.algorithmVisualization
+      ? localizeAlgorithmStory(language, displayArtifacts.finalArtifact.algorithmVisualization)
+      : null,
+    [displayArtifacts.finalArtifact?.algorithmVisualization, language],
+  );
+  const currentStage = localizedStages.find((stage) => stage.id === currentStageId) || null;
   const progressSeq = latestProcessedSeq(displayEvents);
   const totalStages = displayJourney.stages.length;
   const completedStageCount = displayJourney.stages.filter((stage) => stage.status === 'completed').length;
@@ -222,9 +265,9 @@ export default function App() {
     setSelectedTimelineId,
   ]);
 
-  const selectedStage = displayJourney.stages.find((stage) => stage.id === session.selectedStageId) || currentStage;
-  const selectedTimelineEntry = displayJourney.timeline.find((entry) => entry.id === session.selectedTimelineId)
-    || latestTimelineForStage(displayJourney.timeline, selectedStage?.id || null);
+  const selectedStage = localizedStages.find((stage) => stage.id === session.selectedStageId) || currentStage;
+  const selectedTimelineEntry = localizedDisplayTimeline.find((entry) => entry.id === session.selectedTimelineId)
+    || latestTimelineForStage(localizedDisplayTimeline, selectedStage?.id || null);
 
   const handleStageSelect = useCallback((stageId: JourneyStageId) => {
     setSelectedStageId(stageId);
@@ -317,7 +360,7 @@ export default function App() {
     dropRun(runId);
   }, [dropRun]);
 
-  const currentStageLabel = currentStage?.title || displayJourney.statusStrip.overallStatus;
+  const currentStageLabel = currentStage?.title || localizedDisplayStatus.overallStatus;
   const finalStatus = session.runDetail?.finalStatus || canonicalJourney.finalStatus;
 
   const header = (
@@ -345,24 +388,26 @@ export default function App() {
         <div className="dashboard-header__identity">
           <div className="dashboard-header__brand">AlgoPilot</div>
           <div className="dashboard-header__problemRow">
-            <h1 className="dashboard-header__problem">{problemName || 'No Active Problem'}</h1>
+            <h1 className="dashboard-header__problem">{problemName || t('noActiveProblem')}</h1>
             <span className={`journey-pill journey-pill--mode journey-pill--mode-${session.mode}`}>
               {session.mode.toUpperCase()}
             </span>
-            <span className="journey-pill journey-pill--status">{displayJourney.statusStrip.overallStatus}</span>
+            <span className="journey-pill journey-pill--status">{localizedDisplayStatus.overallStatus}</span>
           </div>
         </div>
 
         <div className="dashboard-header__actions">
+          <ThemeToggle />
+          <LanguageToggle />
           <StatsPanel
             artifact={displayArtifacts.finalArtifact}
             events={displayEvents}
-            liveProgress={liveProgress}
+            liveProgress={localizedLiveProgress}
             mode={session.mode}
             wsStatus={session.wsStatus}
           />
           <button className="dashboard-header__cta" onClick={() => setShowProblemPanel(true)}>
-            Start Solve
+            {t('startSolve')}
           </button>
         </div>
       </div>
@@ -373,14 +418,14 @@ export default function App() {
     <div className="dashboard-main">
       <section className="hero-card surface-card">
         <div className="hero-card__text">
-          <div className="surface-kicker">Current Run</div>
+          <div className="surface-kicker">{t('currentRun')}</div>
           <h2 className="hero-card__title">
-            {problemName || 'Pick a sample or paste a custom problem to begin'}
+            {problemName || t('pickProblemToBegin')}
           </h2>
-          <p className="hero-card__description">{displayJourney.statusStrip.detail}</p>
+          <p className="hero-card__description">{localizedDisplayStatus.detail}</p>
         </div>
         <div className="hero-card__summary">
-          <div className="hero-card__summaryLabel">Journey Progress</div>
+          <div className="hero-card__summaryLabel">{t('journeyProgress')}</div>
           <div className="hero-card__summaryValue">{completedStageCount}/{totalStages}</div>
           <div className="hero-card__progressBar">
             <div
@@ -389,19 +434,19 @@ export default function App() {
             />
           </div>
           <div className="hero-card__summaryStats">
-            <span>{currentStageLabel || 'Waiting'}</span>
+            <span>{currentStageLabel || t('waiting')}</span>
             <span>
               {session.mode === 'replay'
                 ? `${session.replayCursor}/${session.events.length || 0}`
-                : `${session.events.length} events`}
+                : `${session.events.length} ${t('events')}`}
             </span>
           </div>
-          <div className="hero-card__summaryHint">{displayJourney.statusStrip.nextHint}</div>
+          <div className="hero-card__summaryHint">{localizedDisplayStatus.nextHint}</div>
         </div>
       </section>
 
       <SolveJourneyMap
-        stages={displayJourney.stages}
+        stages={localizedStages}
         activeStageId={displayJourney.activeStageId}
         selectedStageId={session.selectedStageId as JourneyStageId | null}
         mode={session.mode}
@@ -409,9 +454,9 @@ export default function App() {
       />
 
       <div className="dashboard-progressGrid">
-        <LiveProgressPanel progress={liveProgress} />
+        <LiveProgressPanel progress={localizedLiveProgress} />
         <LiveStatusStrip
-          status={displayJourney.statusStrip}
+          status={localizedDisplayStatus}
           currentStage={currentStage}
           mode={session.mode}
           replayCursor={session.replayCursor}
@@ -425,6 +470,7 @@ export default function App() {
         problemName={problemName}
         problem={session.runDetail?.problem || null}
         config={session.runDetail?.config || null}
+        abstractInsight={abstractInsight}
         eventCount={displayEvents.length}
         stageCount={totalStages}
         touchedStageCount={touchedStageCount}
@@ -435,25 +481,27 @@ export default function App() {
         finalStatus={finalStatus}
       />
 
+      <ProblemStatementCard problem={session.runDetail?.problem || null} mode="full" />
+
       <FinalSummaryCard
         problemName={problemName}
         finalStatus={finalStatus}
-        timeline={canonicalJourney.timeline}
+        timeline={localizedCanonicalTimeline}
         artifact={canonicalArtifacts.finalArtifact}
       />
 
       <FailureAnalysisCard analysis={failureAnalysis} />
 
-      {(finalStatus === null || finalStatus === 'success') && (
-        <AlgorithmStoryCard
-          story={displayArtifacts.finalArtifact?.algorithmVisualization || null}
+      {(finalStatus === null || finalStatus === 'success' || finalStatus === 'accepted') && (
+        <AlgorithmStoryGate
+          story={localizedAlgorithmStory}
           mode={session.mode}
           revision={displayArtifacts.finalArtifact?.solution.version || 0}
         />
       )}
 
       <SolveTimeline
-        entries={canonicalJourney.timeline}
+        entries={localizedCanonicalTimeline}
         progressSeq={progressSeq}
         selectedEntryId={session.selectedTimelineId}
         mode={session.mode}
@@ -476,7 +524,7 @@ export default function App() {
       {session.mode === 'replay' && (
         <section className="side-card surface-card">
           <ReplayScrubber
-            entries={canonicalJourney.timeline}
+            entries={localizedCanonicalTimeline}
             cursor={session.replayCursor}
             total={session.events.length}
             selectedEntryId={session.selectedTimelineId}
@@ -492,7 +540,7 @@ export default function App() {
               onSpeedChange={setReplaySpeed}
             />
             <p className="side-card__hint">
-              The map, timeline, and live progress panels stay synced to the replay cursor.
+              {localizeDashboardText(language, 'The map, timeline, and live progress panels stay synced to the replay cursor.')}
             </p>
           </div>
         </section>
@@ -520,5 +568,15 @@ export default function App() {
         />
       )}
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <DashboardI18nProvider>
+      <DashboardThemeProvider>
+        <AppContent />
+      </DashboardThemeProvider>
+    </DashboardI18nProvider>
   );
 }
