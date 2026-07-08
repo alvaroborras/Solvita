@@ -1,3 +1,11 @@
+---
+layout: docs
+title: Solvita API Docs
+description: Public API reference for Solvita workflow, CLI, model configuration, and dashboard services.
+active: api
+source_path: docs/api.md
+---
+
 # Solvita API Docs
 
 This reference is organized by component role. Start from the public workflow API for scripts, use the command-line interfaces for local solving, and use the dashboard API when you need a service process with REST and WebSocket updates.

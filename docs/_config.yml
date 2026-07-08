@@ -1,0 +1,7 @@
+title: Solvita
+description: Intelligent Competitive Programming Agent with agentic evolution, trainable memory, and dashboard APIs.
+lang: en
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false

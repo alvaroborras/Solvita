@@ -1,3 +1,11 @@
+---
+layout: docs
+title: Trainable Memory System Guide
+description: Trainable memory and role-specific knowledge network guide for Solvita.
+active: memory
+source_path: docs/MEMORY_SYSTEM_GUIDE.md
+---
+
 # Trainable Memory System Guide
 
 ## Quick Start

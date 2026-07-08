@@ -1,0 +1,346 @@
+:root {
+  --docs-blue: #2980b9;
+  --docs-blue-dark: #1f5f8b;
+  --docs-nav: #2f3f4f;
+  --docs-nav-deep: #24313d;
+  --docs-nav-text: #d9e4ec;
+  --docs-border: #d9e2ec;
+  --docs-text: #404040;
+  --docs-muted: #6b7b88;
+  --docs-code-bg: #f4f8fb;
+  --docs-page-bg: #edf2f7;
+  --docs-content-bg: #ffffff;
+  --docs-link: #2980b9;
+  --docs-sidebar-width: 300px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  scroll-behavior: smooth;
+}
+
+body.docs-shell {
+  min-height: 100vh;
+  margin: 0;
+  background: var(--docs-page-bg);
+  color: var(--docs-text);
+  font-family: Lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.62;
+}
+
+a {
+  color: var(--docs-link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.docs-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--docs-sidebar-width);
+  overflow-y: auto;
+  background: var(--docs-nav);
+  color: var(--docs-nav-text);
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.18);
+}
+
+.docs-brand {
+  padding: 22px 24px 24px;
+  background: linear-gradient(180deg, var(--docs-blue), var(--docs-blue-dark));
+  color: #ffffff;
+}
+
+.docs-brand__title {
+  display: block;
+  color: #ffffff;
+  font-family: "Roboto Slab", Georgia, serif;
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.docs-brand__title:hover {
+  text-decoration: none;
+}
+
+.docs-brand__tagline {
+  margin-top: 8px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.docs-section-label {
+  margin-top: 18px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+}
+
+.docs-nav {
+  padding: 18px 0 28px;
+}
+
+.docs-nav__caption {
+  margin: 20px 24px 8px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.docs-nav__link {
+  display: block;
+  padding: 8px 24px;
+  border-left: 4px solid transparent;
+  color: var(--docs-nav-text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.docs-nav__link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  text-decoration: none;
+}
+
+.docs-nav__link.is-active {
+  background: var(--docs-nav-deep);
+  border-left-color: #69b4df;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.docs-page {
+  min-height: 100vh;
+  margin-left: var(--docs-sidebar-width);
+}
+
+.docs-topbar {
+  display: none;
+}
+
+.docs-main {
+  max-width: 1060px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px 46px 56px;
+  background: var(--docs-content-bg);
+  box-shadow: 0 0 28px rgba(29, 45, 57, 0.08);
+}
+
+.docs-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--docs-border);
+  color: var(--docs-muted);
+  font-size: 13px;
+}
+
+.docs-breadcrumbs a {
+  color: var(--docs-link);
+}
+
+.docs-source {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.docs-content {
+  padding-top: 28px;
+}
+
+.docs-content h1,
+.docs-content h2,
+.docs-content h3,
+.docs-content h4 {
+  color: #1f2933;
+  font-family: "Roboto Slab", Georgia, serif;
+  font-weight: 700;
+  line-height: 1.28;
+}
+
+.docs-content h1 {
+  margin: 0 0 22px;
+  font-size: 34px;
+}
+
+.docs-content h2 {
+  margin: 42px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--docs-border);
+  font-size: 25px;
+}
+
+.docs-content h3 {
+  margin: 30px 0 12px;
+  font-size: 20px;
+}
+
+.docs-content h4 {
+  margin: 24px 0 10px;
+  font-size: 17px;
+}
+
+.docs-content p {
+  margin: 0 0 16px;
+}
+
+.docs-content ul,
+.docs-content ol {
+  margin: 0 0 18px 24px;
+  padding: 0;
+}
+
+.docs-content li {
+  margin: 5px 0;
+}
+
+.docs-content table {
+  display: block;
+  width: 100%;
+  margin: 18px 0 26px;
+  overflow-x: auto;
+  border-collapse: collapse;
+  border: 1px solid var(--docs-border);
+  font-size: 14px;
+}
+
+.docs-content th,
+.docs-content td {
+  padding: 10px 13px;
+  border: 1px solid var(--docs-border);
+  vertical-align: top;
+}
+
+.docs-content th {
+  background: #e7f2fa;
+  color: #1f5f8b;
+  font-weight: 700;
+  text-align: left;
+}
+
+.docs-content tr:nth-child(even) td {
+  background: #fbfdff;
+}
+
+.docs-content code {
+  padding: 2px 5px;
+  border: 1px solid #d8e3ec;
+  border-radius: 3px;
+  background: var(--docs-code-bg);
+  color: #c0392b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.docs-content pre {
+  margin: 18px 0 24px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid #d8e3ec;
+  border-left: 4px solid #6ab0de;
+  border-radius: 3px;
+  background: #f5f8fb;
+  color: #2f3f4f;
+  line-height: 1.45;
+}
+
+.docs-content pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+}
+
+.docs-content blockquote {
+  margin: 20px 0;
+  padding: 12px 18px;
+  border-left: 4px solid #6ab0de;
+  background: #f2f8fc;
+  color: #4a5a67;
+}
+
+.docs-content img {
+  max-width: 100%;
+}
+
+.docs-content hr {
+  height: 1px;
+  margin: 28px 0;
+  border: 0;
+  background: var(--docs-border);
+}
+
+@media (max-width: 900px) {
+  .docs-sidebar {
+    position: static;
+    width: 100%;
+    max-height: none;
+  }
+
+  .docs-brand {
+    padding: 18px 22px;
+  }
+
+  .docs-section-label {
+    display: none;
+  }
+
+  .docs-nav {
+    display: none;
+  }
+
+  .docs-page {
+    margin-left: 0;
+  }
+
+  .docs-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 10px 18px;
+    background: var(--docs-blue-dark);
+    color: #ffffff;
+  }
+
+  .docs-topbar a {
+    color: #ffffff;
+  }
+
+  .docs-topbar__links {
+    display: flex;
+    gap: 14px;
+    font-size: 13px;
+  }
+
+  .docs-main {
+    padding: 22px 20px 44px;
+  }
+
+  .docs-breadcrumbs {
+    flex-wrap: wrap;
+  }
+
+  .docs-source {
+    width: 100%;
+    margin-left: 0;
+  }
+}

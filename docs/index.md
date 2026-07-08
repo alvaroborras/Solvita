@@ -1,3 +1,11 @@
+---
+layout: docs
+title: Solvita
+description: Solvita project documentation and quick start.
+active: home
+source_path: docs/index.md
+---
+
 # Solvita
 
 **Enhancing Large Language Models for Competitive Programming via Agentic Evolution**

@@ -1,3 +1,11 @@
+---
+layout: docs
+title: GitHub Pages
+description: GitHub Pages setup and maintenance notes for Solvita documentation.
+active: pages
+source_path: docs/pages.md
+---
+
 # GitHub Pages
 
 This repository includes a lightweight project-page source under `docs/`.
