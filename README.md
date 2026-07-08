@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2605.15301"><img src="https://img.shields.io/badge/arXiv-2605.15301-b31b1b.svg?logo=arxiv" alt="arXiv"></a>
   <a href="https://nju-link.github.io/Solvita/"><img src="https://img.shields.io/badge/Project-Page-2ea44f.svg?logo=githubpages&logoColor=white" alt="Project Page"></a>
+  <a href="https://nju-link.github.io/Solvita/api.html"><img src="https://img.shields.io/badge/API-Docs-0A7AFF.svg?logo=readthedocs&logoColor=white" alt="API Docs"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-success.svg" alt="MIT License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.10+"></a>
   <a href="https://pytest.org/"><img src="https://img.shields.io/badge/tests-pytest-0A9EDC.svg?logo=pytest&logoColor=white" alt="pytest"></a>
@@ -18,8 +19,8 @@
 
 <p align="center">
   <a href="https://arxiv.org/abs/2605.15301">Paper</a> |
-  <a href="docs/index.md">Pages</a> |
-  <a href="docs/api.md">API Docs</a> |
+  <a href="https://nju-link.github.io/Solvita/">Pages</a> |
+  <a href="https://nju-link.github.io/Solvita/api.html">API Docs</a> |
   <a href="cli/README.md">CLI</a> |
   <a href="docs/MEMORY_SYSTEM_GUIDE.md">Memory Guide</a> |
   <a href="#citation">Citation</a>
@@ -72,7 +73,7 @@ llm:
   max_tokens: 128000
 ```
 
-More provider and runtime examples are in [docs/api.md](docs/api.md).
+More provider and runtime examples are in the [API docs](https://nju-link.github.io/Solvita/api.html).
 
 ## Quick Start
 
@@ -132,7 +133,7 @@ See [cli/README.md](cli/README.md) and [USAGE.zh-CN.md](USAGE.zh-CN.md) for the 
 | Topic | Link |
 | --- | --- |
 | Project page source and GitHub Pages notes | [docs/index.md](docs/index.md), [docs/pages.md](docs/pages.md) |
-| Python, CLI, model, REST, and WebSocket API calls | [docs/api.md](docs/api.md) |
+| Python, CLI, model, REST, and WebSocket API calls | [API docs](https://nju-link.github.io/Solvita/api.html) ([source](docs/api.md)) |
 | Trainable memory and role-specific knowledge networks | [docs/MEMORY_SYSTEM_GUIDE.md](docs/MEMORY_SYSTEM_GUIDE.md) |
 | Chinese trainable-memory guide | [docs/trainable-memory-network-guide.zh-CN.md](docs/trainable-memory-network-guide.zh-CN.md) |
 | Contribution and secret-safety workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |

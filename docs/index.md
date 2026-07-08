@@ -2,7 +2,7 @@
 
 **Enhancing Large Language Models for Competitive Programming via Agentic Evolution**
 
-[Paper](https://arxiv.org/abs/2605.15301) | [Repository](https://github.com/NJU-LINK/Solvita) | [API Docs](api.md) | [Memory Guide](MEMORY_SYSTEM_GUIDE.md)
+[Paper](https://arxiv.org/abs/2605.15301) | [Repository](https://github.com/NJU-LINK/Solvita) | [API Docs](https://nju-link.github.io/Solvita/api.html) | [Memory Guide](MEMORY_SYSTEM_GUIDE.md)
 
 ![Solvita overview](assets/solvita-overview.png)
 
@@ -37,7 +37,7 @@ result = run_workflow(problem, config={"max_iterations": 5})
 print(result["solution"]["code"])
 ```
 
-See [api.md](api.md) for Python, CLI, model-provider, REST, and WebSocket examples.
+See the [API docs](https://nju-link.github.io/Solvita/api.html) for Python, CLI, model-provider, REST, and WebSocket examples.
 
 ## Open Source
 
