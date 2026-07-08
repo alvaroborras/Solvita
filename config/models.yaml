@@ -15,7 +15,7 @@ llm:
   #   https://dashscope.aliyuncs.com/api/v1
   #   any OpenAI-compatible gateway you self-host or subscribe to
   base_url: "https://api.openai.com/v1"
-  # Leave empty here; export SOLVITA_API_KEY=sk-... before running.
+  # Leave empty here; export SOLVITA_API_KEY=<your-api-key> before running.
   api_key: ""
 
   # Default model for all nodes; override per-role below if needed.

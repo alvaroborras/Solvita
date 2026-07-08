@@ -34,9 +34,9 @@ cp config/models.yaml.example config/models.yaml
 ```
 
 The pre-commit hook blocks any commit that would leak an LLM API key
-(matching `sk-...`, `gsk_...`, etc.) into a tracked YAML / .env / shell /
-markdown file. If a match is a false positive (e.g. a sample key in
-docs), bypass with `git commit --no-verify`.
+(including common OpenAI-style, `gsk_`, and Claude-style prefixes) into a
+tracked YAML / .env / shell / markdown file. If a match is a false positive
+(e.g. a sample key in docs), bypass with `git commit --no-verify`.
 
 ## Code Style
 
@@ -78,4 +78,3 @@ pytest --cov=src tests/
 ## Code of Conduct
 
 Please be respectful and constructive in all interactions.
-

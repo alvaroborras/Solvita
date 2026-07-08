@@ -38,7 +38,7 @@ if [ ${#violations[@]} -ne 0 ]; then
   done
   echo "" >&2
   echo "Set the key via SOLVITA_API_KEY in your shell instead:" >&2
-  echo "   export SOLVITA_API_KEY='sk-...'" >&2
+  echo "   export SOLVITA_API_KEY='<your-api-key>'" >&2
   echo "" >&2
   echo "If this is intentional (e.g. a sample/test key), bypass with --no-verify." >&2
   exit 1

@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -z "${SOLVITA_API_KEY:-}" ]]; then
   echo "ERROR: SOLVITA_API_KEY is not set." >&2
-  echo "  export SOLVITA_API_KEY='sk-...'" >&2
+  echo "  export SOLVITA_API_KEY='<your-api-key>'" >&2
   exit 1
 fi
 
