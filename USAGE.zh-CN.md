@@ -1,6 +1,6 @@
 # Solvita CLI 使用说明
 
-`dev` 分支在 `supplement_upload` 的最新后端之上叠加了 `solvita-cli` 的 Ink/React 终端前端，并完成了 NDJSON 事件桥接。本文档说明如何在本地把它跑起来。
+Solvita 由一个 Python 后端（LangGraph workflow）和一个 Ink/React 终端前端（`cli/`）组成，两者通过 NDJSON 事件桥接通信。本文档说明如何在本地把它跑起来。
 
 ---
 
@@ -202,29 +202,7 @@ tail -f solvita_run.log
 
 ---
 
-## 10. 分支说明
-
-```
-dev               ← 你正在用的：前端 + 最新后端 + 事件桥
-supplement_upload ← 最新后端（无前端）
-with_network      ← 后端 backup（落后 supplement_upload 3 commit）
-solvita-cli       ← 旧前端 + 旧后端（后端缺很多新东西，不推荐用）
-main              ← 早期骨架，仅供参考
-```
-
-`dev` 当前 HEAD：
-
-```
-634ae19  chore: add run_solvita.sh wrapper, ignore build artifacts
-632df8b  config: provide generic OpenAI-compatible defaults
-ed2a560  fix: stop --model default overriding yaml-resolved model
-0e19a6a  feat: port NDJSON event-streaming bridge from solvita-cli backend
-aab2898  merge: add solvita-cli frontend onto latest backend (supplement_upload)
-```
-
----
-
-## 11. 三步速记
+## 10. 三步速记
 
 ```bash
 # 1. 进项目 + export key（每个新终端做一次）
