@@ -1,15 +1,60 @@
-# Solvita API Usage
+# Solvita API Docs
 
-This document covers the public call surfaces that are useful for scripts, services, and demos:
+This reference is organized by component role. Start from the public workflow API for scripts, use the command-line interfaces for local solving, and use the dashboard API when you need a service process with REST and WebSocket updates.
 
-- Python workflow API
-- Python command-line entry point
-- LLM provider configuration
-- Dashboard REST and WebSocket API
+## API Contents
 
-## Problem Schema
+| Section | Public surface | Use when |
+| --- | --- | --- |
+| [Core Components](#core-components) | `src.graph`, `src.graph.state`, `src.events`, `src.llm` | You need the canonical workflow, state contract, event stream, or model client configuration. |
+| [Agent Components](#agent-components) | Planner, Solver, Oracle, Hacker nodes | You want to understand the role-specialized agent loop and the data each role writes. |
+| [Memory Components](#memory-components) | Trainable memory, solver network, failure bank, oracle and hacker memory | You want retrieval, skill routing, or learning from prior runs. |
+| [Runtime Interfaces](#runtime-interfaces) | Python API, Python CLI, terminal CLI, model configuration | You want to run Solvita from scripts or local command lines. |
+| [Dashboard Components](#dashboard-components) | FastAPI REST endpoints and live WebSocket | You want a long-running API process for demos, dashboards, or external services. |
+| [Data Contracts](#data-contracts) | Problem payload, final state, events, run objects | You need stable request and response shapes. |
 
-All entry points accept the same minimal problem shape.
+## Core Components
+
+### Overview
+
+The core layer provides the infrastructure shared by all Solvita entry points. It builds the LangGraph workflow, validates the problem payload shape, records state across phases, routes model calls, and emits optional NDJSON events for frontends.
+
+### Essential Infrastructure
+
+- **Workflow**: `src.graph.workflow` exposes `run_workflow`, `stream_workflow`, and `create_solvita_workflow`.
+- **State**: `src.graph.state` defines `SolvitaState` plus typed nested dictionaries such as `ProblemData`, `PlanData`, `SolutionData`, and `TestData`.
+- **Events**: `src.events` provides an opt-in NDJSON emitter used by the terminal CLI and dashboard runner.
+- **LLM Client**: `src.llm.unified_client.UnifiedLLMClient` resolves provider settings from runtime config, YAML, and environment variables.
+- **Sandbox Utilities**: `src.utils.cpp_execution` compiles and runs generated C++ artifacts under bounded execution limits.
+
+### Key Features
+
+- **Unified Interface**: Python, CLI, and dashboard calls all use the same problem schema and workflow state.
+- **Configuration-Driven Execution**: Runtime behavior is controlled through `config`, `config/models.yaml`, and `SOLVITA_*` environment variables.
+- **Streamable Runs**: `stream_workflow` and `--stream-events` expose workflow progress as one JSON object per line.
+- **Role Separation**: Planner, Solver, Oracle, and Hacker phases write to separate state fields.
+- **Token Accounting**: Final states include prompt and completion token counters when provider metadata is available or locally estimated.
+
+### Component Interactions
+
+1. **Problem Input** enters as a dictionary with description, limits, public tests, and optional metadata.
+2. **Workflow State** stores phase outputs under `problem`, `plan`, `solution`, `tests`, `verification`, and hacker fields.
+3. **Agent Nodes** update the state through the Abstract -> TestGen -> CodeGen -> Hacker loop.
+4. **Memory Components** retrieve advice before generation and settle rewards after outcomes are known.
+5. **Runtime Interfaces** either return the final state directly or stream events while the same workflow runs.
+
+### Design Principles
+
+- **Stable Public Surface**: Prefer `src.graph.run_workflow` and `src.graph.stream_workflow` over calling individual nodes directly.
+- **Composable State**: Nodes communicate through typed dictionaries rather than global mutable objects.
+- **Local First**: The default API runs from a checkout and writes outputs locally unless a dashboard server is started.
+- **Secret Safety**: Real provider keys belong in environment variables or local ignored config, not in committed files.
+
+## Data Contracts
+
+### Problem Schema
+
+All public entry points accept the same minimal problem shape.
 
 ```json
 {
@@ -23,23 +68,38 @@ All entry points accept the same minimal problem shape.
 }
 ```
 
-Recommended fields:
-
 | Field | Type | Notes |
 | --- | --- | --- |
-| `problem_id` | string | Optional stable id for logs and dashboard runs. |
+| `problem_id` | string | Optional stable id for logs, dashboard runs, and output files. |
 | `description` | string | Required for normal solving. Include constraints and examples when possible. |
 | `time_limit` | integer | Milliseconds. Defaults are applied by some frontends when omitted. |
 | `space_limit` | integer | Megabytes. |
 | `public_tests` | array | Each item has `input` and `output` strings. |
-| `_metadata` | object | Optional UI metadata such as source, title, rating, tags, or family. |
+| `_metadata` | object | Optional UI metadata such as source, title, rating, tags, family, or custom flags. |
 
-## Python Workflow API
+### Final State
+
+`run_workflow` and `stream_workflow` return the full workflow state. Most integrations only need these fields.
+
+| Field | Meaning |
+| --- | --- |
+| `status` | Final workflow status, such as `success`, `max_iterations`, or `error`. |
+| `solution.code` | Final C++ solution, when one was produced. |
+| `tests.pass_rate` | Fraction of final tests passed by the solution. |
+| `tests.test_results` | Per-case execution details collected by the test runner. |
+| `iteration` | Number of code-repair iterations used. |
+| `llm_calls` | Count of LLM calls made by the workflow. |
+| `prompt_tokens`, `completion_tokens` | Token usage recorded from provider usage metadata or estimated locally. |
+| `current_phase` | Last workflow phase reached: `ABSTRACT`, `TESTGEN`, `CODEGEN`, or `HACKER`. |
+
+## Runtime Interfaces
+
+### Python Workflow API
 
 Use `run_workflow` for blocking calls from Python.
 
 ```python
-from src.graph.workflow import run_workflow
+from src.graph import run_workflow
 
 problem = {
     "problem_id": "demo-two-sum",
@@ -61,32 +121,25 @@ config = {
 final_state = run_workflow(problem, config)
 
 print(final_state["status"])
-print(final_state["solution"]["code"])
+print(final_state.get("solution", {}).get("code", ""))
 print(final_state.get("prompt_tokens", 0), final_state.get("completion_tokens", 0))
 ```
 
-Common result fields:
-
-| Field | Meaning |
-| --- | --- |
-| `status` | Final workflow status, such as `success`, `max_iterations`, or `error`. |
-| `solution.code` | Final C++ solution, when one was produced. |
-| `tests.pass_rate` | Fraction of internal tests passed by the final solution. |
-| `iteration` | Number of code-repair iterations used. |
-| `llm_calls` | Count of LLM calls made by the workflow. |
-| `prompt_tokens`, `completion_tokens` | Token usage recorded from provider usage metadata or estimated locally. |
+### Streaming Workflow API
 
 Use `stream_workflow` when you want NDJSON progress events on stdout through `src.events`.
 
 ```python
 import src.events as events
-from src.graph.workflow import stream_workflow
+from src.graph import stream_workflow
 
 events.configure(enabled=True)
-final_state = stream_workflow(problem, config)
+final_state = stream_workflow(problem, {"max_iterations": 5})
 ```
 
-## Command-Line API
+Common event types include `solve_start`, `phase_start`, `phase_done`, `token_sample`, `final`, `solution_saved`, and `error`.
+
+### Python Command-Line API
 
 Run from the repository root.
 
@@ -116,15 +169,23 @@ Useful flags:
 | `--config <dir>` | Config directory, default `config`. |
 | `--stream-events` | Emit one JSON event per line for TUI/dashboard integrations. |
 
-## Model API Configuration
+### Terminal CLI
 
-Solvita uses an OpenAI-compatible client by default. Configuration is resolved in this order, with later layers overriding earlier layers:
+The Node-based terminal interface wraps the Python streaming API.
 
-1. `config/models.yaml`
-2. Environment variables
-3. Explicit runtime `config` passed to `run_workflow`
+```bash
+cd cli
+npm install && npm run build && npm link
+cd ..
 
-### Environment Variables
+solvita solve examples/problem_input_example.json
+```
+
+Run `solvita` with no arguments for the interactive flow, or `solvita solve` with no file to start interactive problem selection.
+
+### Model Configuration API
+
+Solvita uses an OpenAI-compatible client by default. Configuration is resolved from runtime config, `config/models.yaml`, and environment variables.
 
 ```bash
 export SOLVITA_BASE_URL="https://api.openai.com/v1"
@@ -134,9 +195,7 @@ export SOLVITA_TEMPERATURE="0.1"
 export SOLVITA_MAX_TOKENS="128000"
 ```
 
-### YAML Configuration
-
-Copy the template and edit only non-secret settings unless this is a private local checkout.
+Copy the template when you want role-specific defaults.
 
 ```bash
 cp config/models.yaml.example config/models.yaml
@@ -159,7 +218,7 @@ llm:
 
 Keep real keys in `SOLVITA_API_KEY`; `config/models.yaml` is intended to remain local.
 
-### Runtime Override
+Runtime config can override the same values for one call.
 
 ```python
 final_state = run_workflow(
@@ -189,8 +248,6 @@ export SOLVITA_AZURE_API_VERSION="2025-04-01-preview"
 export SOLVITA_MODEL="<deployment-name>"
 ```
 
-### Responses API Options
-
 For providers that support the OpenAI Responses API path:
 
 ```bash
@@ -198,15 +255,104 @@ export SOLVITA_USE_RESPONSES_API=true
 export SOLVITA_REASONING_EFFORT=medium
 ```
 
-or pass the same values in the runtime config:
+or pass the same values in runtime config:
 
 ```python
 config = {"use_responses_api": True, "reasoning_effort": "medium"}
 ```
 
-## Dashboard API
+## Agent Components
 
-Start the FastAPI backend:
+### Overview
+
+The agent layer is organized around four role-specialized phases. The public API should normally call the workflow, while the table below helps you map final-state fields and dashboard events back to the underlying components.
+
+### Available Components
+
+| Component | Main modules | Writes to state | Responsibility |
+| --- | --- | --- | --- |
+| Planner | `src.nodes.abstract_problem`, `src.nodes.solver_skill_plan` | `problem`, `plan`, `solve_policy` | Extract canonical tags, select algorithmic hints, and optionally choose solver skills. |
+| Solver | `src.nodes.generate_code`, `src.nodes.compile_code`, `src.nodes.run_tests`, `src.nodes.analyze_feedback` | `solution`, `feedback`, `best_solution` | Generate C++ code, compile it, execute tests, and repair failures. |
+| Oracle | `src.nodes.generate_tests`, `src.oracle.*` | `tests`, `oracle_event_metadata`, `oracle_memory_decision` | Build certified internal tests, validators, checkers, and oracle-family evidence. |
+| Hacker | `src.nodes.hack_test`, `src.hacker.*` | `hack_result`, `hack_failures`, `hacker_reward` | Search for adversarial counterexamples and route failures back to the Solver. |
+
+### Common Features
+
+- Each component receives and returns dictionaries compatible with `SolvitaState`.
+- Nodes are assembled by `create_solvita_workflow`; external callers should avoid invoking nodes in isolation unless writing tests.
+- Phase events are emitted when streaming is enabled, so frontends can track progress without polling internal state.
+- Agent outputs are retained in the final state for debugging, replay, and dashboard rendering.
+
+### Usage Example
+
+Inspect the phases after a run.
+
+```python
+final_state = run_workflow(problem, {"max_iterations": 3})
+
+print(final_state["current_phase"])
+print(final_state.get("problem", {}).get("tags_selected", []))
+print(final_state.get("plan", {}).get("algorithm_choice", ""))
+print(final_state.get("hack_result", "NONE"))
+```
+
+## Memory Components
+
+### Overview
+
+Solvita can augment generation with trainable memory and graph-structured skill routing. These components are optional at runtime and are controlled by the `config` dictionary.
+
+### Common Features
+
+- Role-specific namespaces keep planning, solving, testing, oracle, and hacker signals separate.
+- Retrieval results are injected into prompts before generation.
+- Rewards are settled after final outcomes or phase-specific evidence is available.
+- Memory data is local to the configured `data_dir` unless you wire an external store.
+
+### Available Components
+
+| Component | Main modules | Configuration | Purpose |
+| --- | --- | --- | --- |
+| Trainable Memory | `src.memory.*` | `trainable_memory.enabled`, `trainable_memory.data_dir` | Retrieve and update role-specific advice from prior solving traces. |
+| Solver Network | `src.solver_network.*` | `solver_network.enabled` | Select reusable algorithmic skills and build codegen augmentation blocks. |
+| Failure Bank | `src.failure_bank.*`, `src.nodes.failure_bank_lookup` | failure-bank config entries | Reuse known counterexamples, anti-patterns, and repair summaries. |
+| Oracle Memory | `src.oracle.oracle_memory_*` | `oracle.mode`, oracle memory config | Gate oracle-family choices and learn when a certification path is reliable. |
+| Hacker Memory | `src.hacker.*`, `src.nodes.settle_hacker_memory` | hacker memory config | Record adversarial generation outcomes and reward useful failure discovery. |
+
+### Usage Example
+
+```python
+config = {
+    "max_iterations": 5,
+    "trainable_memory": {
+        "enabled": True,
+        "data_dir": "data/memory",
+        "plan_top_k": 5,
+        "solve_top_k": 3,
+        "test_top_k": 3,
+    },
+    "solver_network": {"enabled": True},
+    "oracle": {
+        "mode": "safe",
+        "accept_threshold": 0.95,
+        "enable_fallback": False,
+    },
+}
+
+final_state = run_workflow(problem, config)
+print(final_state.get("plan", {}).get("memory_item_ids", []))
+print(final_state.get("solution", {}).get("memory_item_ids", []))
+```
+
+For the lower-level memory client, see the [Trainable Memory System Guide](MEMORY_SYSTEM_GUIDE.md).
+
+## Dashboard Components
+
+### Overview
+
+The dashboard backend exposes Solvita as a FastAPI service. Use it when a web UI, demo server, or external client needs to start runs, inspect run history, and subscribe to live progress.
+
+### Start the Backend
 
 ```bash
 pip install -r dashboard/backend/requirements.txt
@@ -233,6 +379,16 @@ By default the server listens on `http://127.0.0.1:8766` unless overridden in `d
 | `GET` | `/api/runs/{run_id}` | Read run detail and buffered events. |
 | `POST` | `/api/runs/{run_id}/cancel` | Cancel a running solve process. |
 | `DELETE` | `/api/runs/{run_id}` | Delete a completed stored run. |
+
+### Request and Response Models
+
+| Model | Fields |
+| --- | --- |
+| `RunRequest` | `problem: dict`, `config: dict` |
+| `RunResponse` | `run_id`, `status`, `ws_url` |
+| `RunDetail` | `run_id`, `problem_id`, `problem`, `config`, `started_at`, `completed_at`, `final_status`, `events` |
+| `CustomProblemRequest` | `title`, `description`, `source`, `difficulty`, `constraints_text`, limits, `public_tests` |
+| `CodeforcesImportRequest` | `contest_id`, `index`, or `url` |
 
 ### Start a Run
 
@@ -274,7 +430,7 @@ socket.onmessage = (message) => {
 };
 ```
 
-Events include workflow milestones such as `solve_start`, `phase_start`, `phase_done`, `final`, and dashboard bookkeeping events such as `run_complete`.
+Dashboard events include workflow milestones such as `solve_start`, `phase_start`, `phase_done`, `final`, and run bookkeeping events such as `run_complete`.
 
 ### Import a Codeforces Problem
 
