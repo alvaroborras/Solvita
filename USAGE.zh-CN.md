@@ -7,7 +7,7 @@
 ## 1. 环境准备（一次性）
 
 ```bash
-cd /Data/tanh/solvita
+cd ~/solvita
 
 # Python 后端
 python3 -m venv .venv
@@ -143,7 +143,7 @@ Solvita ▸ examples/problem_input_example.json
 
 ```
 ✓ Success │ 3 iters │ 109 LLM calls │ 247 K + 36 K tokens │ 3/3 (100%)
-  Solution saved: /Data/tanh/solvita/my_sol.cpp
+  Solution saved: ~/solvita/my_sol.cpp
 ```
 
 阶段：
@@ -228,7 +228,7 @@ aab2898  merge: add solvita-cli frontend onto latest backend (supplement_upload)
 
 ```bash
 # 1. 进项目 + export key（每个新终端做一次）
-cd /Data/tanh/solvita
+cd ~/solvita
 export SOLVITA_API_KEY='sk-...'
 
 # 2. 跑

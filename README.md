@@ -155,8 +155,8 @@ solvita/
 
 ```bash
 # 1. Clone
-git clone https://github.com/S0lvita/solvita.git
-cd solvita
+git clone https://github.com/NJU-LINK/Solvita.git
+cd Solvita
 
 # 2. Install dependencies
 pip install -r requirements.txt

@@ -6,8 +6,8 @@ Thank you for your interest in contributing to Solvita!
 
 1. Fork and clone the repository
 ```bash
-git clone https://github.com/S0lvita/solvita.git
-cd solvita
+git clone https://github.com/NJU-LINK/Solvita.git
+cd Solvita
 ```
 
 2. Create a virtual environment
