@@ -60,10 +60,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp config/models.yaml.example config/models.yaml
-export SOLVITA_API_KEY="<your-api-key>"
+export OPENAI_API_KEY="<set-in-your-shell-only>"
 ```
 
-Edit `config/models.yaml` with your endpoint and model name. Keep real keys in environment variables rather than committed files.
+Edit `config/models.yaml` with your endpoint and model name. Keep credentials outside the repository; the SDK reads OPENAI_API_KEY from your shell environment.
 
 ```yaml
 llm:

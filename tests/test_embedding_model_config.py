@@ -51,7 +51,6 @@ embedding:
   http_max_retries: 2
   openai_compatible:
     base_url: https://example.com/api
-    api_key: secret-key
 """,
         encoding="utf-8",
     )
@@ -60,7 +59,6 @@ embedding:
     cfg = qs.resolve_embedding_config()
     assert cfg.provider == "openai_compatible"
     assert cfg.openapi_base_url == "https://example.com/api"
-    assert cfg.openapi_api_key == "secret-key"
     assert cfg.http_max_retries == 2
 
 
@@ -72,7 +70,6 @@ embedding:
   model: text-embedding-3-small
   openai_compatible:
     base_url: https://example.com
-    api_key: k
 """,
         encoding="utf-8",
     )

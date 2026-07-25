@@ -62,16 +62,20 @@ def _check_and_raise_prompt_too_long(exc: Exception) -> None:
 
 class UnifiedLLMClient:
     """
-    Unified LLM Client using standard chat completion API.
+    Unified LLM Client using the official OpenAI SDK Responses API.
     
     Works with any LLM service that provides compatible API interface.
 
     Configuration resolution order (first match wins):
-      1. Explicit keys in *config* dict (base_url, api_key, model ...)
+      1. Explicit non-secret settings in *config* dict (base_url, model ...)
       2. config/models.yaml  (looked up relative to project root)
-      3. Environment variables: SOLVITA_BASE_URL, SOLVITA_API_KEY, SOLVITA_MODEL
+      3. Environment variables: SOLVITA_BASE_URL, SOLVITA_MODEL, OPENAI_API_KEY
+
+    Authentication is intentionally delegated to the OpenAI SDK, which reads
+    OPENAI_API_KEY from the process environment. Secrets are never accepted
+    from configuration files or passed as constructor arguments.
     
-    Raises ConfigurationError if neither base_url nor api_key can be resolved.
+    Raises ConfigurationError if no endpoint can be resolved.
     """
     
     class ConfigurationError(RuntimeError):
@@ -82,13 +86,12 @@ class UnifiedLLMClient:
         self._resolved = self._resolve_config()
 
         self.base_url: str = self._resolved["base_url"]
-        self.api_key: str = self._resolved["api_key"]
         self.model: str = self._resolved["model"]
         self.temperature: float = self._resolved["temperature"]
         self.max_tokens: int = self._resolved["max_tokens"]
         self.request_timeout: Optional[float] = self._resolved["request_timeout"]
         self.provider: str = str(self._resolved.get("provider") or "openai").strip().lower()
-        self.use_responses_api: bool = bool(self._resolved.get("use_responses_api", False))
+        self.use_responses_api: bool = bool(self._resolved.get("use_responses_api", True))
         self.reasoning_effort: Optional[str] = self._resolved.get("reasoning_effort")
 
         self._usage_accumulator = ensure_token_usage_accumulator(self.config)
@@ -181,7 +184,6 @@ class UnifiedLLMClient:
     def _has_runtime_llm_overrides(config: Dict[str, Any]) -> bool:
         keys = (
             "base_url",
-            "api_key",
             "model",
             "temperature",
             "max_tokens",
@@ -195,7 +197,6 @@ class UnifiedLLMClient:
 
         env_keys = (
             "SOLVITA_BASE_URL",
-            "SOLVITA_API_KEY",
             "SOLVITA_MODEL",
             "SOLVITA_TEMPERATURE",
             "SOLVITA_MAX_TOKENS",
@@ -221,8 +222,7 @@ class UnifiedLLMClient:
         """Merge config dict -> YAML file -> env vars, fail if incomplete."""
         # Start with defaults for non-critical fields
         resolved: Dict[str, Any] = {
-            "base_url": "",
-            "api_key": "",
+            "base_url": "https://api.openai.com/v1",
             "model": "",
             "temperature": 0.1,
             "max_tokens": 128000,
@@ -233,7 +233,7 @@ class UnifiedLLMClient:
             "provider": "openai",
         }
 
-        # Layer 1: YAML file (lowest priority for base_url/api_key)
+        # Layer 1: YAML file (lowest priority for endpoint/model settings)
         yaml_root = self._load_yaml_root(self.config)
         yaml_cfg = yaml_root.get("llm", {}) if isinstance(yaml_root, dict) else {}
         if yaml_cfg:
@@ -244,7 +244,6 @@ class UnifiedLLMClient:
         # Layer 2: Environment variables
         env_map = {
             "base_url": "SOLVITA_BASE_URL",
-            "api_key": "SOLVITA_API_KEY",
             "model": "SOLVITA_MODEL",
             "temperature": "SOLVITA_TEMPERATURE",
             "max_tokens": "SOLVITA_MAX_TOKENS",
@@ -283,26 +282,23 @@ class UnifiedLLMClient:
             if key in self.config and self.config[key] not in (None, ""):
                 resolved[key] = self.config[key]
 
-        has_explicit_api_key = "api_key" in self.config and self.config.get("api_key") not in (None, "")
         has_explicit_provider = "provider" in self.config and self.config.get("provider") not in (None, "")
         has_explicit_base_url = "base_url" in self.config and self.config.get("base_url") not in (None, "")
         has_explicit_azure_tenant = "azure_tenant_id" in self.config and self.config.get("azure_tenant_id") not in (None, "")
         has_explicit_azure_scope = "azure_scope" in self.config and self.config.get("azure_scope") not in (None, "")
 
-        if has_explicit_base_url and not has_explicit_api_key and not os.environ.get("SOLVITA_API_KEY"):
-            resolved["api_key"] = ""
+        if "api_key" in self.config and self.config.get("api_key") not in (None, ""):
+            raise self.ConfigurationError(
+                "API keys must not be supplied in runtime config; export OPENAI_API_KEY instead"
+            )
 
-        if (has_explicit_azure_tenant or has_explicit_azure_scope) and not has_explicit_api_key and not os.environ.get("SOLVITA_API_KEY"):
+        if (has_explicit_azure_tenant or has_explicit_azure_scope) and not os.environ.get("OPENAI_API_KEY"):
             resolved["provider"] = "openai"
-            resolved["api_key"] = ""
 
         if not resolved["model"]:
             resolved["model"] = "gpt-4"
 
         if not resolved["provider"]:
-            resolved["provider"] = "openai"
-
-        if has_explicit_api_key and not has_explicit_provider:
             resolved["provider"] = "openai"
 
         provider = str(resolved.get("provider") or "openai").strip().lower()
@@ -314,7 +310,6 @@ class UnifiedLLMClient:
 
         if (
             provider == "openai"
-            and not resolved["api_key"]
             and resolved["azure_tenant_id"]
             and resolved["azure_scope"]
             and self._looks_like_azure_base_url(resolved["base_url"])
@@ -336,12 +331,13 @@ class UnifiedLLMClient:
                 )
 
         # Validate required fields
-        if not self._use_azure and (not resolved["base_url"] or not resolved["api_key"]):
+        if not self._use_azure and not resolved["base_url"]:
             raise self.ConfigurationError(
-                "LLM configuration incomplete. Provide base_url and api_key (or azure_tenant_id + azure_scope for AAD auth) via one of:\n"
+                "LLM configuration incomplete. Provide base_url (or azure_tenant_id + azure_scope for AAD auth) via one of:\n"
                 "  1. config dict passed to UnifiedLLMClient\n"
-                "  2. config/models.yaml (llm.base_url / llm.api_key)\n"
-                "  3. Environment variables SOLVITA_BASE_URL / SOLVITA_API_KEY"
+                "  2. config/models.yaml (llm.base_url)\n"
+                "  3. Environment variable SOLVITA_BASE_URL\n"
+                "Authentication is read by the SDK from OPENAI_API_KEY."
             )
 
         if self._use_azure and not resolved["base_url"]:
@@ -351,7 +347,7 @@ class UnifiedLLMClient:
 
         # Responses API + reasoning effort (optional, OpenAI-style)
         cfg = self.config or {}
-        resolved["use_responses_api"] = bool(cfg.get("use_responses_api", False))
+        resolved["use_responses_api"] = bool(cfg.get("use_responses_api", True))
         env_reasoning = os.environ.get("SOLVITA_REASONING_EFFORT")
         resolved["reasoning_effort"] = env_reasoning or cfg.get("reasoning_effort")
         env_use_responses = os.environ.get("SOLVITA_USE_RESPONSES_API")
@@ -360,10 +356,10 @@ class UnifiedLLMClient:
 
         return resolved
     def _initialize_client(self):
-        """Initialize the OpenAI-compatible HTTP client.
+        """Initialize the official OpenAI SDK client.
 
-        When api_key is set, prefers the generic OpenAI-compatible client.
-        Otherwise, when azure_tenant_id + azure_scope are set, uses AzureOpenAI with
+        The generic client reads OPENAI_API_KEY from the environment. When
+        azure_tenant_id + azure_scope are set, uses AzureOpenAI with
         AAD token provider (AzureCliCredential).
         """
         try:
@@ -401,8 +397,8 @@ class UnifiedLLMClient:
                 )
             else:
                 from openai import OpenAI
-                logger.info("LLM client: OpenAI-compatible @ {}", self.base_url)
-                return OpenAI(base_url=self.base_url, api_key=self.api_key)
+                logger.info("LLM client: OpenAI SDK @ {}", self.base_url)
+                return OpenAI(base_url=self.base_url)
         except Exception as e:
             logger.error(f"Error initializing LLM client: {e}")
             raise
@@ -463,76 +459,10 @@ class UnifiedLLMClient:
         if not self.client:
             return ""
 
-        # Optional dispatch to Responses API (with reasoning_effort).
-        use_responses = bool(kwargs.pop("use_responses_api", self.use_responses_api))
+        # All model calls use the Responses API. Keep this method name as the
+        # internal compatibility boundary for existing Solvita nodes.
         reasoning_effort = kwargs.pop("reasoning_effort", self.reasoning_effort)
-        if use_responses or reasoning_effort:
-            return self._create_response(messages, reasoning_effort=reasoning_effort, **kwargs)
-
-        model = kwargs.get("model", self.model)
-        timeout = kwargs.get("timeout", self.request_timeout)
-
-        reasoning = self._is_reasoning_model(model)
-
-        request_kwargs: Dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "timeout": timeout,
-        }
-
-        # Reasoning models use max_completion_tokens and do not accept temperature
-        max_tok = kwargs.get("max_tokens", self.max_tokens)
-        if reasoning:
-            request_kwargs["max_completion_tokens"] = max_tok
-        else:
-            request_kwargs["max_tokens"] = max_tok
-            request_kwargs["temperature"] = kwargs.get("temperature", self.temperature)
-        passthrough_keys = (
-            "response_format",
-            "seed",
-            "top_p",
-            "frequency_penalty",
-            "presence_penalty",
-            "stop",
-            "logit_bias",
-            "n",
-            "tools",
-            "tool_choice",
-            "parallel_tool_calls",
-        )
-        for key in passthrough_keys:
-            if key in kwargs and kwargs[key] is not None:
-                request_kwargs[key] = kwargs[key]
-        try:
-            response = self.client.chat.completions.create(**request_kwargs)
-            if isinstance(response, str):
-                content = response
-                prompt_tokens = estimate_message_tokens(messages, model=model)
-                completion_tokens = estimate_text_tokens(content, model=model)
-                record_token_usage(
-                    self._usage_accumulator,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    source="estimated",
-                )
-                self._last_usage = {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "token_usage_source": "estimated",
-                }
-                logger.debug(
-                    "[LLM Usage] model={} prompt_tokens={} completion_tokens={} source=estimated",
-                    model,
-                    prompt_tokens,
-                    completion_tokens,
-                )
-                return content
-            return self._record_response_usage(response, messages, model)
-        except Exception as e:
-            _check_and_raise_prompt_too_long(e)
-            _check_and_raise_fatal(e)
-            logger.error(f"LLM API error: {e}")
-            return ""
+        return self._create_response(messages, reasoning_effort=reasoning_effort, **kwargs)
 
     def _create_response(
         self,
@@ -678,8 +608,10 @@ class UnifiedLLMClient:
         self.config.update(config)
         if "base_url" in config:
             self.base_url = config["base_url"]
-        if "api_key" in config:
-            self.api_key = config["api_key"]
+        if config.get("api_key") not in (None, ""):
+            raise self.ConfigurationError(
+                "API keys must not be supplied in runtime config; export OPENAI_API_KEY instead"
+            )
         if "model" in config:
             self.model = config["model"]
         if "temperature" in config:
@@ -688,7 +620,7 @@ class UnifiedLLMClient:
             self.max_tokens = config["max_tokens"]
         if "request_timeout" in config:
             self.request_timeout = config["request_timeout"]
-        if "base_url" in config or "api_key" in config:
+        if "base_url" in config:
             self.client = self._initialize_client()
 
     @property
@@ -707,9 +639,9 @@ class UnifiedLLMClient:
 
 
 
-def create_client(base_url: str, api_key: str, model: str = "gpt-4", **kwargs) -> UnifiedLLMClient:
-    """Create a new LLM client with explicit credentials."""
-    config = {"base_url": base_url, "api_key": api_key, "model": model, **kwargs}
+def create_client(base_url: str = "https://api.openai.com/v1", model: str = "gpt-4", **kwargs) -> UnifiedLLMClient:
+    """Create a new SDK-backed client; authentication comes from OPENAI_API_KEY."""
+    config = {"base_url": base_url, "model": model, **kwargs}
     return UnifiedLLMClient(config)
 
 

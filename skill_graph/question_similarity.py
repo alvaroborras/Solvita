@@ -17,8 +17,8 @@ Sim = problem_semantic_weight · Sim_problem + tag_jaccard_weight · Jaccard(tag
 环境变量
 --------
 - ``SOLVITA_EMBEDDING_MODEL``：OpenAI embedding 模型名（默认 ``text-embedding-3-small``）。
-- ``SOLVITA_EMBEDDING_OPENAI_BASE_URL`` / ``SOLVITA_EMBEDDING_OPENAI_API_KEY``：当 ``provider: openai_compatible`` 时，
-  覆盖 ``embedding.openai_compatible`` 中的 ``base_url`` / ``api_key``；未设置 ``api_key`` 时可回退 ``SOLVITA_API_KEY``。
+- ``SOLVITA_EMBEDDING_OPENAI_BASE_URL``：当 ``provider: openai_compatible`` 时覆盖
+  ``embedding.openai_compatible.base_url``。认证由 OpenAI SDK 从 ``OPENAI_API_KEY`` 读取。
 - ``SOLVITA_EMBEDDING_HTTP_MAX_RETRIES``：覆盖 ``embedding.http_max_retries``（HTTP 嵌入客户端，默认 5）。
 
 MS 边初始化复用同一模型与同一套「标签句 + 逻辑文本」余弦思路，见
@@ -88,7 +88,6 @@ class EmbeddingConfig:
     azure_api_version: str
     st_device: str
     openapi_base_url: str = ""
-    openapi_api_key: str = ""
 
 
 def resolve_embedding_config() -> EmbeddingConfig:
@@ -135,13 +134,6 @@ def resolve_embedding_config() -> EmbeddingConfig:
     openapi_base_url = str(
         os.environ.get("SOLVITA_EMBEDDING_OPENAI_BASE_URL") or oc.get("base_url") or ""
     ).strip()
-    openapi_api_key = str(
-        os.environ.get("SOLVITA_EMBEDDING_OPENAI_API_KEY")
-        or oc.get("api_key")
-        or os.environ.get("SOLVITA_API_KEY")
-        or ""
-    ).strip()
-
     azure = emb.get("azure") if isinstance(emb.get("azure"), dict) else {}
     azure_base_url = str(
         os.environ.get("SOLVITA_EMBEDDING_AZURE_BASE_URL")
@@ -187,7 +179,6 @@ def resolve_embedding_config() -> EmbeddingConfig:
         azure_api_version=azure_api_version,
         st_device=st_device,
         openapi_base_url=openapi_base_url,
-        openapi_api_key=openapi_api_key,
     )
 
 
@@ -243,16 +234,14 @@ def _get_embedding_client():
 
         if _EMB_CONFIG.provider == "openai_compatible":
             bu = _normalize_openai_compatible_base_url(_EMB_CONFIG.openapi_base_url)
-            if not bu or not _EMB_CONFIG.openapi_api_key:
+            if not bu:
                 raise RuntimeError(
-                    "embedding.provider is 'openai_compatible' but base_url or api_key is missing. "
-                    "Set embedding.openai_compatible.base_url / api_key in config/models.yaml, or "
-                    "SOLVITA_EMBEDDING_OPENAI_BASE_URL / SOLVITA_EMBEDDING_OPENAI_API_KEY "
-                    "(api_key may fall back to SOLVITA_API_KEY)."
+                    "embedding.provider is 'openai_compatible' but base_url is missing. "
+                    "Set embedding.openai_compatible.base_url or "
+                    "SOLVITA_EMBEDDING_OPENAI_BASE_URL. Authentication is read from OPENAI_API_KEY."
                 )
             _EMB_CLIENT = openai.OpenAI(
                 base_url=bu,
-                api_key=_EMB_CONFIG.openapi_api_key,
                 max_retries=retries,
             )
             return _EMB_CLIENT

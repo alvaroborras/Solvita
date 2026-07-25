@@ -197,7 +197,7 @@ Solvita uses an OpenAI-compatible client by default. Configuration is resolved f
 
 ```bash
 export SOLVITA_BASE_URL="https://api.openai.com/v1"
-export SOLVITA_API_KEY="<your-api-key>"
+export OPENAI_API_KEY="<set-in-your-shell-only>"
 export SOLVITA_MODEL="gpt-4"
 export SOLVITA_TEMPERATURE="0.1"
 export SOLVITA_MAX_TOKENS="128000"
@@ -224,7 +224,7 @@ llm:
       model: "gpt-4"
 ```
 
-Keep real keys in `SOLVITA_API_KEY`; `config/models.yaml` is intended to remain local.
+Keep credentials in `OPENAI_API_KEY`; never put them in `config/models.yaml`.
 
 Runtime config can override the same values for one call.
 
@@ -233,8 +233,7 @@ final_state = run_workflow(
     problem,
     config={
         "base_url": "https://api.openai.com/v1",
-        "api_key": "<your-api-key>",
-        "model": "gpt-4",
+                "model": "gpt-4",
         "temperature": 0.1,
         "max_iterations": 5,
     },
@@ -453,5 +452,5 @@ You can also provide a Codeforces problem URL instead of `contest_id` and `index
 ## Secret Safety
 
 - Do not commit real API keys into `config/models.yaml`, `.env`, shell scripts, or Markdown files.
-- Prefer `SOLVITA_API_KEY` and other environment variables for local usage.
+- Prefer `OPENAI_API_KEY` and other environment variables for local usage.
 - Install the repository hook with `./scripts/install-git-hooks.sh` before contributing.

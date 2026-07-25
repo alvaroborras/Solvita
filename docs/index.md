@@ -31,7 +31,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp config/models.yaml.example config/models.yaml
-export SOLVITA_API_KEY="<your-api-key>"
+export OPENAI_API_KEY="<set-in-your-shell-only>"
 
 python main.py --input examples/problem_input_example.json --output solution.cpp
 ```

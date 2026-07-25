@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 def _make_client(monkeypatch, **extras):
     """Construct a UnifiedLLMClient with stubbed self.client (no real network)."""
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
-    monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-credential")
     monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.delenv("SOLVITA_USE_RESPONSES_API", raising=False)
     monkeypatch.delenv("SOLVITA_REASONING_EFFORT", raising=False)
@@ -128,10 +128,10 @@ def test_responses_api_assistant_messages_use_output_text(monkeypatch):
     assert inp[0]["content"][0]["type"] == "input_text"
 
 
-def test_chat_completions_path_unchanged_when_no_responses_flag(monkeypatch):
-    """Default path (no use_responses_api, no reasoning_effort) still uses chat.completions."""
+def test_responses_api_is_the_default_path(monkeypatch):
+    """All model calls use the Responses API by default."""
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
-    monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-credential")
     monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.delenv("SOLVITA_USE_RESPONSES_API", raising=False)
     monkeypatch.delenv("SOLVITA_REASONING_EFFORT", raising=False)
@@ -139,37 +139,29 @@ def test_chat_completions_path_unchanged_when_no_responses_flag(monkeypatch):
     from src.llm.unified_client import UnifiedLLMClient
     client = UnifiedLLMClient({"provider": "openai_compatible"})
 
-    chat_called = {"n": 0}
     responses_called = {"n": 0}
 
     class _Resp:
         def create(self, **kw):
             responses_called["n"] += 1
-            raise AssertionError("responses.create should not be called")
-
-    class _ChatCompletions:
-        def create(self, **kw):
-            chat_called["n"] += 1
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="answer"))],
-                usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3),
+                output=[SimpleNamespace(type="message", content=[SimpleNamespace(type="output_text", text="answer")])],
+                usage=SimpleNamespace(input_tokens=5, output_tokens=3),
             )
 
     class _FakeOpenAI:
         def __init__(self):
             self.responses = _Resp()
-            self.chat = SimpleNamespace(completions=_ChatCompletions())
 
     client.client = _FakeOpenAI()
     out = client.chat([{"role": "user", "content": "q"}])
-    assert chat_called["n"] == 1
-    assert responses_called["n"] == 0
+    assert responses_called["n"] == 1
 
 
 def test_env_var_enables_responses_api(monkeypatch):
     """SOLVITA_USE_RESPONSES_API=1 enables responses API even without config flag."""
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
-    monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-credential")
     monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("SOLVITA_USE_RESPONSES_API", "1")
 
@@ -180,7 +172,7 @@ def test_env_var_enables_responses_api(monkeypatch):
 
 def test_env_var_sets_reasoning_effort(monkeypatch):
     monkeypatch.setenv("SOLVITA_BASE_URL", "https://example.test/v1")
-    monkeypatch.setenv("SOLVITA_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-credential")
     monkeypatch.setenv("SOLVITA_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("SOLVITA_REASONING_EFFORT", "xhigh")
 

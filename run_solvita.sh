@@ -6,15 +6,15 @@
 #   ./run_solvita.sh solve foo.json -n 5 -o out.cpp # with options
 #
 # Required env vars:
-#   SOLVITA_API_KEY     LLM provider api key
+#   OPENAI_API_KEY     OpenAI SDK credential (set outside the repository)
 #   SOLVITA_BASE_URL    (optional, defaults to value in config/models.yaml)
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ -z "${SOLVITA_API_KEY:-}" ]]; then
-  echo "ERROR: SOLVITA_API_KEY is not set." >&2
-  echo "  export SOLVITA_API_KEY='<your-api-key>'" >&2
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "ERROR: OPENAI_API_KEY is not set." >&2
+  echo "  export OPENAI_API_KEY='<set-in-your-shell-only>'" >&2
   exit 1
 fi
 

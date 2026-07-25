@@ -1,66 +1,37 @@
 # Solvita LLM runtime configuration.
 #
-# Fill the required fields below before running the workflow. The api_key
-# value MUST stay empty in this file — supply it at runtime via the
-# SOLVITA_API_KEY environment variable so it never lands in git.
-#
-# See config/models.yaml.example for a documented template with notes on
-# how the resolver layers (env > yaml > defaults) interact.
+# Authentication is intentionally not stored in this file. The official
+# OpenAI SDK reads OPENAI_API_KEY from the process environment.
 
 llm:
-  # Provider: openai_compatible | anthropic | dashscope
-  provider: "openai_compatible"
-  # Required, must be non-empty for config validation. Examples:
-  #   https://api.openai.com/v1
-  #   https://dashscope.aliyuncs.com/api/v1
-  #   any OpenAI-compatible gateway you self-host or subscribe to
+  provider: "openai"
   base_url: "https://api.openai.com/v1"
-  # Leave empty here; export SOLVITA_API_KEY=<your-api-key> before running.
-  api_key: ""
-
-  # Default model for all nodes; override per-role below if needed.
-  # Pick a text-first chat-completions model your provider supports.
   model: "gpt-4o-mini"
   temperature: 0.1
   max_tokens: 16384
+  use_responses_api: true
 
-  # Optional per-role overrides. Each role corresponds to a workflow stage
-  # (code = generate_code, generator = hacker generator, validator = code
-  # analyst, checker = unified check, output = test oracle, hacker = adversary).
   roles:
-    code:
-      model: "gpt-4o-mini"
-    generator:
-      model: "gpt-4o-mini"
-    validator:
-      model: "gpt-4o-mini"
-    checker:
-      model: "gpt-4o-mini"
-    output:
-      model: "gpt-4o-mini"
-    hacker:
-      model: "gpt-4o-mini"
+    code: {model: "gpt-4o-mini"}
+    plan: {model: "gpt-4o-mini"}
+    solver_codegen: {model: "gpt-4o-mini"}
+    generator: {model: "gpt-4o-mini"}
+    validator: {model: "gpt-4o-mini"}
+    checker: {model: "gpt-4o-mini"}
+    output: {model: "gpt-4o-mini"}
+    hacker: {model: "gpt-4o-mini"}
 
-# Embedding backend for semantic similarity in skill_graph/question_similarity.py.
-# Priority: environment variables > this YAML > hardcoded defaults.
 embedding:
-  # "azure_openai" | "openai_compatible" | "sentence_transformers"
   provider: "sentence_transformers"
   model: "text-embedding-3-small"
   cache_size: 32768
-  # Retries for HTTP embedding clients (azure_openai / openai_compatible).
   http_max_retries: 5
-  # OpenAI-compatible /v1/embeddings (local gateway, ChatAnywhere, etc.).
   openai_compatible:
     base_url: ""
-    api_key: ""
-  # Azure OpenAI (with AAD or API key auth). Fill tenant_id and scope only
-  # if you use a token-based auth flow.
   azure:
     base_url: ""
     tenant_id: ""
     scope: ""
     api_version: "2025-04-01-preview"
-  # Local CPU-based fallback; needs `pip install sentence-transformers`.
   sentence_transformers:
     device: "cpu"

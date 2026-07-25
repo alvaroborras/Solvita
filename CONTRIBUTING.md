@@ -25,7 +25,7 @@ pip install -r requirements.txt
 ```bash
 cp config/models.yaml.example config/models.yaml
 # Edit config/models.yaml to set provider/base_url/model.
-# NEVER write the api_key into the YAML — export SOLVITA_API_KEY instead.
+# NEVER write the api_key into the YAML — export OPENAI_API_KEY instead.
 ```
 
 5. Install the project git hooks

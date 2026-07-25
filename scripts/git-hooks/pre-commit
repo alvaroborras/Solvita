@@ -10,7 +10,7 @@ set -e
 
 # Patterns that indicate a real key (typed prefix + length).
 # Extend if you start using a non-OpenAI-style provider whose keys differ.
-KEY_PATTERN='(api_key|API_KEY|SOLVITA_API_KEY)\s*[:=]\s*"?(sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{20,}|claude-[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{20,})"?'
+KEY_PATTERN='(api_key|API_KEY|OPENAI_API_KEY)\s*[:=]\s*"?(sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9]{20,}|claude-[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{20,})"?'
 
 # Only check files staged for THIS commit; ignore those just deleted.
 files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ya?ml|env|sh|md)$' || true)
@@ -37,8 +37,8 @@ if [ ${#violations[@]} -ne 0 ]; then
     echo "   - $f" >&2
   done
   echo "" >&2
-  echo "Set the key via SOLVITA_API_KEY in your shell instead:" >&2
-  echo "   export SOLVITA_API_KEY='<your-api-key>'" >&2
+  echo "Set the key via OPENAI_API_KEY in your shell instead:" >&2
+  echo "   export OPENAI_API_KEY='<set-in-your-shell-only>'" >&2
   echo "" >&2
   echo "If this is intentional (e.g. a sample/test key), bypass with --no-verify." >&2
   exit 1

@@ -1,45 +1,26 @@
-# LLM Model Configuration Example
-# Copy this file to models.yaml and fill in your credentials
+# Solvita LLM configuration example.
+# Never put credentials in this file. The official OpenAI SDK reads
+# OPENAI_API_KEY from the process environment.
 
-# Example 1: Using a standard LLM service
 llm:
-  base_url: "https://api.your-service.com/v1"
-  api_key: "your-api-key-here"
-  model: "your-model-name"
+  provider: "openai"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
   temperature: 0.1
-  max_tokens: 128000
+  max_tokens: 16384
+  use_responses_api: true
   roles:
-    generator:
-      model: "your-generator-model"
-    validator:
-      model: "your-validator-model"
-    checker:
-      model: "your-checker-model"
-    output:
-      model: "your-output-model"
-    hacker:
-      model: "your-hacker-model"
+    code: {model: "gpt-4o-mini"}
+    plan: {model: "gpt-4o-mini"}
+    solver_codegen: {model: "gpt-4o-mini"}
+    generator: {model: "gpt-4o-mini"}
+    validator: {model: "gpt-4o-mini"}
+    checker: {model: "gpt-4o-mini"}
+    output: {model: "gpt-4o-mini"}
+    hacker: {model: "gpt-4o-mini"}
 
-# Example 2: Using GPT-4
-# llm:
-#   base_url: "https://api.openai.com/v1"
-#   api_key: "<your-openai-api-key>"
-#   model: "gpt-4"
-#   temperature: 0.1
-#   max_tokens: 128000
-
-# Example 3: Using Claude
-# llm:
-#   base_url: "https://api.anthropic.com/v1"
-#   api_key: "<your-anthropic-api-key>"
-#   model: "claude-3-sonnet-20240229"
-#   temperature: 0.1
-#   max_tokens: 128000
-
-# Example 4: Using local service
-# llm:
-#   base_url: "http://localhost:8000/v1"
-#   api_key: "local"
-#   model: "local-model"
-#   temperature: 0.1
-#   max_tokens: 128000
+embedding:
+  provider: "sentence_transformers"
+  model: "text-embedding-3-small"
+  openai_compatible:
+    base_url: "https://api.openai.com/v1"

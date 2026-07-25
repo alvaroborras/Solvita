@@ -39,18 +39,17 @@ ls cli/dist/index.js           # 编译产物应存在
 llm:
   provider: "openai_compatible"
   base_url: "https://api.openai.com/v1"
-  api_key: ""          # 留空，运行时从环境变量读
   model: "gpt-4o-mini"
 ```
 
-要换 provider/model：直接改 `base_url` 和 `model` 字段。**永远不要把 api_key 写进 yaml 或 .env 提交进 git**。
+要换 provider/model：直接改 `base_url` 和 `model` 字段。认证由 OpenAI SDK 从 `OPENAI_API_KEY` 读取；**永远不要把凭据写进 yaml 或 `.env` 提交进 git**。
 
 ---
 
 ## 3. 每次运行前
 
 ```bash
-export SOLVITA_API_KEY='sk-...'                    # 必填
+export OPENAI_API_KEY='<set-in-your-shell-only>'  # 必填
 export SOLVITA_BASE_URL='https://api.openai.com/v1'  # 选填，yaml 已兜底
 ```
 
@@ -174,7 +173,7 @@ Solvita ▸ examples/problem_input_example.json
 
 | 现象 | 原因 / 修法 |
 |---|---|
-| `ERROR: SOLVITA_API_KEY is not set` | 没 export key，重做第 3 节 |
+| `ERROR: OPENAI_API_KEY is not set` | 没 export key，重做第 3 节 |
 | `ModuleNotFoundError: langgraph` | 没用 venv 的 python。用 `run_solvita.sh` 或 `--python .venv/bin/python` |
 | `401 Incorrect API key` | key 拼错、失效，或 base_url 跟 key 对不上 |
 | `503 No available channel for model X` | provider 不支持那个 model id，改 `config/models.yaml` 的 `model:` |
@@ -207,7 +206,7 @@ tail -f solvita_run.log
 ```bash
 # 1. 进项目 + export key（每个新终端做一次）
 cd ~/solvita
-export SOLVITA_API_KEY='sk-...'
+export OPENAI_API_KEY='<set-in-your-shell-only>'
 
 # 2. 跑
 ./run_solvita.sh solve examples/problem_input_example.json -n 5 -o sol.cpp
