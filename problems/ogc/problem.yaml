@@ -1,0 +1,13 @@
+problem_id: ogc
+version: "1"
+problem_family: scheduling
+objective: minimize
+adapter: adapter.py
+scorer_version: ogc-official-utils-v1
+instances_dir: train
+allowed_standards: [c++17, c++20, c++23]
+default_standard: c++23
+search_limits: {time_limit_ms: 10000, memory_mb: 2048, output_bytes: 1000000, pids: 64}
+final_limits: {time_limit_ms: 60000, memory_mb: 2048, output_bytes: 1000000, pids: 64}
+sdk_version: ogc-sdk-v1
+baseline_bundle: baseline/main.cpp

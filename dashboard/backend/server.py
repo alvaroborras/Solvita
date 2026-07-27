@@ -22,6 +22,7 @@ from src.codeforces.importer import (
     resolve_problem_key,
 )
 from src.utils.problem_origin import mark_user_supplied_problem
+from dashboard.backend.heuristic_views import router as heuristic_router
 
 try:
     from .config import (
@@ -83,6 +84,7 @@ except ImportError:
     from ws_manager import WebSocketManager
 
 app = FastAPI(title="AlgoPilot Dashboard API")
+app.include_router(heuristic_router)
 
 app.add_middleware(
     CORSMiddleware,

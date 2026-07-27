@@ -1,0 +1,29 @@
+problem: ogc
+problem_kind: heuristic
+engine: solvita_dgs
+proposal_model: gpt-4o-mini
+embedding_model: sentence-transformers/all-MiniLM-L6-v2
+language_standard: c++23
+seed: 0
+budgets:
+  proposals: 200
+  support_calls: 40
+evaluation:
+  common_seed: 0
+  train_instances: 32
+  validation_instances: 8
+  search_time_limit_ms: 10000
+  promotion_time_limit_ms: 60000
+  epoch_size: 20
+  promotions_per_epoch: 2
+scoring:
+  mean_weight: 0.70
+  bottom_20_percent_weight: 0.30
+  improvement_threshold: 0.005
+archive:
+  parent_pool: 20
+  quotas:
+    quality: 7
+    novelty: 6
+    specialist: 5
+    revival: 2

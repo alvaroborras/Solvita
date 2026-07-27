@@ -34,6 +34,7 @@ data/memory/
 data/generated/
 tmp/
 solvita_run.log
+.solvita/
 
 # Large skill-graph exports (regenerate with scripts/export_solver_network_latest.py)
 artifacts/solver_network/

@@ -1,0 +1,6 @@
+name: ogc-v1-comparison
+problem: ogc
+engines: [best_of_n, random_qd, default_gepa, solvita_dgs]
+replicates: 3
+proposals: 200
+proposal_model: gpt-4o-mini

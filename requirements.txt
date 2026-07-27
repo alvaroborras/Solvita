@@ -31,3 +31,9 @@ python-dotenv>=1.0.0
 tqdm>=4.65.0
 loguru>=0.7.0
 tiktoken>=0.7.0
+
+# Heuristic optimization (kept additive to the exact-CP runtime)
+shapely>=2.0.0
+sentence-transformers>=3.0.0
+# The custom OA engine API is currently available at this upstream revision.
+gepa @ git+https://github.com/gepa-ai/gepa.git@f919db0a622e2e9f9204779b81fe00cc1b2d808f
